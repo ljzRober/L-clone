@@ -144,6 +144,24 @@ def cmd_recall(args) -> None:
               f"({it['created_at']})\n   {it['content']}")
 
 
+def cmd_memories(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    rows = mem_mod.list_memories(conn, project_id=pid, level=args.level,
+                                 status=args.status, limit=args.limit)
+    if not rows:
+        print(f"(暂无 {args.status} 记忆" +
+              (f", 项目={args.project}" if args.project else "") + ")")
+        return
+    for r in rows:
+        proj = r["project_name"] or "个人区"
+        print(f"#{r['id']} [{proj}/{r['level']}] {r['created_at'][:16]} "
+              f"({r['source_type']})")
+        print(f"   {r['content']}")
+        if r["source_ref"]:
+            print(f"   来源: {r['source_ref']}")
+
+
 def cmd_supervise(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project)
@@ -231,6 +249,15 @@ def build_parser() -> argparse.ArgumentParser:
     sr2.add_argument("--project", default=None)
     sr2.add_argument("--k", type=int, default=5)
     sr2.set_defaults(func=cmd_recall)
+
+    sm = sub.add_parser("memories", parents=[parent], help="列出记忆")
+    sm.add_argument("--project", default=None, help="只看某项目")
+    sm.add_argument("--level", choices=["decision", "milestone", "note"],
+                    default=None, help="只看某等级")
+    sm.add_argument("--status", choices=["active", "pending", "archived"],
+                    default="active", help="默认只看正式记忆, 草稿用 pending")
+    sm.add_argument("--limit", type=int, default=20)
+    sm.set_defaults(func=cmd_memories)
 
     ss = sub.add_parser("supervise", parents=[parent], help="边界监督 (规范环)")
     ss.add_argument("proposal", help="新提议")

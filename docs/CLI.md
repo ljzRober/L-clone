@@ -13,6 +13,7 @@ lclone remember "内容" [--level decision|milestone|note] [--project id]
 lclone capture "本次工作内容" [--project id]     # B: 进草稿
 lclone review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
 lclone recall "查询" [--project id] [--k 5]
+lclone memories [--project id] [--level decision|milestone|note] [--status active|pending|archived] [--limit 20]
 lclone supervise "新提议" --project id           # 规范环
 lclone ask "问题" [--project id] [--thread id]  # 回顾环
 lclone web [--host 0.0.0.0] [--port 8000]

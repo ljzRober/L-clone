@@ -171,6 +171,11 @@ HTML = r"""<!doctype html>
       </div>
       <div id="recall-out"></div>
     </div>
+    <div class="card">
+      <h3>全部记忆</h3>
+      <button class="ghost" onclick="loadAllMemories()">加载最近 20 条</button>
+      <div id="all-mem-out"></div>
+    </div>
   </div>
 
   <div id="p-proj" class="panel">
@@ -288,6 +293,18 @@ async function recall() {
   $('recall-out').innerHTML = r.items.length
     ? r.items.map(x => `<div class="mem">[${x.project}/${x.level}] ${esc(x.content)}<br><span class="muted">${x.created_at}</span></div>`).join('')
     : '<span class="muted">(无结果)</span>';
+}
+async function loadAllMemories() {
+  const pid = $('mem-proj').value ? '?project_id=' + Number($('mem-proj').value) : '';
+  const r = await (await fetch('/api/memories' + pid)).json();
+  $('all-mem-out').innerHTML = r.items.length
+    ? r.items.map(x => `<div class="mem">
+        <span class="badge b-${x.level}">${x.level}</span>
+        <span class="badge b-${x.status === 'pending' ? 'pending' : 'note'}">${x.status}</span>
+        ${esc(x.content)}
+        <br><span class="muted">#${x.id} ${x.project} ${x.created_at} (${x.source_type})</span>
+      </div>`).join('')
+    : '<span class="muted">(暂无记忆)</span>';
 }
 async function addProject() {
   const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(),
@@ -413,6 +430,14 @@ def create_app(db_path: Optional[str] = None):
     @app.get("/api/pending")
     def pending(conn: sqlite3.Connection = Depends(get_db)):
         return {"items": [dict(r) for r in mem_mod.pending_memories(conn)]}
+
+    @app.get("/api/memories")
+    def memories(project_id: Optional[int] = None,
+                 level: Optional[str] = None, status: str = "active",
+                 limit: int = 20, conn: sqlite3.Connection = Depends(get_db)):
+        items = mem_mod.list_memories(conn, project_id=project_id, level=level,
+                                      status=status, limit=limit)
+        return {"items": [dict(r) for r in items]}
 
     @app.post("/api/review")
     def review(body: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):

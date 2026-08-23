@@ -101,32 +101,48 @@ items_p = mem_mod.recall(conn, "跑通")
 check("16 个人区召回", len(items_p) >= 1,
       str([i["content"][:10] for i in items_p]))
 
+# ---- 列出记忆 ----
+rows = mem_mod.list_memories(conn, status="active")
+check("17 列出正式记忆", len(rows) >= 3, f"{len(rows)} 条")
+rows_p = mem_mod.list_memories(conn, project_id=pid, level="decision",
+                               status="active")
+check("18 按项目/等级过滤",
+      len(rows_p) >= 1 and all(r["level"] == "decision" for r in rows_p))
+pend_rows = mem_mod.list_memories(conn, status="pending")
+check("19 草稿也能列出", all(r["status"] == "pending" for r in pend_rows))
+
 # ---- CLI 冒烟 ----
 import contextlib
 import io
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cli.main(["init", "--db", dbp])
-check("17 CLI init", "数据库已初始化" in buf.getvalue())
+check("20 CLI init", "数据库已初始化" in buf.getvalue())
 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cli.main(["proj", "list", "--db", dbp])
-check("18 CLI proj list", "demo" in buf.getvalue())
+check("21 CLI proj list", "demo" in buf.getvalue())
 
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cli.main(["recall", "FastAPI", "--db", dbp])
-check("19 CLI recall", "FastAPI" in buf.getvalue())
+check("22 CLI recall", "FastAPI" in buf.getvalue())
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["memories", "--db", dbp, "--limit", "5"])
+check("23 CLI memories", "FastAPI" in buf.getvalue())
 
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app
     app = create_app(dbp)
     routes = {r.path for r in app.routes}
-    check("20 Web 路由", "/api/ask" in routes and "/api/supervise" in routes)
+    check("24 Web 路由", "/api/ask" in routes and "/api/supervise" in routes
+          and "/api/memories" in routes)
 except ImportError:
-    print("SKIP 20 Web (fastapi 未安装, 装依赖后自动启用)")
+    print("SKIP 24 Web (fastapi 未安装, 装依赖后自动启用)")
 
 print()
 if fails:

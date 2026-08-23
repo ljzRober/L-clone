@@ -72,6 +72,34 @@ def pending_memories(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     ).fetchall()
 
 
+def list_memories(conn: sqlite3.Connection,
+                  project_id: Optional[int] = None,
+                  level: Optional[str] = None,
+                  status: Optional[str] = "active",
+                  limit: int = 20) -> List[sqlite3.Row]:
+    """列出记忆 (按时间倒序), 支持按项目/等级/状态过滤。"""
+    q = (
+        "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.status,"
+        " m.source_type, m.source_ref, m.created_at,"
+        " p.name AS project_name"
+        " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
+        " WHERE 1=1"
+    )
+    params: list = []
+    if project_id is not None:
+        q += " AND m.project_id=?"
+        params.append(project_id)
+    if level:
+        q += " AND m.level=?"
+        params.append(level)
+    if status:
+        q += " AND m.status=?"
+        params.append(status)
+    q += " ORDER BY m.id DESC LIMIT ?"
+    params.append(limit)
+    return conn.execute(q, params).fetchall()
+
+
 def review(conn: sqlite3.Connection, memory_id: int, action: str,
            new_content: Optional[str] = None) -> None:
     """B 确认关卡: keep | edit | delete。"""
