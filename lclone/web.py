@@ -145,6 +145,13 @@ HTML = r"""<!doctype html>
 
   <div id="p-mem" class="panel">
     <div class="card">
+      <h3>记录一段对话（自动提炼决策，进待确认）</h3>
+      <textarea id="cap-input" placeholder="把与 Claude/AI 的对话内容粘到这里，大脑会提炼出决策草稿…"></textarea>
+      <button class="act" onclick="capture()">提炼为草稿</button>
+      <div id="cap-out" class="muted"></div>
+    </div>
+    <div class="card">
+      <h3>主动记忆（你说算，直接生效）</h3>
       <div class="row">
         <input id="mem-content" class="grow" placeholder="要记住的内容（主动记忆，直接生效）">
         <select id="mem-level" style="width:120px">
@@ -204,6 +211,7 @@ const API = {
   projects: async () => (await fetch('/api/projects')).json(),
   ask: async body => (await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   remember: async body => (await fetch('/api/remember', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  capture: async body => (await fetch('/api/capture', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   recall: async body => (await fetch('/api/recall', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   supervise: async body => (await fetch('/api/supervise', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   pending: async () => (await fetch('/api/pending')).json(),
@@ -248,6 +256,21 @@ async function ask() {
       ref.textContent = '召回: ' + r.recalls.map(x => x.content.slice(0,40)).join(' | ');
       $('chat').appendChild(ref);
     }
+  } catch(e) { out.textContent = '错误: ' + e; }
+}
+async function capture() {
+  const text = $('cap-input').value.trim(); if (!text) return;
+  const body = { text };
+  if ($('mem-proj').value) body.project_id = Number($('mem-proj').value);
+  const out = $('cap-out');
+  out.textContent = '提炼中…';
+  try {
+    const r = await API.capture(body);
+    $('cap-input').value = '';
+    out.textContent = r.ids.length
+      ? '已生成 ' + r.ids.length + ' 条决策草稿，请到「待确认」页签确认'
+      : '未提炼出确定的决策（内容里可能没有结论）';
+    await loadPending();
   } catch(e) { out.textContent = '错误: ' + e; }
 }
 async function remember() {

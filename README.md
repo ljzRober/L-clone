@@ -122,14 +122,49 @@ python -m venv .venv
 
 **第 3 步 — 以后部署到服务器**(见第七节): `docker compose up -d`
 
-### 2. 完整自测(无需 API Key)
+### 2. 记录与 Claude/AI 的对话(实战例子)
+
+假设你用 Claude 讨论了一个小工具:
+
+> **你**: 我想做个记录健身数据的工具
+> **Claude**: 建议用 Python + SQLite, 每周自动汇总, 先跑通再优化
+> **你**: 好, 就按这个来, 下月 1 号上线
+
+**方式一: 把对话内容粘给大脑, 自动提炼决策**(推荐, 大脑只记"确定的结论", 不记闲聊)
+
+```powershell
+lclone capture "我想做个健身记录工具。Claude 建议: 用 Python + SQLite, 每周自动汇总, 先跑通再优化。我同意, 定于下月 1 号上线。" --title "健身工具需求讨论"
+# 大脑的 LLM 提炼出决策草稿, 进入待确认区:
+#   [pending] 采用 Python + SQLite 实现健身记录工具
+#   [pending] 上线日期定为下月 1 号
+#   [pending] 原则: 先跑通再优化
+lclone review --all keep          # 你过目后确认, 转正式记忆
+lclone recall "健身工具"           # 下次直接想起
+```
+
+**方式二: 让 Claude 自己总结, 再交给大脑**(省 token)
+
+对话结束时让 Claude 输出一行结论, 复制后:
+
+```powershell
+lclone remember "健身工具: Python+SQLite, 每周汇总, 下月1号上线"   # C 主动触发, 直接生效
+```
+
+**方式三: Web 面板**(浏览器操作): 打开 Web 面板 → 「记忆」页签 →
+把对话内容粘进"记录一段对话" → 「待确认」页签点保留。
+
+> 原理: `capture` 用 LLM 从原始对话里提炼"确定的决策"(B 确认制),
+> 避免把闲聊也记进去; `remember` 是你亲口说的, 直接生效(C 主动触发)。
+> v1 接入 MCP 后, Claude Code 可自动调用这两个接口, 无需复制粘贴。
+
+### 3. 完整自测(无需 API Key)
 
 ```bash
 cd L-clone
 python tests/test_offline.py          # 全量自测 (20 项)
 ```
 
-### 3. 模型 API 配置参考
+### 4. 模型 API 配置参考
 
 `BRAIN_BASE_URL` 可切任意 OpenAI 兼容服务:
 
