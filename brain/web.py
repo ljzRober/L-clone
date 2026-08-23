@@ -13,6 +13,57 @@ from . import memory as mem_mod
 from . import projects as proj_mod
 from . import supervise as sup_mod
 
+# 注意: 模型必须定义在模块级。若定义在 create_app 内部, 配合
+# `from __future__ import annotations` 会产生未解析的 ForwardRef, 导致
+# FastAPI 无法生成 schema、请求体会被误判为 query 参数。
+
+from pydantic import BaseModel
+from typing import Optional
+
+
+class AskIn(BaseModel):
+    question: str
+    project_id: Optional[int] = None
+    thread_id: Optional[str] = None
+    k: int = 5
+    with_specs: bool = True
+
+
+class RememberIn(BaseModel):
+    content: str
+    level: str = "decision"
+    project_id: Optional[int] = None
+    reason: str = ""
+
+
+class CaptureIn(BaseModel):
+    text: str
+    title: str = ""
+    project_id: Optional[int] = None
+
+
+class ReviewIn(BaseModel):
+    id: int
+    action: str = "keep"
+    content: Optional[str] = None
+
+
+class RecallIn(BaseModel):
+    query: str
+    project_id: Optional[int] = None
+    k: int = 5
+
+
+class SuperviseIn(BaseModel):
+    proposal: str
+    project_id: int
+
+
+class ProjectIn(BaseModel):
+    name: str
+    path: str = ""
+    charter: str = ""
+
 HTML = r"""<!doctype html>
 <html lang="zh">
 <head>
@@ -280,66 +331,36 @@ $('ask-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.sh
 
 
 def create_app(db_path: Optional[str] = None):
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse
-    from pydantic import BaseModel, Field
 
-    conn: sqlite3.Connection = db_mod.init(db_path)
+    # 启动时确保 schema 存在; 每个请求使用独立连接 (FastAPI 同步接口跑在线程池)
+    db_mod.init(db_path)
+
+    def get_db():
+        conn = db_mod.init(db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     app = FastAPI(title="外置大脑", version="0.1.0")
-
-    class AskIn(BaseModel):
-        question: str
-        project_id: Optional[int] = None
-        thread_id: Optional[str] = None
-        k: int = 5
-        with_specs: bool = True
-
-    class RememberIn(BaseModel):
-        content: str
-        level: str = "decision"
-        project_id: Optional[int] = None
-        reason: str = ""
-
-    class CaptureIn(BaseModel):
-        text: str
-        title: str = ""
-        project_id: Optional[int] = None
-
-    class ReviewIn(BaseModel):
-        id: int
-        action: str = "keep"
-        content: Optional[str] = None
-
-    class RecallIn(BaseModel):
-        query: str
-        project_id: Optional[int] = None
-        k: int = 5
-
-    class SuperviseIn(BaseModel):
-        proposal: str
-        project_id: int
-
-    class ProjectIn(BaseModel):
-        name: str
-        path: str = ""
-        charter: str = ""
 
     @app.get("/", response_class=HTMLResponse)
     def index():
         return HTML
 
     @app.get("/api/health")
-    def health():
+    def health(conn: sqlite3.Connection = Depends(get_db)):
         return {"ok": True, "backend": llm.backend(),
                 "db": conn.execute("select sqlite_version()").fetchone()[0]}
 
     @app.get("/api/projects")
-    def projects():
+    def projects(conn: sqlite3.Connection = Depends(get_db)):
         return {"items": [dict(r) for r in proj_mod.list_projects(conn)]}
 
     @app.post("/api/projects")
-    def add_project(body: ProjectIn):
+    def add_project(body: ProjectIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
             pid = proj_mod.add_project(conn, body.name, body.path, body.charter)
         except sqlite3.IntegrityError:
@@ -347,31 +368,31 @@ def create_app(db_path: Optional[str] = None):
         return {"id": pid}
 
     @app.post("/api/projects/{pid}/sync")
-    def sync_project(pid: int):
+    def sync_project(pid: int, conn: sqlite3.Connection = Depends(get_db)):
         try:
             return proj_mod.sync_project(conn, pid)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
     @app.post("/api/remember")
-    def remember(body: RememberIn):
+    def remember(body: RememberIn, conn: sqlite3.Connection = Depends(get_db)):
         pid = body.project_id
         mid = mem_mod.remember(conn, body.content, level=body.level,
                                project_id=pid, reason=body.reason)
         return {"id": mid}
 
     @app.post("/api/capture")
-    def capture(body: CaptureIn):
+    def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_db)):
         ids = mem_mod.capture(conn, body.text, project_id=body.project_id,
                               title=body.title)
         return {"ids": ids}
 
     @app.get("/api/pending")
-    def pending():
+    def pending(conn: sqlite3.Connection = Depends(get_db)):
         return {"items": [dict(r) for r in mem_mod.pending_memories(conn)]}
 
     @app.post("/api/review")
-    def review(body: ReviewIn):
+    def review(body: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
             mem_mod.review(conn, body.id, body.action, new_content=body.content)
         except ValueError as e:
@@ -379,20 +400,20 @@ def create_app(db_path: Optional[str] = None):
         return {"ok": True}
 
     @app.post("/api/recall")
-    def recall(body: RecallIn):
+    def recall(body: RecallIn, conn: sqlite3.Connection = Depends(get_db)):
         items = mem_mod.recall(conn, body.query, k=body.k,
                                project_id=body.project_id)
         return {"items": items}
 
     @app.post("/api/supervise")
-    def supervise(body: SuperviseIn):
+    def supervise(body: SuperviseIn, conn: sqlite3.Connection = Depends(get_db)):
         res = sup_mod.supervise(conn, body.proposal, project_id=body.project_id)
         if not res["ok"]:
             raise HTTPException(400, res["error"])
         return res
 
     @app.post("/api/ask")
-    def ask(body: AskIn):
+    def ask(body: AskIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
             res = chat_mod.ask(conn, body.question, project_id=body.project_id,
                                thread_id=body.thread_id, k=body.k,
@@ -402,7 +423,7 @@ def create_app(db_path: Optional[str] = None):
         return res
 
     @app.get("/api/threads/{tid}/messages")
-    def thread_messages(tid: str):
+    def thread_messages(tid: str, conn: sqlite3.Connection = Depends(get_db)):
         rows = conn.execute(
             "SELECT role, content, created_at FROM messages"
             " WHERE thread_id=? ORDER BY id", (tid,)

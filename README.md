@@ -85,8 +85,14 @@ python -m brain ask "我们这个项目定了什么?" --project demo
 
 ```bash
 cp .env.example .env    # 填写 OPENAI_API_KEY / BRAIN_BASE_URL / 模型名
-pip install -r requirements.txt
-python -m brain init
+
+# 建议在项目虚拟环境中安装 (避免系统级权限问题)
+python -m venv .venv
+# Windows: .venv\Scripts\pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
+# 之后用虚拟环境的 python 运行:
+# Windows: .venv\Scripts\python.exe -m brain init
+.venv/bin/python -m brain init
 ```
 
 `BRAIN_BASE_URL` 可切任意 OpenAI 兼容服务:
@@ -105,7 +111,7 @@ python -m brain init
 
 ```
 brain init                           初始化数据库
-brain proj add <name> --path <路径> [--charter "大方向"]
+brain proj add <name> [仓库路径] [--charter "大方向"]
 brain proj list / sync <id|name> / rm / show
 brain log "一句话摘要" [--project id]          # L0 流水
 brain remember "内容" [--level decision|milestone|note] [--project id]

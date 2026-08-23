@@ -40,6 +40,7 @@ def cmd_init(args) -> None:
 
 def cmd_proj(args) -> None:
     conn = _conn(args)
+    ref = args.project or args.name  # sync/rm/show 可用位置参数或 --project
     if args.action == "add":
         pid = proj_mod.add_project(conn, args.name, args.path, args.charter)
         print(f"项目已注册: id={pid} name={args.name}")
@@ -51,15 +52,15 @@ def cmd_proj(args) -> None:
             print(f"#{r['id']} {r['name']}  charter={r['charter'] or '-'}  "
                   f"记忆={r['mem_count']} spec索引={r['spec_count']}  path={r['path']}")
     elif args.action == "sync":
-        pid = _resolve_project(conn, args.project)
+        pid = _resolve_project(conn, ref)
         res = proj_mod.sync_project(conn, pid)
         print(f"同步完成: 新增 {res['added']}, 更新 {res['updated']}, 未变 {res['unchanged']}")
     elif args.action == "rm":
-        pid = _resolve_project(conn, args.project)
+        pid = _resolve_project(conn, ref)
         proj_mod.remove_project(conn, pid)
         print(f"已删除项目 #{pid} (其记忆仍在, project 字段清空)")
     elif args.action == "show":
-        pid = _resolve_project(conn, args.project)
+        pid = _resolve_project(conn, ref)
         print(proj_mod.project_context(conn, pid) or "(空)")
 
 
@@ -182,8 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("proj", parents=[parent], help="项目管理")
     sp.add_argument("action", choices=["add", "list", "sync", "rm", "show"])
-    sp.add_argument("name", nargs="?", help="项目名 (add 用)")
-    sp.add_argument("--path", default="", help="项目仓库路径 (add/sync 用)")
+    sp.add_argument("name", nargs="?", help="项目名 (add/sync/rm/show 用)")
+    sp.add_argument("path", nargs="?", default="", help="项目仓库路径 (add 用)")
     sp.add_argument("--charter", default="", help="项目大方向一句话 (add 用)")
     sp.add_argument("--project", default=None, help="项目 id 或名称 (sync/rm/show 用)")
     sp.set_defaults(func=cmd_proj)

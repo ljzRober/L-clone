@@ -1,4 +1,4 @@
-# 运行时依赖 (pip install -r requirements.txt)
-openai>=1.30.0      # OpenAI 兼容 API (OpenAI / DeepSeek / 硅基流动 / 智谱...)
-fastapi>=0.110.0    # Web 面板
-uvicorn>=0.29.0     # Web 服务器
+# Runtime dependencies (pip install -r requirements.txt)
+openai>=1.30.0      # OpenAI-compatible API (OpenAI / DeepSeek / SiliconFlow / Zhipu ...)
+fastapi>=0.110.0    # Web panel
+uvicorn>=0.29.0     # Web server
