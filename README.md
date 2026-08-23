@@ -61,39 +61,75 @@ B 自动捕获 (brain capture "…")    -> LLM 提炼决策 -> pending 草稿区
         │          BRAIN_LLM=dummy 可离线自测
 ```
 
-## 三、快速开始
+## 三、环境要求与依赖
 
-### 1. 离线演示(不需要 API Key)
+| 项 | 要求 | 说明 |
+|---|---|---|
+| **Python** | **>= 3.10** | 开发验证环境: Python 3.10.6 (Windows 10); **无需 GPU** |
+| 操作系统 | Windows / Linux / macOS | |
+| 第三方依赖 | `openai` / `fastapi` / `uvicorn` | 仅"模型 API"和"Web 面板"需要; **离线 CLI 零第三方依赖** |
+| 数据库 | SQLite(内置, 无需安装) | 用 Python 自带 sqlite3; 版本 >= 3.34 自动启用 trigram 中文分词 |
+| 网络 | 装依赖需外网; 模型 API 需能访问 `BRAIN_BASE_URL` | 国内装依赖推荐清华镜像; API 可走 DeepSeek / 硅基流动 / 智谱 |
+
+### 依赖清单 (requirements.txt)
+
+| 包 | 版本要求 | 用途 |
+|---|---|---|
+| `openai` | >= 1.30.0 | OpenAI 兼容 API 客户端(OpenAI / DeepSeek / 硅基流动 / 智谱 通用) |
+| `fastapi` | >= 0.110.0 | Web 面板后端 |
+| `uvicorn` | >= 0.29.0 | Web 服务器 |
+
+**离线模式(`BRAIN_LLM=dummy`)只依赖 Python 标准库**: 不装任何第三方包也能完整体验
+init / proj / remember / capture / review / recall / supervise / ask(输出为占位内容)。
+
+### 快速安装依赖(国内网络推荐清华镜像)
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+.venv/bin/pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+## 四、快速开始
+
+### 1. 本地实战(Windows PowerShell 为例)
+
+**第 1 步 — 离线模式先跑通**(无需 API Key、无需装依赖, 3 分钟体验全功能):
+
+```powershell
+cd C:\customFile\github\brain
+$env:BRAIN_LLM = "dummy"        # 离线模式
+python -m brain init
+python -m brain proj add demo examples/demo_project --charter "示例项目"
+python -m brain proj sync demo          # 扫描并索引项目里的 spec 文件
+python -m brain remember "后端用 FastAPI, 边界: 单用户" --project demo
+python -m brain capture "讨论后确定: 6月1日上线" --project demo
+python -m brain review --all keep    # 批量确认草稿 (或交互式: brain review)
+python -m brain recall "FastAPI" --project demo
+python -m brain supervise "把数据库换成 PostgreSQL" --project demo
+python -m brain ask "我们项目定了什么?" --project demo
+```
+
+**第 2 步 — 接入真实模型 API**(需要一个 OpenAI 兼容服务的 Key):
+
+```powershell
+Copy-Item .env.example .env     # 编辑 .env: 填 OPENAI_API_KEY / BRAIN_BASE_URL / 模型名
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt        # 国内可加 -i 清华镜像
+.\.venv\Scripts\python.exe -m brain web                # 启动 Web 面板
+# 浏览器打开 http://127.0.0.1:8000
+```
+
+**第 3 步 — 以后部署到服务器**(见第七节): `docker compose up -d`
+
+### 2. 完整自测(无需 API Key)
 
 ```bash
 cd brain
-python tests/test_offline.py          # 全量自测
-
-export BRAIN_LLM=dummy                # Windows: set BRAIN_LLM=dummy
-python -m brain init
-python -m brain proj add demo examples/demo_project --charter "示例项目"
-python -m brain proj sync demo
-python -m brain remember "后端用 FastAPI, 边界: 单用户"
-python -m brain capture "讨论后确定: 6月1日上线; 部署用 Docker"
-python -m brain review                # 确认草稿
-python -m brain recall "FastAPI"
-python -m brain supervise "把数据库换成 PostgreSQL" --project demo
-python -m brain ask "我们这个项目定了什么?" --project demo
+python tests/test_offline.py          # 全量自测 (20 项)
 ```
 
-### 2. 接入真实模型 API
-
-```bash
-cp .env.example .env    # 填写 OPENAI_API_KEY / BRAIN_BASE_URL / 模型名
-
-# 建议在项目虚拟环境中安装 (避免系统级权限问题)
-python -m venv .venv
-# Windows: .venv\Scripts\pip install -r requirements.txt
-.venv/bin/pip install -r requirements.txt
-# 之后用虚拟环境的 python 运行:
-# Windows: .venv\Scripts\python.exe -m brain init
-.venv/bin/python -m brain init
-```
+### 3. 模型 API 配置参考
 
 `BRAIN_BASE_URL` 可切任意 OpenAI 兼容服务:
 
@@ -107,7 +143,7 @@ python -m venv .venv
 > 若 embed 模型不可用, 可把 `BRAIN_EMBED_MODEL` 指到任一兼容服务;
 > 注意: 问答时检索到的记忆片段会随请求发给模型厂商(隐私边界)。
 
-## 四、CLI 参考
+## 五、CLI 参考
 
 ```
 brain init                           初始化数据库
@@ -116,7 +152,7 @@ brain proj list / sync <id|name> / rm / show
 brain log "一句话摘要" [--project id]          # L0 流水
 brain remember "内容" [--level decision|milestone|note] [--project id]
 brain capture "本次工作内容" [--project id]     # B: 进草稿
-brain review [--id N --action keep|edit|delete --edit-new "…"]
+brain review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
 brain recall "查询" [--project id] [--k 5]
 brain supervise "新提议" --project id           # 规范环
 brain ask "问题" [--project id] [--thread id]  # 回顾环
@@ -125,7 +161,7 @@ brain web [--host 0.0.0.0] [--port 8000]
 
 所有子命令可用 `--db <路径>` 指定数据库(前后均可)。
 
-## 五、Web 面板
+## 六、Web 面板
 
 ```bash
 python -m brain web
@@ -134,7 +170,7 @@ python -m brain web
 
 含问答、主动记忆、回顾检索、项目注册与 spec 同步、边界监督、草稿确认。
 
-## 六、部署到服务器(记忆在服务器, 模型走 API)
+## 七、部署到服务器(记忆在服务器, 模型走 API)
 
 ```bash
 # 服务器上:
@@ -156,7 +192,7 @@ brain.yourdomain.com {
 建议: 密钥登录、防火墙只放行 22/80/443、定期备份 `data/brain.db`
 (你的大脑数据比服务器值钱)。
 
-## 七、路线图
+## 八、路线图
 
 - [ ] v1: MCP server(让 Claude Code 等任意 AI 工具读写大脑)
 - [ ] v1: 会话自动抽取(claude-mem 式, 从对话流自动沉淀, 走 B 确认制)
@@ -164,7 +200,7 @@ brain.yourdomain.com {
 - [ ] v1: 定时学习任务(每日自动汇总项目状态)
 - [ ] v1: 记忆冲突检测与档案刷新
 
-## 八、与生态的关系
+## 九、与生态的关系
 
 - 存储设计借鉴 **GBrain** 思想(pages/时间线 → 我们的 sessions/版本化记忆)
 - 竖向分层兼容 **OpenSpec**(`.specs/`)与 **ADR**(`doc/adr/`)约定, 但格式无关

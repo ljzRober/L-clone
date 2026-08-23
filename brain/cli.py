@@ -92,6 +92,15 @@ def cmd_capture(args) -> None:
 
 def cmd_review(args) -> None:
     conn = _conn(args)
+    if args.all:
+        pending = mem_mod.pending_memories(conn)
+        action = (args.all).lower()
+        if action not in ("keep", "delete"):
+            raise SystemExit("--all 只支持 keep / delete")
+        for m in pending:
+            mem_mod.review(conn, m["id"], action)
+        print(f"已对 {len(pending)} 条草稿执行 {action}")
+        return
     if args.id is not None:
         mid = args.id
         action = (args.action or "keep").lower()
@@ -213,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--id", type=int, default=None)
     sv.add_argument("--action", choices=["keep", "edit", "delete"], default="keep")
     sv.add_argument("--edit-new", default=None)
+    sv.add_argument("--all", choices=["keep", "delete"], default=None,
+                    help="对全部草稿批量执行 keep/delete")
     sv.set_defaults(func=cmd_review)
 
     sr2 = sub.add_parser("recall", parents=[parent], help="回顾检索 (回顾环)")
