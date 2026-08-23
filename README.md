@@ -1,5 +1,7 @@
 # 🧠 L-clone — 外置大脑 (External Brain)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **L-clone** 是一个个人外置大脑:记录你做过什么,并在你规划未来时调用记忆、监督方案的边界条件。
 
 ## 它做了什么
@@ -97,3 +99,7 @@ python tests/test_offline.py    # 20 项离线自测
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 服务器部署(Docker + Caddy + 安全) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图与设计取舍记录 |
 | [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) | 与 GBrain / OpenSpec / ADR / claude-mem / Mem0 的关系 |
+
+## 开源协议
+
+[LICENSE](LICENSE) · **MIT License** · Copyright (c) 2026 ljzRober
