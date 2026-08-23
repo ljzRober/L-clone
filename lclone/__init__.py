@@ -1,4 +1,4 @@
-"""brain - 外置大脑 (External Brain) v0.
+"""L-clone (lclone) - 外置大脑 (External Brain) v0.
 
 分层记忆 + 回顾环 + 规范环的个人外置大脑。
 横向分层: 会话流水(L0) / 决策与记忆(L1) / 项目规划(L2)

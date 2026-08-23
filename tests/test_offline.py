@@ -14,12 +14,12 @@ os.environ.pop("OPENAI_API_KEY", None)
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import chat as chat_mod
-from brain import cli
-from brain import db as db_mod
-from brain import memory as mem_mod
-from brain import projects as proj_mod
-from brain import supervise as sup_mod
+from lclone import chat as chat_mod
+from lclone import cli
+from lclone import db as db_mod
+from lclone import memory as mem_mod
+from lclone import projects as proj_mod
+from lclone import supervise as sup_mod
 
 fails = []
 
@@ -121,7 +121,7 @@ check("19 CLI recall", "FastAPI" in buf.getvalue())
 
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
-    from brain.web import create_app
+    from lclone.web import create_app
     app = create_app(dbp)
     routes = {r.path for r in app.routes}
     check("20 Web 路由", "/api/ask" in routes and "/api/supervise" in routes)

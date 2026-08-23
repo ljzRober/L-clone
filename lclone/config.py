@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 DEFAULTS = {
-    "BRAIN_DB_PATH": "brain.db",
+    "BRAIN_DB_PATH": "lclone.db",
     "BRAIN_LLM": "api",                # "api" | "dummy" (离线测试)
     "OPENAI_API_KEY": "",
     "BRAIN_BASE_URL": "https://api.openai.com/v1",  # 可换 DeepSeek/硅基流动/智谱等
@@ -60,4 +60,4 @@ def get_float(key: str, default: float) -> float:
 
 
 def db_path() -> str:
-    return get("BRAIN_DB_PATH") or "brain.db"
+    return get("BRAIN_DB_PATH") or "lclone.db"

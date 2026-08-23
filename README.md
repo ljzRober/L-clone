@@ -1,4 +1,4 @@
-# 🧠 brain — 外置大脑 (External Brain)
+# 🧠 L-clone — 外置大脑 (External Brain)
 
 一个**分层记忆 + 回顾环 + 规范环**的个人外置大脑:记录你做过什么,并在你
 规划未来时调用记忆、监督方案的边界条件。
@@ -28,8 +28,8 @@ L2 规划层   specs_index 项目内 spec 文件的索引 (权威内容在仓库
 ### 记忆写入策略(B + C)
 
 ```
-C 主动触发 (brain remember "…")   -> 直接生效, 你说算
-B 自动捕获 (brain capture "…")    -> LLM 提炼决策 -> pending 草稿区
+C 主动触发 (lclone remember "…")   -> 直接生效, 你说算
+B 自动捕获 (lclone capture "…")    -> LLM 提炼决策 -> pending 草稿区
                                       -> 你 review 确认/编辑/删除 -> 生效
 ```
 
@@ -46,7 +46,7 @@ B 自动捕获 (brain capture "…")    -> LLM 提炼决策 -> pending 草稿区
 
 ```
 ┌─ 访问层 ─────────────────────────────┐
-│  CLI (brain …)   │  Web 面板 (FastAPI) │
+│  CLI (lclone …)   │  Web 面板 (FastAPI) │
 └──────────────┬──────────────────────┘
                ▼
 ┌─ 核心逻辑 (纯函数, 与访问层解耦) ──────┐
@@ -97,17 +97,17 @@ python -m venv .venv
 **第 1 步 — 离线模式先跑通**(无需 API Key、无需装依赖, 3 分钟体验全功能):
 
 ```powershell
-cd C:\customFile\github\brain
+cd C:\customFile\github\L-clone
 $env:BRAIN_LLM = "dummy"        # 离线模式
-python -m brain init
-python -m brain proj add demo examples/demo_project --charter "示例项目"
-python -m brain proj sync demo          # 扫描并索引项目里的 spec 文件
-python -m brain remember "后端用 FastAPI, 边界: 单用户" --project demo
-python -m brain capture "讨论后确定: 6月1日上线" --project demo
-python -m brain review --all keep    # 批量确认草稿 (或交互式: brain review)
-python -m brain recall "FastAPI" --project demo
-python -m brain supervise "把数据库换成 PostgreSQL" --project demo
-python -m brain ask "我们项目定了什么?" --project demo
+python -m lclone init
+python -m lclone proj add demo examples/demo_project --charter "示例项目"
+python -m lclone proj sync demo          # 扫描并索引项目里的 spec 文件
+python -m lclone remember "后端用 FastAPI, 边界: 单用户" --project demo
+python -m lclone capture "讨论后确定: 6月1日上线" --project demo
+python -m lclone review --all keep    # 批量确认草稿 (或交互式: lclone review)
+python -m lclone recall "FastAPI" --project demo
+python -m lclone supervise "把数据库换成 PostgreSQL" --project demo
+python -m lclone ask "我们项目定了什么?" --project demo
 ```
 
 **第 2 步 — 接入真实模型 API**(需要一个 OpenAI 兼容服务的 Key):
@@ -116,7 +116,7 @@ python -m brain ask "我们项目定了什么?" --project demo
 Copy-Item .env.example .env     # 编辑 .env: 填 OPENAI_API_KEY / BRAIN_BASE_URL / 模型名
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt        # 国内可加 -i 清华镜像
-.\.venv\Scripts\python.exe -m brain web                # 启动 Web 面板
+.\.venv\Scripts\python.exe -m lclone web                # 启动 Web 面板
 # 浏览器打开 http://127.0.0.1:8000
 ```
 
@@ -125,7 +125,7 @@ python -m venv .venv
 ### 2. 完整自测(无需 API Key)
 
 ```bash
-cd brain
+cd L-clone
 python tests/test_offline.py          # 全量自测 (20 项)
 ```
 
@@ -146,17 +146,17 @@ python tests/test_offline.py          # 全量自测 (20 项)
 ## 五、CLI 参考
 
 ```
-brain init                           初始化数据库
-brain proj add <name> [仓库路径] [--charter "大方向"]
-brain proj list / sync <id|name> / rm / show
-brain log "一句话摘要" [--project id]          # L0 流水
-brain remember "内容" [--level decision|milestone|note] [--project id]
-brain capture "本次工作内容" [--project id]     # B: 进草稿
-brain review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
-brain recall "查询" [--project id] [--k 5]
-brain supervise "新提议" --project id           # 规范环
-brain ask "问题" [--project id] [--thread id]  # 回顾环
-brain web [--host 0.0.0.0] [--port 8000]
+lclone init                           初始化数据库
+lclone proj add <name> [仓库路径] [--charter "大方向"]
+lclone proj list / sync <id|name> / rm / show
+lclone log "一句话摘要" [--project id]          # L0 流水
+lclone remember "内容" [--level decision|milestone|note] [--project id]
+lclone capture "本次工作内容" [--project id]     # B: 进草稿
+lclone review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
+lclone recall "查询" [--project id] [--k 5]
+lclone supervise "新提议" --project id           # 规范环
+lclone ask "问题" [--project id] [--thread id]  # 回顾环
+lclone web [--host 0.0.0.0] [--port 8000]
 ```
 
 所有子命令可用 `--db <路径>` 指定数据库(前后均可)。
@@ -164,7 +164,7 @@ brain web [--host 0.0.0.0] [--port 8000]
 ## 六、Web 面板
 
 ```bash
-python -m brain web
+python -m lclone web
 # 浏览器打开 http://127.0.0.1:8000
 ```
 
@@ -174,7 +174,7 @@ python -m brain web
 
 ```bash
 # 服务器上:
-git clone <你的仓库> && cd brain
+git clone <你的仓库> && cd L-clone
 cp .env.example .env        # 填写 API Key
 docker compose up -d
 # 访问 http://服务器IP:8000
@@ -184,12 +184,12 @@ docker compose up -d
 
 ```
 # Caddyfile
-brain.yourdomain.com {
+lclone.yourdomain.com {
     reverse_proxy 127.0.0.1:8000
 }
 ```
 
-建议: 密钥登录、防火墙只放行 22/80/443、定期备份 `data/brain.db`
+建议: 密钥登录、防火墙只放行 22/80/443、定期备份 `data/lclone.db`
 (你的大脑数据比服务器值钱)。
 
 ## 八、路线图

@@ -30,7 +30,7 @@ def _resolve_project(conn, ref) -> int | None:
     ).fetchone()
     if row:
         return row["id"]
-    raise SystemExit(f"项目不存在: {ref} (用 brain proj list 查看)")
+    raise SystemExit(f"项目不存在: {ref} (用 lclone proj list 查看)")
 
 
 def cmd_init(args) -> None:
@@ -87,7 +87,7 @@ def cmd_capture(args) -> None:
         print("没有提炼出决策 (可能内容里没有确定的决策)")
     else:
         print(f"已生成 {len(ids)} 条决策草稿待确认: {ids}")
-        print("运行: brain review")
+        print("运行: lclone review")
 
 
 def cmd_review(args) -> None:
@@ -178,10 +178,10 @@ def cmd_web(args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--db", default=None,
-                        help="数据库路径 (默认 BRAIN_DB_PATH 或 brain.db)")
+                        help="数据库路径 (默认 BRAIN_DB_PATH 或 lclone.db)")
 
     p = argparse.ArgumentParser(
-        prog="brain",
+        prog="lclone",
         description="外置大脑 v0: 分层记忆 + 回顾环 + 规范环",
         parents=[parent],
     )

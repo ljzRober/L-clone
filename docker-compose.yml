@@ -1,13 +1,13 @@
-# 外置大脑 - Docker Compose 部署
+# L-clone - Docker Compose 部署
 # 用法: cp .env.example .env 并填写, 然后 docker compose up -d
 services:
-  brain:
+  lclone:
     build: .
-    container_name: brain
+    container_name: lclone
     restart: unless-stopped
     env_file: .env
     environment:
-      - BRAIN_DB_PATH=/data/brain.db
+      - BRAIN_DB_PATH=/data/lclone.db
     ports:
       - "8000:8000"
     volumes:

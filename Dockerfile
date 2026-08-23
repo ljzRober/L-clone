@@ -5,12 +5,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY brain ./brain
+COPY lclone ./lclone
 COPY .env.example ./.env.example
 
-ENV BRAIN_DB_PATH=/data/brain.db
+ENV BRAIN_DB_PATH=/data/lclone.db
 VOLUME /data
 
 EXPOSE 8000
 
-CMD ["python", "-c", "from brain.web import run; run()"]
+CMD ["python", "-c", "from lclone.web import run; run()"]
