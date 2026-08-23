@@ -1,0 +1,12 @@
+# 忽略敏感与临时文件
+.env
+*.db
+*.db-wal
+*.db-shm
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.DS_Store

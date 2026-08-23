@@ -1,0 +1,14 @@
+# 外置大脑 - Docker Compose 部署
+# 用法: cp .env.example .env 并填写, 然后 docker compose up -d
+services:
+  brain:
+    build: .
+    container_name: brain
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - BRAIN_DB_PATH=/data/brain.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data          # 记忆数据持久化在这里, 记得定期备份
