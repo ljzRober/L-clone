@@ -70,11 +70,14 @@ def add_project(conn: sqlite3.Connection, name: str, path: str = "",
 
 
 def list_projects(conn: sqlite3.Connection) -> List[sqlite3.Row]:
+    """列出项目 (已移除的墓碑项目不显示)。"""
     return conn.execute(
         "SELECT p.*,"
         " (SELECT COUNT(*) FROM memories m WHERE m.project_id=p.id) AS mem_count,"
         " (SELECT COUNT(*) FROM specs_index s WHERE s.project_id=p.id) AS spec_count"
-        " FROM projects p ORDER BY p.id"
+        " FROM projects p"
+        " LEFT JOIN project_removals pr ON pr.project_id = p.id"
+        " WHERE pr.project_id IS NULL ORDER BY p.id"
     ).fetchall()
 
 
@@ -82,9 +85,67 @@ def get_project(conn: sqlite3.Connection, project_id: int) -> Optional[sqlite3.R
     return conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
 
 
+def is_removed(conn: sqlite3.Connection, project_id: int) -> bool:
+    """读取时生命周期判定: 该项目是否已被移除 (墓碑登记)。"""
+    return conn.execute(
+        "SELECT 1 FROM project_removals WHERE project_id=?", (project_id,)
+    ).fetchone() is not None
+
+
 def remove_project(conn: sqlite3.Connection, project_id: int) -> None:
-    conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+    """移除项目 (墓碑式, 不删行、不加状态字段):
+    项目从列表消失、记忆停止加载, 但行与记忆都保留, 可 restore 复活;
+    是否真正删除记忆由用户通过 suggest 提示后自行决定。
+    """
+    row = conn.execute("SELECT id, name FROM projects WHERE id=?",
+                       (project_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    conn.execute(
+        "INSERT OR IGNORE INTO project_removals(project_id, name) VALUES (?,?)",
+        (row["id"], row["name"]),
+    )
     conn.commit()
+
+
+def restore_project(conn: sqlite3.Connection, project_id: int) -> None:
+    """复活被移除的项目: 从墓碑表除名, 记忆恢复加载。"""
+    row = conn.execute("SELECT id, name FROM projects WHERE id=?",
+                       (project_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    conn.execute("DELETE FROM project_removals WHERE project_id=?", (project_id,))
+    conn.commit()
+
+
+def detect_project_by_git(conn: sqlite3.Connection,
+                          cwd: Optional[str] = None) -> Optional[int]:
+    """项目归属判定 (git 优先): 取目录的 git 仓库根, 匹配已注册项目。
+
+    返回匹配的项目 id; 不在任何已注册项目的 git 仓库内则返回 None
+    (调用方决定落到全局层或询问用户)。
+    """
+    import subprocess
+    cwd = cwd or os.getcwd()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    repo = Path(proc.stdout.strip())
+    for p in list_projects(conn):
+        if not p["path"]:
+            continue
+        try:
+            if Path(os.path.expanduser(p["path"])).resolve() == repo.resolve():
+                return p["id"]
+        except OSError:
+            continue
+    return None
 
 
 def _walk_spec_files(root: Path) -> List[Path]:
@@ -111,6 +172,8 @@ def sync_project(conn: sqlite3.Connection, project_id: int) -> dict:
     proj = get_project(conn, project_id)
     if proj is None:
         raise ValueError(f"项目不存在: {project_id}")
+    if is_removed(conn, project_id):
+        raise ValueError(f"项目已移除: {project_id} (先 lclone proj restore)")
     root = Path(os.path.expanduser(proj["path"]))
     if not root.exists() or not root.is_dir():
         raise ValueError(f"项目路径不存在或不是目录: {root}")
@@ -159,6 +222,8 @@ def project_context(conn: sqlite3.Connection, project_id: int,
     proj = get_project(conn, project_id)
     if proj is None:
         return ""
+    if is_removed(conn, project_id):
+        return ""  # 已移除项目不再注入上下文 (生命周期规则)
     parts = []
     if proj["charter"]:
         parts.append(f"【项目方向】{proj['charter']}")

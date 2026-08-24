@@ -69,6 +69,31 @@ CREATE TABLE IF NOT EXISTS threads (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 记忆间链接: 内容里写 [[m:12]] 即建立指向 #12 的链接
+-- (召回时顺藤加载被链接的记忆; 跨项目/跨层级链接不受竖向切分限制)
+CREATE TABLE IF NOT EXISTS memory_links (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  target_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(source_id, target_id)
+);
+
+-- 召回日志: 记录每条记忆被召回的时间, 用于"长期未用"删除提示
+CREATE TABLE IF NOT EXISTS recall_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id  INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  recalled_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 项目墓碑: proj rm 不删行、不加状态字段, 只在此登记移除事件;
+-- 读取时(recall/ask/proj list)据此决定"该项目已死, 记忆不再加载"
+CREATE TABLE IF NOT EXISTS project_removals (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL DEFAULT '',
+  removed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   thread_id  TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -81,6 +106,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_proj ON memories(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_proj ON sessions(project_id);
 CREATE INDEX IF NOT EXISTS idx_specs_proj ON specs_index(project_id);
+CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
+CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
+CREATE INDEX IF NOT EXISTS idx_recall_log_mem ON recall_log(memory_id);
 """
 
 
@@ -115,10 +143,12 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
         "INSERT INTO memories_fts(rowid, content, reason) "
         "VALUES (new.id, new.content, new.reason); END"
     )
+    # 修复: FTS5 的 'delete' 特殊命令只适用于 external-content 表, 普通 FTS5
+    # 表删除行必须用常规 DELETE; 旧触发器会导致删除记忆时报 SQL logic error
+    conn.execute("DROP TRIGGER IF EXISTS memories_ad")
     conn.execute(
-        "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN "
-        "INSERT INTO memories_fts(memories_fts, rowid, content, reason) "
-        "VALUES ('delete', old.id, old.content, old.reason); END"
+        "CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN "
+        "DELETE FROM memories_fts WHERE rowid = old.id; END"
     )
     conn.commit()
     return conn

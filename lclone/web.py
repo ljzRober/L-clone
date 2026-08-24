@@ -1,4 +1,10 @@
-"""Web 面板: FastAPI + 单页 HTML。任何电脑浏览器打开即可访问大脑。"""
+"""Web 面板: FastAPI + 单页 HTML。任何电脑浏览器打开即可访问大脑。
+
+两个页面 (共享 CSS):
+  /     记忆工作台: 层级树 + 卡片流; 拖拽卡片到左侧层级节点 = 上升/下降;
+        右上角「+ 添加记忆」弹窗写入。所有记忆即 spec, 界面不做区分。
+  /ask  问答页: 带记忆聊天 + 边界监督, 与记忆管理完全分开。
+"""
 
 from __future__ import annotations
 
@@ -48,6 +54,10 @@ class ReviewIn(BaseModel):
     content: Optional[str] = None
 
 
+class DemoteIn(BaseModel):
+    project_id: int
+
+
 class RecallIn(BaseModel):
     query: str
     project_id: Optional[int] = None
@@ -64,178 +74,366 @@ class ProjectIn(BaseModel):
     path: str = ""
     charter: str = ""
 
-HTML = r"""<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>外置大脑</title>
-<style>
-  :root { --bg:#0f1115; --card:#171a21; --line:#2a2f3a; --fg:#e6e9ef;
-          --dim:#8b93a3; --acc:#4f8cff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
-  * { box-sizing:border-box; }
-  body { margin:0; font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
-         background:var(--bg); color:var(--fg); }
-  header { display:flex; align-items:center; gap:12px; padding:10px 16px;
-           border-bottom:1px solid var(--line); }
-  header h1 { font-size:16px; margin:0; }
-  header .tag { font-size:12px; color:var(--dim); }
-  nav { display:flex; gap:4px; padding:8px 16px; border-bottom:1px solid var(--line); }
-  nav button { background:transparent; color:var(--dim); border:1px solid transparent;
-               padding:6px 12px; border-radius:8px; cursor:pointer; font-size:13px; }
-  nav button.on { color:var(--fg); background:var(--card); border-color:var(--line); }
-  main { max-width:860px; margin:0 auto; padding:16px; }
-  .panel { display:none; }
-  .panel.on { display:block; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
-          padding:12px 14px; margin-bottom:12px; }
-  .card h3 { margin:0 0 8px; font-size:14px; }
-  .muted { color:var(--dim); font-size:12px; }
-  input, textarea, select { width:100%; background:#10131a; color:var(--fg);
-          border:1px solid var(--line); border-radius:8px; padding:8px 10px;
-          font-size:14px; font-family:inherit; margin-bottom:8px; }
-  textarea { min-height:64px; resize:vertical; }
-  button.act { background:var(--acc); color:#fff; border:0; border-radius:8px;
-          padding:8px 16px; cursor:pointer; font-size:14px; }
-  button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line);
-          border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }
-  #chat { height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;
-          padding:10px; }
-  .msg { max-width:80%; padding:8px 12px; border-radius:10px; white-space:pre-wrap;
-         font-size:14px; line-height:1.55; }
-  .msg.user { align-self:flex-end; background:var(--acc); color:#fff; }
-  .msg.assistant { align-self:flex-start; background:var(--card);
-                   border:1px solid var(--line); }
-  .mem { padding:6px 0; border-bottom:1px dashed var(--line); font-size:13px; }
-  .badge { display:inline-block; font-size:11px; border-radius:6px; padding:1px 6px;
-           margin-right:6px; }
-  .b-decision { background:#1d2b4a; color:#7fb0ff; }
-  .b-milestone { background:#2b1d4a; color:#c79bff; }
-  .b-note { background:#26303c; color:#9fb3c8; }
-  .b-pending { background:#3a2f14; color:#ffd479; }
-  .row { display:flex; gap:8px; align-items:center; }
-  .grow { flex:1; }
-</style>
-</head>
-<body>
+
+# ================================================================ 共享样式
+CSS = r"""
+:root {
+  --bg:#0b0f17; --surface:#111827; --card:#151d2e; --card2:#1a2337; --line:#243047;
+  --fg:#e7ebf4; --dim:#8b95a9; --acc:#e0b15c; --acc2:#5b8def;
+  --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+  --serif:Georgia,"Songti SC","Noto Serif SC","SimSun",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body { margin:0; font-family:var(--sans); background:var(--bg); color:var(--fg);
+       background-image:
+         radial-gradient(1100px 480px at 18% -8%, rgba(224,177,92,.06), transparent),
+         radial-gradient(900px 420px at 92% 0%, rgba(91,141,239,.07), transparent); }
+.app { display:flex; flex-direction:column; height:100vh; }
+header { display:flex; align-items:center; gap:14px; padding:14px 24px;
+         border-bottom:1px solid var(--line); flex:0 0 auto; background:rgba(11,15,23,.72); }
+.brand { font-family:var(--serif); font-size:20px; font-weight:600; letter-spacing:.06em; }
+.brand em { font-style:normal; color:var(--acc); }
+.tag { font-size:11px; color:var(--dim); font-family:var(--mono); }
+.sp { flex:1; }
+button { font-family:inherit; }
+.act { background:var(--acc); color:#241d08; border:0; border-radius:9px; padding:8px 16px;
+       cursor:pointer; font-size:13px; font-weight:600; }
+.act:hover { filter:brightness(1.08); }
+.ghost { background:transparent; color:var(--dim); border:1px solid var(--line); border-radius:8px;
+         padding:6px 12px; cursor:pointer; font-size:12px; }
+.ghost:hover { color:var(--fg); border-color:var(--acc); }
+a.navbtn { text-decoration:none; color:var(--dim); border:1px solid var(--line); border-radius:8px;
+           padding:6px 12px; font-size:12px; }
+a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
+
+/* ---- 记忆工作台 ---- */
+.shell { display:flex; flex:1 1 auto; min-height:0; }
+.sidebar { width:252px; flex:0 0 auto; border-right:1px solid var(--line); padding:14px 10px 26px;
+           overflow-y:auto; background:var(--surface); }
+.eyebrow { font-family:var(--mono); font-size:10px; color:var(--dim); letter-spacing:.16em;
+           text-transform:uppercase; margin:16px 8px 6px; }
+.eyebrow:first-child { margin-top:2px; }
+.layer { display:flex; align-items:center; gap:10px; width:100%; text-align:left; border:1px solid transparent;
+         background:transparent; color:var(--dim); border-radius:9px; padding:8px 10px; cursor:pointer;
+         font-size:13px; }
+.layer:hover { background:var(--card); color:var(--fg); }
+.layer.on { background:var(--card2); color:var(--fg); border-color:var(--line); }
+.layer.drop { border-color:var(--acc); background:var(--card); box-shadow:inset 0 0 0 1px var(--acc); }
+.rail { width:4px; height:16px; border-radius:2px; flex:0 0 auto; }
+.rail.global { background:var(--acc); }
+.rail.project { background:var(--acc2); }
+.layer .nm { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer .cnt { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
+.layer .cnt b { color:var(--fg); }
+#reg-form { display:none; padding:8px; }
+#reg-form.on { display:block; }
+#reg-form input { width:100%; background:#0d1424; color:var(--fg); border:1px solid var(--line);
+                  border-radius:8px; padding:7px 9px; font-size:12px; margin-bottom:6px; font-family:inherit; }
+.main { flex:1 1 auto; min-width:0; overflow-y:auto; padding:18px 24px 56px; }
+.sec-head { display:flex; align-items:baseline; gap:10px; margin-bottom:16px; }
+.sec-head h2 { margin:0; font-family:var(--serif); font-size:18px; font-weight:600; }
+.sec-head .sub { color:var(--dim); font-size:12px; font-family:var(--mono); }
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 14px;
+        display:flex; flex-direction:column; gap:8px; cursor:grab;
+        transition:border-color .15s, transform .15s; }
+.card:hover { border-color:#2e3b55; transform:translateY(-1px); }
+.card.dragging { opacity:.45; }
+.badge { display:inline-block; font-size:10px; border-radius:6px; padding:2px 7px; font-family:var(--mono); }
+.b-decision { background:#1f3a6b; color:#8fb3ff; }
+.b-milestone { background:#3a2a55; color:#c9a2ff; }
+.b-note { background:#26303f; color:#a9bdd6; }
+.b-global { background:#4a3a14; color:var(--acc); }
+.b-project { background:#1d2b4a; color:#7fb0ff; }
+.card .body { font-size:13px; line-height:1.6; color:var(--fg);
+              display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.lk { color:var(--acc); font-family:var(--mono); font-size:11px; }
+.card .meta { font-family:var(--mono); font-size:10px; color:var(--dim); }
+.card .ops { display:flex; gap:6px; align-items:center; margin-top:auto; }
+.empty { color:var(--dim); font-size:13px; padding:34px 12px; text-align:center;
+         border:1px dashed var(--line); border-radius:12px; }
+
+/* ---- 添加记忆弹窗 ---- */
+.modal-bg { display:none; position:fixed; inset:0; background:rgba(4,6,10,.62); backdrop-filter:blur(3px);
+            z-index:40; align-items:center; justify-content:center; }
+.modal-bg.on { display:flex; }
+.modal { width:min(520px,92vw); background:var(--surface); border:1px solid var(--line);
+         border-radius:14px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+.modal h3 { margin:0 0 14px; font-family:var(--serif); font-size:16px; font-weight:600; }
+.modal input, .modal textarea, .modal select { width:100%; background:#0d1424; color:var(--fg);
+         border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:13px;
+         margin-bottom:10px; font-family:inherit; }
+.modal textarea { min-height:96px; resize:vertical; }
+.row { display:flex; gap:8px; align-items:center; }
+
+/* ---- 问答页 ---- */
+.ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
+.ask-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.ask-card h3 { font-family:var(--serif); font-size:14px; margin:0 0 8px; font-weight:600; }
+#chat { height:44vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:8px 2px; }
+.msg { max-width:84%; padding:9px 13px; border-radius:12px; white-space:pre-wrap;
+       font-size:14px; line-height:1.6; }
+.msg.user { align-self:flex-end; background:var(--acc); color:#241d08; }
+.msg.assistant { align-self:flex-start; background:var(--card2); border:1px solid var(--line); }
+.ask-card textarea { width:100%; background:#0d1424; color:var(--fg); border:1px solid var(--line);
+        border-radius:8px; padding:9px 11px; font-size:13px; font-family:inherit; resize:vertical; min-height:56px; }
+.ask-card select { background:#0d1424; color:var(--fg); border:1px solid var(--line); border-radius:8px;
+        padding:7px 9px; font-size:13px; margin-bottom:8px; }
+.muted { color:var(--dim); font-size:12px; }
+pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line); border-radius:8px;
+          padding:10px 12px; font-size:12px; font-family:var(--mono); overflow-x:auto; }
+
+@media (max-width:760px) {
+  .shell { flex-direction:column; }
+  .sidebar { width:100%; border-right:0; border-bottom:1px solid var(--line);
+             display:flex; flex-wrap:wrap; gap:6px; padding:10px; }
+  .eyebrow { display:none; }
+  #tree { display:contents; }
+  .layer { width:auto; }
+  .main { padding:14px; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+"""
+
+
+# ================================================================ 记忆工作台页
+WORK_BODY = r"""
 <header>
-  <h1>🧠 外置大脑</h1>
+  <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
+  <span class="sp"></span>
+  <a class="navbtn" href="/ask">问答 →</a>
+  <button class="act" onclick="openAdd()">＋ 添加记忆</button>
 </header>
-<nav>
-  <button class="on" data-p="ask">问答</button>
-  <button data-p="mem">记忆</button>
-  <button data-p="proj">项目</button>
-  <button data-p="spec">监督</button>
-  <button data-p="pending">待确认</button>
-</nav>
-<main>
-  <div id="p-ask" class="panel on">
-    <div class="card">
-      <div class="row">
-        <select id="ask-proj" class="grow"><option value="">个人区</option></select>
-      </div>
-      <div id="chat"></div>
-      <div class="row">
-        <textarea id="ask-input" class="grow" placeholder="问我任何事，或描述你想做的事…"></textarea>
-        <button class="act" onclick="ask()">发送</button>
-      </div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="eyebrow">层级</div>
+    <div id="tree"></div>
+    <div class="eyebrow">整理</div>
+    <button class="layer" id="reg-toggle" onclick="toggleReg()">
+      <span class="rail" style="background:transparent"></span><span class="nm">＋ 注册项目</span>
+    </button>
+    <div id="reg-form">
+      <input id="pj-name" placeholder="项目名">
+      <input id="pj-path" placeholder="仓库路径（可选）">
+      <input id="pj-charter" placeholder="charter 一句话（可选）">
+      <button class="act" style="width:100%" onclick="addProject()">注册</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="sec-head">
+      <h2 id="sec-title">全局层</h2>
+      <span class="sub" id="sec-sub"></span>
+    </div>
+    <div class="cards" id="cards"></div>
+  </main>
+</div>
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3>添加记忆</h3>
+    <textarea id="mem-content" placeholder="要记住的内容（一句话决策 / 边界 / 记录）"></textarea>
+    <div class="row">
+      <select id="mem-level" style="width:130px">
+        <option value="decision">决策</option>
+        <option value="milestone">重要修改点</option>
+        <option value="note">记录</option>
+      </select>
+      <select id="mem-owner" style="flex:1"><option value="">全局层</option></select>
+    </div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="ghost" onclick="closeAdd()">取消</button>
+      <button class="act" onclick="addMemory()">记住</button>
     </div>
   </div>
+</div>
+"""
 
-  <div id="p-mem" class="panel">
-    <div class="card">
-      <h3>记录一段对话（自动提炼决策，进待确认）</h3>
-      <textarea id="cap-input" placeholder="把与 Claude/AI 的对话内容粘到这里，大脑会提炼出决策草稿…"></textarea>
-      <button class="act" onclick="capture()">提炼为草稿</button>
-      <div id="cap-out" class="muted"></div>
-    </div>
-    <div class="card">
-      <h3>主动记忆（你说算，直接生效）</h3>
-      <div class="row">
-        <input id="mem-content" class="grow" placeholder="要记住的内容（主动记忆，直接生效）">
-        <select id="mem-level" style="width:120px">
-          <option value="decision">决策</option>
-          <option value="milestone">重要修改点</option>
-          <option value="note">记录</option>
-        </select>
-        <select id="mem-proj" style="width:140px"><option value="">个人区</option></select>
-        <button class="act" onclick="remember()">记住</button>
-      </div>
-    </div>
-    <div class="card">
-      <h3>回顾检索</h3>
-      <div class="row">
-        <input id="recall-q" class="grow" placeholder="搜索记忆…">
-        <button class="act" onclick="recall()">检索</button>
-      </div>
-      <div id="recall-out"></div>
-    </div>
-    <div class="card">
-      <h3>全部记忆</h3>
-      <button class="ghost" onclick="loadAllMemories()">加载最近 20 条</button>
-      <div id="all-mem-out"></div>
-    </div>
-  </div>
-
-  <div id="p-proj" class="panel">
-    <div class="card">
-      <h3>注册项目</h3>
-      <div class="row">
-        <input id="pj-name" placeholder="项目名" style="width:160px">
-        <input id="pj-path" class="grow" placeholder="仓库路径（绝对路径，如 /home/u/repos/myproj）">
-        <button class="act" onclick="addProject()">注册</button>
-      </div>
-      <input id="pj-charter" placeholder="大方向一句话（charter，可选）">
-      <div id="proj-out"></div>
-    </div>
-  </div>
-
-  <div id="p-spec" class="panel">
-    <div class="card">
-      <h3>边界监督（规范环）</h3>
-      <select id="sup-proj" style="width:100%"><option value="">选择项目…</option></select>
-      <textarea id="sup-input" placeholder="新提议，例如：我想把数据库从 SQLite 换成 Postgres…"></textarea>
-      <button class="act" onclick="supervise()">对照检查</button>
-      <div id="sup-out"></div>
-    </div>
-  </div>
-
-  <div id="p-pending" class="panel">
-    <div class="card">
-      <h3>自动捕获的草稿（确认后生效）</h3>
-      <div id="pending-out"></div>
-      <button class="act" onclick="loadPending()">刷新</button>
-    </div>
-  </div>
-</main>
-<script>
+WORK_JS = r"""
 const $ = id => document.getElementById(id);
-let THREAD = null;
+let CUR = { kind: 'global', pid: null, name: '全局层' };
+let PROJS = [];
 const API = {
-  projects: async () => (await fetch('/api/projects')).json(),
-  ask: async body => (await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  projects: async () => (await (await fetch('/api/projects')).json()).items,
+  memories: async qs => (await fetch('/api/memories' + qs)).json(),
   remember: async body => (await fetch('/api/remember', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  capture: async body => (await fetch('/api/capture', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  recall: async body => (await fetch('/api/recall', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  supervise: async body => (await fetch('/api/supervise', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  pending: async () => (await fetch('/api/pending')).json(),
-  review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  promote: async id => (await fetch('/api/memories/'+id+'/promote', {method:'POST'})).json(),
+  demote: async (id, project_id) => (await fetch('/api/memories/'+id+'/demote', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({project_id})})).json(),
   addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
 };
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmt(t){ return esc(t).replace(/\[\[m:(\d+)\]\]/g, '<span class="lk">🔗 #$1</span>'); }
+function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
+window.addEventListener('unhandledrejection', e => {
+  alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
+});
 
-function selOpts(sel, rows) {
+/* ---------- 层级树 (含拖拽投放) ---------- */
+function treeNode(kind, pid, name, rail, cntHtml, id) {
+  const btn = document.createElement('button');
+  btn.className = 'layer'; btn.id = id;
+  btn.innerHTML = `<span class="rail ${rail}"></span><span class="nm">${esc(name)}</span><span class="cnt">${cntHtml}</span>`;
+  btn.onclick = () => selectLayer(kind, pid, name);
+  btn.addEventListener('dragover', e => { e.preventDefault(); btn.classList.add('drop'); });
+  btn.addEventListener('dragleave', () => btn.classList.remove('drop'));
+  btn.addEventListener('drop', e => {
+    e.preventDefault(); btn.classList.remove('drop');
+    const mid = e.dataTransfer.getData('text/plain');
+    if (mid) moveMem(Number(mid), kind, pid, name);
+  });
+  return btn;
+}
+function renderTree() {
+  const box = $('tree'); box.innerHTML = '';
+  box.appendChild(treeNode('global', null, '全局层', 'global', '∞', 'lg-global'));
+  PROJS.forEach(p => box.appendChild(
+    treeNode('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>`, 'lg-p' + p.id)));
+  if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
+  highlightCur();
+}
+function highlightCur() {
+  document.querySelectorAll('.layer').forEach(x => x.classList.remove('on'));
+  const el = $(CUR.kind === 'project' ? 'lg-p' + CUR.pid : 'lg-global');
+  if (el) el.classList.add('on');
+}
+function selectLayer(kind, pid, name) {
+  CUR = kind === 'project' ? { kind:'project', pid, name } : { kind:'global', pid:null, name:'全局层' };
+  highlightCur();
+  $('sec-title').textContent = CUR.name;
+  $('sec-sub').textContent = kind === 'project'
+    ? '记忆生命周期随项目绑定' : '全局层 · 生命周期无限，多项目共读';
+  renderCards();
+}
+
+/* ---------- 卡片流 ---------- */
+async function renderCards() {
+  const qs = CUR.kind === 'project' ? '?project_id=' + CUR.pid : '?layer=global';
+  const r = await API.memories(qs);
+  const box = $('cards'); box.innerHTML = '';
+  if (!r.items.length) {
+    box.appendChild(makeEl('div', 'empty', '这一层还没有记忆 — 点右上角「＋ 添加记忆」'));
+    return;
+  }
+  r.items.forEach(x => box.appendChild(cardEl(x)));
+}
+function cardEl(x) {
+  const c = document.createElement('div');
+  c.className = 'card'; c.draggable = true; c.dataset.mid = x.id;
+  const layerBadge = x.project_id
+    ? '<span class="badge b-project">项目</span>'
+    : '<span class="badge b-global">全局</span>';
+  const lv = esc(x.level || 'note');
+  c.innerHTML =
+    `<div>${layerBadge}<span class="badge b-${lv}">${lv}</span></div>` +
+    `<div class="body">${fmt(x.content)}</div>` +
+    `<div class="meta">#${x.id} · ${esc(x.project || x.project_name || '个人区')} · ${x.created_at}</div>` +
+    `<div class="ops">` +
+    (x.project_id ? `<button class="ghost" onclick="moveMem(${x.id},'global',null,'全局层')">↑ 到全局</button>` : '') +
+    `<span class="muted" style="margin-left:auto">拖到左侧层级可移动</span></div>`;
+  c.addEventListener('dragstart', e => {
+    e.dataTransfer.setData('text/plain', String(x.id));
+    c.classList.add('dragging');
+  });
+  c.addEventListener('dragend', () => c.classList.remove('dragging'));
+  return c;
+}
+async function moveMem(mid, kind, pid, name) {
+  try {
+    if (kind === 'global') await API.promote(mid);
+    else await API.demote(mid, pid);
+    await reload();
+    alert('记忆 #' + mid + ' → ' + (kind === 'global' ? '全局层' : '项目「' + name + '」'));
+  } catch (e) { alert('移动失败: ' + ((e && e.message) || e)); }
+}
+async function reload() { await loadProjects(); await renderCards(); }
+
+/* ---------- 添加记忆 / 注册项目 ---------- */
+function openAdd() { $('modal').classList.add('on'); $('mem-content').focus(); }
+function closeAdd() { $('modal').classList.remove('on'); }
+async function addMemory() {
+  const content = $('mem-content').value.trim();
+  if (!content) return alert('内容不能为空');
+  const body = { content, level: $('mem-level').value };
+  if ($('mem-owner').value) body.project_id = Number($('mem-owner').value);
+  const r = await API.remember(body);
+  $('mem-content').value = '';
+  closeAdd();
+  await reload();
+  alert('已记住 #' + r.id);
+}
+function toggleReg() { $('reg-form').classList.toggle('on'); }
+async function addProject() {
+  const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(),
+                 charter: $('pj-charter').value.trim() };
+  if (!body.name) return alert('需要项目名');
+  const r = await API.addProject(body);
+  try { await API.sync(r.id); } catch (e) { /* 路径无效等, 忽略 */ }
+  $('pj-name').value=''; $('pj-path').value=''; $('pj-charter').value='';
+  toggleReg();
+  await loadProjects();
+}
+async function loadProjects() {
+  PROJS = await API.projects();
+  renderTree();
+  const sel = $('mem-owner');
   const cur = sel.value;
-  sel.innerHTML = '<option value="">个人区</option>' +
-    rows.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+  sel.innerHTML = '<option value="">全局层</option>' +
+    PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   if (cur) sel.value = cur;
 }
-async function refreshProjects() {
-  const rows = await API.projects();
-  selOpts($('ask-proj'), rows); selOpts($('mem-proj'), rows); selOpts($('sup-proj'), rows);
-  return rows;
-}
+
+/* ---------- 启动 ---------- */
+(async function boot() {
+  const h = await (await fetch('/api/health')).json();
+  $('backend').textContent = '后端: ' + h.backend;
+  await loadProjects();
+  selectLayer('global');
+})();
+"""
+
+
+# ================================================================ 问答页
+ASK_BODY = r"""
+<header>
+  <span class="brand">外置<em>大脑</em></span>
+  <span class="tag" id="backend"></span>
+  <span class="sp"></span>
+  <a class="navbtn" href="/">← 记忆工作台</a>
+</header>
+<div class="ask-wrap">
+  <div class="ask-card">
+    <select id="ask-scope"><option value="">全局层</option></select>
+    <div id="chat"></div>
+    <div class="row" style="margin-top:8px">
+      <textarea id="ask-input" style="flex:1" placeholder="问我任何事…（Enter 发送）"></textarea>
+      <button class="act" onclick="ask()">发送</button>
+    </div>
+  </div>
+  <div class="ask-card" style="margin-top:14px">
+    <h3>边界监督（规范环）</h3>
+    <select id="sup-proj"><option value="">选择项目…</option></select>
+    <textarea id="sup-input" placeholder="新提议，例如：把数据库从 SQLite 换成 Postgres…"></textarea>
+    <button class="act" onclick="supervise()">对照检查</button>
+    <pre class="out" id="sup-out" hidden></pre>
+  </div>
+</div>
+"""
+
+ASK_JS = r"""
+const $ = id => document.getElementById(id);
+let THREAD = null;
+const API = {
+  projects: async () => (await (await fetch('/api/projects')).json()).items,
+  ask: async body => (await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  supervise: async body => (await fetch('/api/supervise', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+};
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+window.addEventListener('unhandledrejection', e => {
+  alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
+});
 function addMsg(role, text) {
   const d = document.createElement('div');
   d.className = 'msg ' + role;
@@ -247,9 +445,9 @@ async function ask() {
   const q = $('ask-input').value.trim(); if (!q) return;
   addMsg('user', q); $('ask-input').value = '';
   const body = { question: q };
-  if ($('ask-proj').value) body.project_id = Number($('ask-proj').value);
+  if ($('ask-scope').value) body.project_id = Number($('ask-scope').value);
   if (THREAD) body.thread_id = THREAD;
-  const out = document.createElement('div'); out.className='muted';
+  const out = document.createElement('div'); out.className = 'muted';
   out.textContent = '思考中…'; $('chat').appendChild(out);
   try {
     const r = await API.ask(body);
@@ -257,119 +455,58 @@ async function ask() {
     out.remove();
     addMsg('assistant', r.answer);
     if (r.recalls && r.recalls.length) {
-      const ref = document.createElement('div'); ref.className='muted';
-      ref.textContent = '召回: ' + r.recalls.map(x => x.content.slice(0,40)).join(' | ');
+      const ref = document.createElement('div'); ref.className = 'muted';
+      ref.textContent = '召回: ' + r.recalls.map(x => x.content.slice(0, 40)).join(' | ');
       $('chat').appendChild(ref);
     }
-  } catch(e) { out.textContent = '错误: ' + e; }
+  } catch (e) { out.textContent = '错误: ' + ((e && e.message) || e); }
 }
-async function capture() {
-  const text = $('cap-input').value.trim(); if (!text) return;
-  const body = { text };
-  if ($('mem-proj').value) body.project_id = Number($('mem-proj').value);
-  const out = $('cap-out');
-  out.textContent = '提炼中…';
-  try {
-    const r = await API.capture(body);
-    $('cap-input').value = '';
-    out.textContent = r.ids.length
-      ? '已生成 ' + r.ids.length + ' 条决策草稿，请到「待确认」页签确认'
-      : '未提炼出确定的决策（内容里可能没有结论）';
-    await loadPending();
-  } catch(e) { out.textContent = '错误: ' + e; }
-}
-async function remember() {
-  const content = $('mem-content').value.trim(); if (!content) return;
-  const body = { content, level: $('mem-level').value };
-  if ($('mem-proj').value) body.project_id = Number($('mem-proj').value);
-  const r = await API.remember(body);
-  alert('已记住 #' + r.id); $('mem-content').value = '';
-  loadRecents();
-}
-async function recall() {
-  const q = $('recall-q').value.trim(); if (!q) return;
-  const body = { query: q };
-  const r = await API.recall(body);
-  $('recall-out').innerHTML = r.items.length
-    ? r.items.map(x => `<div class="mem">[${x.project}/${x.level}] ${esc(x.content)}<br><span class="muted">${x.created_at}</span></div>`).join('')
-    : '<span class="muted">(无结果)</span>';
-}
-async function loadAllMemories() {
-  const pid = $('mem-proj').value ? '?project_id=' + Number($('mem-proj').value) : '';
-  const r = await (await fetch('/api/memories' + pid)).json();
-  $('all-mem-out').innerHTML = r.items.length
-    ? r.items.map(x => `<div class="mem">
-        <span class="badge b-${x.level}">${x.level}</span>
-        <span class="badge b-${x.status === 'pending' ? 'pending' : 'note'}">${x.status}</span>
-        ${esc(x.content)}
-        <br><span class="muted">#${x.id} ${x.project} ${x.created_at} (${x.source_type})</span>
-      </div>`).join('')
-    : '<span class="muted">(暂无记忆)</span>';
-}
-async function addProject() {
-  const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(),
-                 charter: $('pj-charter').value.trim() };
-  if (!body.name) return alert('需要项目名');
-  await API.addProject(body);
-  $('pj-name').value=''; $('pj-path').value=''; $('pj-charter').value='';
-  await loadProjects();
-}
-async function loadProjects() {
-  const rows = await API.projects();
-  $('proj-out').innerHTML = rows.map(r => `
-    <div class="mem">
-      <b>#${r.id} ${esc(r.name)}</b> <span class="muted">${esc(r.path||'')}</span><br>
-      <span class="muted">${esc(r.charter||'')}</span><br>
-      记忆 ${r.mem_count} 条 | spec 索引 ${r.spec_count} 个
-      <button class="ghost" onclick="syncProj(${r.id})">同步 spec</button>
-    </div>`).join('') || '<span class="muted">(暂无项目)</span>';
-}
-async function syncProj(id) {
-  const r = await API.sync(id);
-  alert('同步完成: 新增 ' + r.added + ', 更新 ' + r.updated + ', 未变 ' + r.unchanged);
-  await loadProjects();
-}
+$('ask-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+});
 async function supervise() {
   const pid = Number($('sup-proj').value); if (!pid) return alert('请选择项目');
   const proposal = $('sup-input').value.trim(); if (!proposal) return;
   const r = await API.supervise({ proposal, project_id: pid });
-  $('sup-out').innerHTML = '<h3>检查报告</h3><pre style="white-space:pre-wrap">' + esc(r.report) + '</pre>';
+  const out = $('sup-out');
+  out.hidden = false;
+  out.textContent = r.report;
 }
-async function loadPending() {
-  const r = await API.pending();
-  $('pending-out').innerHTML = r.items.length
-    ? r.items.map(x => `<div class="mem">
-        <span class="badge b-pending">待确认</span><span class="badge b-${x.level}">${x.level}</span>
-        ${esc(x.content)}
-        <div class="row" style="margin-top:6px">
-          <button class="ghost" onclick="doReview(${x.id},'keep')">保留</button>
-          <button class="ghost" onclick="doReview(${x.id},'delete')">删除</button>
-        </div></div>`).join('')
-    : '<span class="muted">(没有待确认的记忆)</span>';
+async function loadProjects() {
+  const rows = await API.projects();
+  const fill = sel => {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全局层</option>' +
+      rows.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    if (cur) sel.value = cur;
+  };
+  fill($('ask-scope'));
+  const sup = $('sup-proj');
+  const supCur = sup.value;
+  sup.innerHTML = '<option value="">选择项目…</option>' +
+    rows.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  if (supCur) sup.value = supCur;
 }
-async function doReview(id, action) {
-  await API.review({ id, action });
-  await loadPending();
-}
-function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('nav button').forEach(x => x.classList.remove('on'));
-  document.querySelectorAll('.panel').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); $('p-' + b.dataset.p).classList.add('on');
-});
-$('ask-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } });
 (async function boot() {
-  $('backend').textContent = 'LLM: ' + await (await fetch('/api/health')).json().then ? '' : '';
   const h = await (await fetch('/api/health')).json();
-  $('backend').textContent = '后端: ' + h.backend + ' | 数据库: ' + h.db;
-  await refreshProjects(); await loadProjects(); await loadPending();
+  $('backend').textContent = '后端: ' + h.backend;
+  await loadProjects();
 })();
-</script>
-</body>
-</html>
 """
 
 
+WORK_HTML = ("<!doctype html>\n<html lang=\"zh\">\n<head>\n<meta charset=\"utf-8\">\n"
+             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+             "<title>外置大脑 · 记忆</title>\n<style>\n" + CSS + "\n</style>\n</head>\n<body>\n"
+             + WORK_BODY + "\n<script>\n" + WORK_JS + "\n</script>\n</body>\n</html>")
+
+ASK_HTML = ("<!doctype html>\n<html lang=\"zh\">\n<head>\n<meta charset=\"utf-8\">\n"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "<title>外置大脑 · 问答</title>\n<style>\n" + CSS + "\n</style>\n</head>\n<body>\n"
+            + ASK_BODY + "\n<script>\n" + ASK_JS + "\n</script>\n</body>\n</html>")
+
+
+# ================================================================ FastAPI
 def create_app(db_path: Optional[str] = None):
     from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse
@@ -384,11 +521,18 @@ def create_app(db_path: Optional[str] = None):
         finally:
             conn.close()
 
-    app = FastAPI(title="外置大脑", version="0.1.0")
+    app = FastAPI(title="外置大脑", version="0.2.0")
+
+    def _page(html: str) -> HTMLResponse:
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return HTML
+        return _page(WORK_HTML)
+
+    @app.get("/ask", response_class=HTMLResponse)
+    def ask_page():
+        return _page(ASK_HTML)
 
     @app.get("/api/health")
     def health(conn: sqlite3.Connection = Depends(get_db)):
@@ -434,9 +578,10 @@ def create_app(db_path: Optional[str] = None):
     @app.get("/api/memories")
     def memories(project_id: Optional[int] = None,
                  level: Optional[str] = None, status: str = "active",
-                 limit: int = 20, conn: sqlite3.Connection = Depends(get_db)):
+                 limit: int = 20, layer: Optional[str] = None,
+                 conn: sqlite3.Connection = Depends(get_db)):
         items = mem_mod.list_memories(conn, project_id=project_id, level=level,
-                                      status=status, limit=limit)
+                                      status=status, limit=limit, layer=layer)
         return {"items": [dict(r) for r in items]}
 
     @app.post("/api/review")
@@ -446,6 +591,30 @@ def create_app(db_path: Optional[str] = None):
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {"ok": True}
+
+    @app.post("/api/memories/{mid}/promote")
+    def promote(mid: int, conn: sqlite3.Connection = Depends(get_db)):
+        """上升: 项目记忆 -> 全局层。"""
+        try:
+            mem_mod.promote(conn, mid)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"ok": True, "id": mid, "project_id": None}
+
+    @app.post("/api/memories/{mid}/demote")
+    def demote(mid: int, body: DemoteIn,
+               conn: sqlite3.Connection = Depends(get_db)):
+        """下降: 挂到指定项目。"""
+        try:
+            mem_mod.demote(conn, mid, body.project_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "id": mid, "project_id": body.project_id}
+
+    @app.get("/api/suggest")
+    def suggest(conn: sqlite3.Connection = Depends(get_db)):
+        """删除提示: 算法扫描候选, 删除由用户决定。"""
+        return {"items": mem_mod.suggest(conn)}
 
     @app.post("/api/recall")
     def recall(body: RecallIn, conn: sqlite3.Connection = Depends(get_db)):

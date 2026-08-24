@@ -58,7 +58,12 @@ def cmd_proj(args) -> None:
     elif args.action == "rm":
         pid = _resolve_project(conn, ref)
         proj_mod.remove_project(conn, pid)
-        print(f"已删除项目 #{pid} (其记忆仍在, project 字段清空)")
+        print(f"已移除项目 #{pid} (墓碑式: 记忆保留但不再加载; "
+              f"复活用 lclone proj restore {ref}, 清理用 lclone suggest)")
+    elif args.action == "restore":
+        pid = _resolve_project(conn, ref)
+        proj_mod.restore_project(conn, pid)
+        print(f"已复活项目 #{pid}, 其记忆恢复加载")
     elif args.action == "show":
         pid = _resolve_project(conn, ref)
         print(proj_mod.project_context(conn, pid) or "(空)")
@@ -66,27 +71,42 @@ def cmd_proj(args) -> None:
 
 def cmd_log(args) -> None:
     conn = _conn(args)
-    pid = _resolve_project(conn, args.project)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    if pid is None and not args.project:
+        pid = proj_mod.detect_project_by_git(conn)
     sid = mem_mod.log_session(conn, pid, title=args.title, summary=args.summary)
-    print(f"会话已记录 #{sid}")
+    where = f"项目 #{pid}" if pid is not None else "全局层"
+    print(f"会话已记录 #{sid} [{where}]")
 
 
 def cmd_remember(args) -> None:
     conn = _conn(args)
-    pid = _resolve_project(conn, args.project)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    auto = False
+    if pid is None and not args.project:
+        pid = proj_mod.detect_project_by_git(conn)
+        auto = pid is not None
     mid = mem_mod.remember(conn, args.content, level=args.level,
                            project_id=pid, reason=args.reason)
-    print(f"已主动记忆 #{mid} [active] (level={args.level})")
+    where = f"项目 #{pid}" if pid is not None else "全局层"
+    tag = " (git 自动归属)" if auto else ""
+    print(f"已主动记忆 #{mid} [{where}]{tag} (level={args.level})")
 
 
 def cmd_capture(args) -> None:
     conn = _conn(args)
-    pid = _resolve_project(conn, args.project)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    auto = False
+    if pid is None and not args.project:
+        pid = proj_mod.detect_project_by_git(conn)
+        auto = pid is not None
     ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title)
     if not ids:
         print("没有提炼出决策 (可能内容里没有确定的决策)")
     else:
-        print(f"已生成 {len(ids)} 条决策草稿待确认: {ids}")
+        where = f"项目 #{pid}" if pid is not None else "全局层"
+        tag = " (git 自动归属)" if auto else ""
+        print(f"已生成 {len(ids)} 条决策草稿待确认 [{where}]{tag}: {ids}")
         print("运行: lclone review")
 
 
@@ -136,12 +156,49 @@ def cmd_review(args) -> None:
 def cmd_recall(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project)
-    items = mem_mod.recall(conn, args.query, k=args.k, project_id=pid)
+    items = mem_mod.recall(conn, args.query, k=args.k, project_id=pid,
+                           follow_links=not args.no_follow)
     if not items:
         print("(没有相关记忆)")
     for it in items:
-        print(f"[{it['score']:.2f}] #{it['id']} {it['project']}/{it['level']} "
-              f"({it['created_at']})\n   {it['content']}")
+        tag = " 🔗链接" if it.get("via_link") else ""
+        print(f"[{it['score'] if it['score'] is not None else '--':>6}] #{it['id']} "
+              f"{it['project']}/{it['level']} ({it['created_at']}){tag}\n   {it['content']}")
+
+
+def cmd_promote(args) -> None:
+    conn = _conn(args)
+    try:
+        mem_mod.promote(conn, args.id)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print(f"记忆 #{args.id} 已上升至全局层 (个人区, 生命周期无限, 多项目共读)")
+
+
+def cmd_demote(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project)
+    try:
+        mem_mod.demote(conn, args.id, pid)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print(f"记忆 #{args.id} 已下降至项目 #{pid}, 生命周期与其绑定")
+
+
+def cmd_suggest(args) -> None:
+    conn = _conn(args)
+    items = mem_mod.suggest(conn, dup_threshold=args.dup_threshold,
+                            stale_days=args.stale_days,
+                            unused_days=args.unused_days)
+    if not items:
+        print("没有建议清理的记忆 (删除始终由你决定)")
+        return
+    print(f"发现 {len(items)} 条建议清理的记忆 (仅提示, 删除由你执行):\n")
+    for it in items:
+        print(f"#{it['id']} [{it['project']}] {it['created_at'][:10]}")
+        print(f"   {it['content'][:80]}")
+        print(f"   原因: {it['reason']}")
+        print(f"   删除: {it['hint']}\n")
 
 
 def cmd_memories(args) -> None:
@@ -209,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     sp = sub.add_parser("proj", parents=[parent], help="项目管理")
-    sp.add_argument("action", choices=["add", "list", "sync", "rm", "show"])
+    sp.add_argument("action", choices=["add", "list", "sync", "rm", "restore", "show"])
     sp.add_argument("name", nargs="?", help="项目名 (add/sync/rm/show 用)")
     sp.add_argument("path", nargs="?", default="", help="项目仓库路径 (add 用)")
     sp.add_argument("--charter", default="", help="项目大方向一句话 (add 用)")
@@ -248,7 +305,30 @@ def build_parser() -> argparse.ArgumentParser:
     sr2.add_argument("query")
     sr2.add_argument("--project", default=None)
     sr2.add_argument("--k", type=int, default=5)
+    sr2.add_argument("--no-follow", action="store_true",
+                     help="不跟随 [[m:N]] 链接 (默认自动带出被链接记忆)")
     sr2.set_defaults(func=cmd_recall)
+
+    spm = sub.add_parser("promote", parents=[parent],
+                         help="记忆上升: 项目记忆 -> 全局层 (生命周期无限)")
+    spm.add_argument("id", type=int)
+    spm.set_defaults(func=cmd_promote)
+
+    sdm = sub.add_parser("demote", parents=[parent],
+                         help="记忆下降: 挂到指定项目 (生命周期与之绑定)")
+    sdm.add_argument("id", type=int)
+    sdm.add_argument("--project", required=True, help="目标项目 id 或名称")
+    sdm.set_defaults(func=cmd_demote)
+
+    sgg = sub.add_parser("suggest", parents=[parent],
+                         help="删除提示: 算法扫描疑似重复/长期未确认/未召回/已移除项目记忆")
+    sgg.add_argument("--dup-threshold", type=float, default=0.92,
+                     help="疑似重复的向量相似度阈值")
+    sgg.add_argument("--stale-days", type=int, default=7,
+                     help="草稿超过 N 天未确认")
+    sgg.add_argument("--unused-days", type=int, default=30,
+                     help="active 记忆超过 N 天未被召回")
+    sgg.set_defaults(func=cmd_suggest)
 
     sm = sub.add_parser("memories", parents=[parent], help="列出记忆")
     sm.add_argument("--project", default=None, help="只看某项目")

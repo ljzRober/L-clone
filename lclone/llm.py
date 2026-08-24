@@ -65,6 +65,10 @@ def embed_texts(texts: Iterable[str]) -> List[List[float]]:
     texts = list(texts)
     if backend() == "dummy":
         return [_dummy_embed(t) for t in texts]
+    # 部分服务商 (如 DeepSeek) 不提供 embedding 接口:
+    # BRAIN_EMBED_BACKEND=local 时聊天用真实模型, 向量用本地确定性哈希 (零依赖)
+    if (config.get("BRAIN_EMBED_BACKEND") or "api").strip().lower() == "local":
+        return [_dummy_embed(t) for t in texts]
     client = _get_client()
     resp = client.embeddings.create(
         model=config.get("BRAIN_EMBED_MODEL"), input=texts

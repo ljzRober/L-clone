@@ -134,6 +134,129 @@ with contextlib.redirect_stdout(buf):
     cli.main(["memories", "--db", dbp, "--limit", "5"])
 check("23 CLI memories", "FastAPI" in buf.getvalue())
 
+# ---- 上升 / 下降 (生命周期) ----
+m_up = mem_mod.remember(conn, "项目A独有的决策: 上线后立即灰度", level="decision",
+                        project_id=pid)
+mem_mod.promote(conn, m_up)
+row = conn.execute("SELECT project_id FROM memories WHERE id=?",
+                   (m_up,)).fetchone()
+check("25 promote 升到全局层", row["project_id"] is None)
+items_g = mem_mod.recall(conn, "灰度上线", follow_links=False)
+check("26 上升后全局可召回", any(i["id"] == m_up for i in items_g),
+      str([i["id"] for i in items_g]))
+
+pid2 = proj_mod.add_project(conn, "projB", str(demo_root), "第二个项目")
+mem_mod.demote(conn, m_up, pid2)
+row = conn.execute("SELECT project_id FROM memories WHERE id=?",
+                   (m_up,)).fetchone()
+check("27 demote 降到项目B", row["project_id"] == pid2)
+items_b = mem_mod.recall(conn, "灰度", project_id=pid2, follow_links=False)
+check("28 下降后项目B可召回", any(i["id"] == m_up for i in items_b))
+mem_mod.demote(conn, m_up, pid)  # 项目 B -> 项目 A (横向搬移)
+row = conn.execute("SELECT project_id FROM memories WHERE id=?",
+                   (m_up,)).fetchone()
+check("29 demote 支持项目间横搬", row["project_id"] == pid)
+
+try:
+    mem_mod.demote(conn, m_up, 9999)
+    check("30 demote 目标项目不存在报错", False)
+except ValueError:
+    check("30 demote 目标项目不存在报错", True)
+
+# ---- 记忆链接 [[m:N]] ----
+m_global = mem_mod.remember(conn, "健身打卡: 每周三晚跑步", level="note")
+m_link = mem_mod.remember(conn, f"链接测试内容 见 [[m:{m_global}]]",
+                          level="note", project_id=pid)
+links = conn.execute(
+    "SELECT target_id FROM memory_links WHERE source_id=?", (m_link,)
+).fetchall()
+check("31 链接写入 memory_links",
+      any(r["target_id"] == m_global for r in links), str(links))
+items_l = mem_mod.recall(conn, "链接测试内容", project_id=pid, k=5,
+                         follow_links=True)
+check("32 召回自动跟随链接",
+      any(i.get("via_link") and i["id"] == m_global for i in items_l),
+      str([(i["id"], i.get("via_link")) for i in items_l]))
+items_nf = mem_mod.recall(conn, "链接测试内容", project_id=pid, k=5,
+                          follow_links=False)
+check("33 --no-follow 不跟随链接",
+      all(i["id"] != m_global for i in items_nf),
+      str([i["id"] for i in items_nf]))
+
+# ---- 删除提示 suggest ----
+dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
+dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
+mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
+stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
+                     ).fetchone()["mid"]
+conn.execute("UPDATE memories SET created_at=datetime('now','-30 days')"
+             " WHERE id=?", (stale,))
+conn.commit()
+unused = mem_mod.remember(conn, "从未被召回过的新记忆", level="note")
+sug = mem_mod.suggest(conn, stale_days=7, unused_days=30)
+sug_ids = {s["id"] for s in sug}
+check("34 suggest 发现重复", dup_a in sug_ids and dup_b in sug_ids,
+      str(sorted(sug_ids)))
+check("35 suggest 发现长期未确认草稿", stale in sug_ids)
+check("36 suggest 发现长期未召回", unused in sug_ids)
+check("37 suggest 每条都带删除命令",
+      all(s["hint"].startswith("lclone review --id") for s in sug))
+
+# ---- 项目墓碑: 移除后不再加载, 可 restore ----
+mem_mod.remember(conn, "projB 的独有记忆: B计划细节", level="decision",
+                 project_id=pid2)
+proj_mod.remove_project(conn, pid2)
+check("38 移除后项目从列表消失",
+      all(r["id"] != pid2 for r in proj_mod.list_projects(conn)))
+items_after = mem_mod.recall(conn, "B计划", follow_links=False)
+check("39 移除后记忆停止加载",
+      all(i["project_id"] != pid2 for i in items_after))
+sug2 = mem_mod.suggest(conn)
+check("40 suggest 提示已移除项目记忆",
+      any("已移除" in s["reason"] for s in sug2),
+      str([s["reason"] for s in sug2]))
+proj_mod.restore_project(conn, pid2)
+check("41 restore 复活后列表恢复",
+      any(r["id"] == pid2 for r in proj_mod.list_projects(conn)))
+items_back = mem_mod.recall(conn, "B计划", follow_links=False)
+check("42 restore 后记忆恢复加载",
+      any(i["project_id"] == pid2 for i in items_back))
+
+# ---- 新命令 CLI 冒烟 ----
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["promote", str(m_up), "--db", dbp])
+check("43 CLI promote", "上升至全局层" in buf.getvalue())
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["demote", str(m_up), "--project", str(pid), "--db", dbp])
+check("44 CLI demote", "下降至项目" in buf.getvalue())
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["suggest", "--db", dbp, "--stale-days", "7"])
+check("45 CLI suggest", "建议清理" in buf.getvalue())
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["proj", "rm", "projB", "--db", dbp])
+check("46 CLI proj rm 墓碑提示", "不再加载" in buf.getvalue())
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["proj", "restore", "projB", "--db", dbp])
+check("47 CLI proj restore", "复活" in buf.getvalue())
+
+# ---- 删除回归: FTS 触发器修复 (删除记忆不报 SQL logic error) ----
+del_target = mem_mod.remember(conn, "待删除的回归测试记忆", level="note")
+mem_mod.review(conn, del_target, "delete")
+check("48 删除记忆成功 (FTS 触发器修复)",
+      conn.execute("SELECT COUNT(*) c FROM memories WHERE id=?",
+                   (del_target,)).fetchone()["c"] == 0)
+check("49 删除后 FTS 同步清理",
+      conn.execute("SELECT COUNT(*) c FROM memories_fts WHERE rowid=?",
+                   (del_target,)).fetchone()["c"] == 0)
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app
