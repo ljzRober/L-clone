@@ -21,7 +21,7 @@ from . import db as db_mod
 from . import llm
 from .db import pack_vec, unpack_vec
 
-LEVELS = ("note", "decision", "milestone")
+LEVELS = ("note", "decision")
 
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
@@ -83,23 +83,57 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
 
 
 # ---------------------------------------------------------------- B 自动捕获 + 确认
+def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
+                  project_id: Optional[int] = None,
+                  threshold: float = 0.92, limit: int = 300) -> bool:
+    """写入去重: 与同一归属内已有的记忆向量相似度 >= threshold 视为重复。
+
+    对 active + pending 都去重 (避免 post-commit 等反复触发时堆积重复草稿);
+    project_id=None 时只对全局层去重; 指定项目时只对该项目去重。
+    """
+    q = ("SELECT embedding FROM memories"
+         " WHERE status IN ('active','pending') AND embedding IS NOT NULL")
+    params: list = []
+    if project_id is None:
+        q += " AND project_id IS NULL"
+    else:
+        q += " AND project_id=?"
+        params.append(project_id)
+    q += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    for r in conn.execute(q, params).fetchall():
+        if r["embedding"] and _cosine(emb, unpack_vec(r["embedding"])) >= threshold:
+            return True
+    return False
+
+
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             module: str = "") -> List[int]:
-    """自动捕获: LLM 提炼决策 -> 写入 pending 草稿区, 待确认。"""
+    """自动捕获: LLM 提炼决策/记录 -> 写入 pending 草稿区, 待确认。
+
+    分类器返回 [{level, content, confidence}], 按等级分别落草稿 (decision 和 note 都能写入);
+    写入前用向量相似度去重 (与 suggest 的 dup_threshold 一致)。
+    """
     session_id = log_session(conn, project_id, title=title, summary=text[:300])
-    decisions = llm.extract_decisions(text)
+    items = llm.extract_memories(text)
     ids = []
-    for d in decisions:
-        emb = llm.embed_one(d)
+    for it in items:
+        level = it["level"] if it["level"] in LEVELS else "note"
+        content = (it.get("content") or "").strip()
+        if not content:
+            continue
+        emb = llm.embed_one(content)
+        if _is_duplicate(conn, emb, project_id=project_id):
+            continue
         cur = conn.execute(
             "INSERT INTO memories(project_id, level, module, content, reason, status,"
             " source_type, source_ref, embedding)"
-            " VALUES (?, 'decision', ?, ?, ?, 'pending', 'auto', ?, ?)",
-            (project_id, module.strip(), d, f"来自会话 #{session_id}",
+            " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
+            (project_id, level, module.strip(), content, f"来自会话 #{session_id}",
              f"session:{session_id}", pack_vec(emb)),
         )
-        _store_links(conn, cur.lastrowid, d)
+        _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
     conn.commit()
     return ids

@@ -87,7 +87,7 @@ erDiagram
     MEMORIES {
         int id PK "L1 核心记忆"
         int project_id FK "NULL=个人区"
-        text level "decision/milestone/note"
+        text level "decision/note"
         text content "记忆正文"
         text reason "为什么记"
         text status "pending草稿/active正式/archived归档"
@@ -199,7 +199,7 @@ flowchart LR
     end
     subgraph BRAIN["大脑 L-clone (记忆与监督)"]
         IDX["specs_index 格式无关索引"]
-        DEC["决策记忆 / 重要修改点"]
+        DEC["决策记忆 / 记录"]
         SES["会话流水"]
         CH["charter 大方向"]
     end
@@ -209,4 +209,4 @@ flowchart LR
 ```
 
 > 具体事务 (spec 全文 / 代码 / PR) 永远留在项目仓库; 大脑只管大方向、
-> 决策记忆、重要修改点, 并在监督时引用仓库原文。
+> 决策记忆、记录, 并在监督时引用仓库原文。

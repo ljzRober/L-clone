@@ -257,6 +257,23 @@ check("49 删除后 FTS 同步清理",
       conn.execute("SELECT COUNT(*) c FROM memories_fts WHERE rowid=?",
                    (del_target,)).fetchone()["c"] == 0)
 
+# ---- 等级收窄: 只留 decision/note + 分类器补 note 写路径 ----
+from lclone import llm as llm_mod
+check("50 LEVELS 不含 milestone",
+      "milestone" not in mem_mod.LEVELS, str(mem_mod.LEVELS))
+check("51 LEVELS 只含 decision/note",
+      set(mem_mod.LEVELS) == {"note", "decision"}, str(mem_mod.LEVELS))
+mem_items = llm_mod.extract_memories("确定用 SQLite; 顺带记下: 明天补测试")
+check("52 extract_memories 返回结构化条目",
+      isinstance(mem_items, list) and mem_items
+      and all("level" in m and "content" in m for m in mem_items), str(mem_items))
+check("53 dummy 后端分类为 note",
+      mem_items and mem_items[0]["level"] == "note", str(mem_items))
+cap_ids = mem_mod.capture(conn, "一条值得记的过程性事实", project_id=pid)
+cap_levels = [conn.execute("SELECT level FROM memories WHERE id=?",
+                           (i,)).fetchone()["level"] for i in cap_ids]
+check("54 capture 产出 note 草稿", "note" in cap_levels, str(cap_levels))
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app

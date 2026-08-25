@@ -69,7 +69,7 @@ TOOLS = [
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
                 "module": {"type": "string", "description": "项目内模块名 (可选, 次级竖向划分)"},
-                "level": {"type": "string", "enum": ["decision", "milestone", "note"],
+                "level": {"type": "string", "enum": ["decision", "note"],
                           "description": "默认 decision"},
             },
             "required": ["content"],
@@ -77,7 +77,7 @@ TOOLS = [
     },
     {
         "name": "capture",
-        "description": "自动捕获 (B 类, 进草稿待确认): 把一段对话/工作内容提炼成决策草稿, 用户 review 后生效。归属判定: 优先按 git 仓库匹配已注册项目 (传 cwd 或当前目录), 匹配不到则落全局层; 是否该升全局由你判断, 拿不准问用户",
+        "description": "自动捕获 (B 类, 进草稿待确认): 把一段对话/工作内容提炼成决策/记录草稿, 用户 review 后生效。归属判定: 优先按 git 仓库匹配已注册项目 (传 cwd 或当前目录), 匹配不到则落全局层; 是否该升全局由你判断, 拿不准问用户",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -103,6 +103,19 @@ TOOLS = [
                 "k": {"type": "integer", "description": "返回条数, 默认 5"},
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "bootstrap",
+        "description": "会话启动引导: 一次性返回 charter + 全局层记忆(无条件注入) + 按话题召回的相关记忆, 供每次会话开始时调用",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "本次会话话题/首条消息, 用于召回相关记忆 (可为空)"},
+                "project": {"type": "string", "description": "限定项目名或 id; 不传 = 全局层"},
+                "k": {"type": "integer", "description": "召回条数, 默认 5"},
+            },
+            "required": [],
         },
     },
     {
@@ -192,14 +205,14 @@ def call_tool(name: str, args: dict) -> str:
                                   title=args.get("title", ""),
                                   module=args.get("module", ""))
             if not ids:
-                return "未提炼出确定的决策 (内容里可能没有结论)"
+                return "未提炼出可记忆的内容 (内容里可能没有决策或值得记的事实)"
             if pid is None:
                 where = "全局层(个人区)"
             elif auto:
                 where = f"项目 #{pid} (git 自动归属)"
             else:
                 where = f"项目 #{pid}"
-            return (f"已生成 {len(ids)} 条决策草稿待确认 [{where}]: {ids}\n"
+            return (f"已生成 {len(ids)} 条草稿待确认 [{where}]: {ids}\n"
                     f"请提醒用户: lclone review 确认 (或告诉我 review keep/delete)")
         if name == "recall":
             pid = _resolve_project(conn, args.get("project"))
@@ -215,6 +228,29 @@ def call_tool(name: str, args: dict) -> str:
                     f" ({i['created_at']}){tag}\n  {i['content']}"
                 )
             return "\n\n".join(lines)
+        if name == "bootstrap":
+            pid = _resolve_project(conn, args.get("project"))
+            parts = []
+            if pid is not None:
+                proj = proj_mod.get_project(conn, pid)
+                if proj and proj["charter"]:
+                    parts.append(f"【项目方向】{proj['charter']}")
+            g = conn.execute(
+                "SELECT content, level FROM memories"
+                " WHERE status='active' AND project_id IS NULL"
+                " ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+            if g:
+                parts.append("【全局记忆】\n" + "\n".join(
+                    f"- [{r['level']}] {r['content']}" for r in g))
+            q = (args.get("query") or "").strip()
+            if q:
+                items = mem_mod.recall(conn, q, k=int(args.get("k", 5)),
+                                       project_id=pid)
+                if items:
+                    parts.append("【相关记忆】\n" + "\n".join(
+                        f"- [{i['project']}/{i['level']}] {i['content']}" for i in items))
+            return "\n\n".join(parts) if parts else "(暂无记忆)"
         if name == "promote":
             mem_mod.promote(conn, int(args["id"]))
             return f"记忆 #{args['id']} 已上升至全局层 (生命周期无限, 多项目共读)"

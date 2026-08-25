@@ -153,7 +153,6 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .card.dragging { opacity:.45; }
 .badge { display:inline-block; font-size:10px; border-radius:6px; padding:2px 7px; font-family:var(--mono); }
 .b-decision { background:#1f3a6b; color:#8fb3ff; }
-.b-milestone { background:#3a2a55; color:#c9a2ff; }
 .b-note { background:#26303f; color:#a9bdd6; }
 .b-global { background:#4a3a14; color:var(--acc); }
 .b-project { background:#1d2b4a; color:#7fb0ff; }
@@ -309,7 +308,6 @@ WORK_BODY = r"""
     <div class="row">
       <select id="m-level" style="width:150px">
         <option value="decision">决策</option>
-        <option value="milestone">重要修改点</option>
         <option value="note">记录</option>
       </select>
       <select id="m-owner" style="flex:1" onchange="populateModuleSelect()"><option value="">全局层</option></select>
@@ -354,7 +352,7 @@ function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
   alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
 });
-const LN = { decision:'决策', milestone:'重要修改点', note:'记录' };
+const LN = { decision:'决策', note:'记录' };
 
 async function loadAll() {
   const [p, m, l] = await Promise.all([API.projects(), API.memories('?status=active&limit=500'), API.links()]);
@@ -428,7 +426,7 @@ function selectSidebar(kind, pid) {
   $('graph').scrollTop = 0;
 }
 
-/* ---- 架构图: 全局/项目/模块 三层, 每层三横向划分; 默认=全局大框(三列+嵌套项目框); 项目=大框(三列+模块框); 模块=大框(三列, 叶子) ---- */
+/* ---- 架构图: 全局/项目/模块 三层, 每层两横向划分; 默认=全局大框(两列+嵌套项目框); 项目=大框(两列+模块框); 模块=大框(两列, 叶子) ---- */
 function renderGraph() {
   const globals = MEMS.filter(m => !m.project_id);
   const selProj = EXPANDED.size ? PROJS.find(p => EXPANDED.has(p.id)) : null;
@@ -440,7 +438,7 @@ function renderGraph() {
   const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
   const boxLeft = padX, boxW = W - padX * 2;
   const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
-  const levels = [ ['decision','决策','#2b6cb0','#e8f1fb'], ['milestone','重要修改点','#7a4fb0','#f1eafa'], ['note','记录','#67707f','#f0f2f5'] ];
+  const levels = [ ['decision','决策','#2b6cb0','#e8f1fb'], ['note','记录','#67707f','#f0f2f5'] ];
   function head(x, y, w, tint, col, title, sub) {
     return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
       `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
@@ -478,7 +476,7 @@ function renderGraph() {
   let bg = '';
   let contentBottom = 0;
   if (selMod && selProj) {
-    // ---- 模块视图 (叶子): 三横向划分 ----
+    // ---- 模块视图 (叶子): 两横向划分 ----
     const { s, gh } = levelColumns(selModMems, innerLeft, HEAD + G_H + 18);
     const pvH = G_H + 18 + gh + 30;
     bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
@@ -487,7 +485,7 @@ function renderGraph() {
     bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 点击项目「${esc(selProj.name)}」/ 侧边栏返回 · 记忆卡片点开编辑</text>`;
     contentBottom = HEAD + pvH + 18;
   } else if (selProj) {
-    // ---- 项目视图: 三横向划分 + 嵌套模块框(有模块) ----
+    // ---- 项目视图: 两横向划分 + 嵌套模块框(有模块) ----
     const { s, gh } = levelColumns(selProjMems, innerLeft, HEAD + G_H + 18);
     const modTint = ['#e8f1fb','#f1eafa','#e8f5ee','#fbeede','#f0f2f5'];
     const mods = [...new Set([...(MODULES[selProj.id] || []), ...selProjMems.map(m => m.module || '').filter(Boolean)])];
@@ -524,7 +522,7 @@ function renderGraph() {
     bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 侧边栏「全局层」返回总览 · 记忆卡片点开编辑</text>`;
     contentBottom = HEAD + pvH + 18;
   } else {
-    // ---- 全局视图: 三横向划分 + 嵌套项目框 ----
+    // ---- 全局视图: 两横向划分 + 嵌套项目框 ----
     const { s, gh } = levelColumns(globals, innerLeft, HEAD + G_H + 18);
     const rowN = 4, pw = (innerW - 2 * IN - (rowN - 1) * 16) / rowN, ph = 96;
     const projRows = Math.max(1, Math.ceil(PROJS.length / rowN));
@@ -802,9 +800,11 @@ def create_app(db_path: Optional[str] = None):
             conn.close()
 
     app = FastAPI(title="外置大脑", version="0.3.0")
-    app.mount("/static",
-              StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
-              name="static")
+    # 静态资源目录可选: 当前 HTML/CSS/JS 全部内联, 无需外部静态文件;
+    # 仅当 static/ 存在时才挂载, 避免目录缺失导致应用启动即崩。
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     def _page(html: str) -> HTMLResponse:
         return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})

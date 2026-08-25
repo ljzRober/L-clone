@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# L-clone 自动沉淀: 每次 commit 后, 把 commit message + 变更统计 capture 进大脑草稿。
+#
+# 安装 (一次性):
+#   git config core.hooksPath scripts/hooks
+#
+# 说明:
+#   - 静默失败: 大脑不可用 / 未配 API key 都不阻断 commit (所有错误吞掉)。
+#   - 归属: capture 内部按 cwd 的 git 仓库自动匹配已注册项目 (detect_project_by_git),
+#     匹配不到则落全局层。
+#   - BRAIN_LLM=dummy 或未配 key 仍能离线跑通; 用 api 后端需仓库 .env 里有 key。
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -z "$ROOT" ] && exit 0
+
+# 选 python: 优先仓库 venv, 否则系统 python3
+PY=""
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+else
+  PY="$(command -v python3 || true)"
+fi
+[ -z "$PY" ] && exit 0
+
+MSG="$(git log -1 --pretty=%B 2>/dev/null || true)"
+STAT="$(git show --stat --oneline --format= -1 2>/dev/null | head -30 || true)"
+TEXT="commit: ${MSG}
+${STAT}"
+
+# 静默 capture (进草稿待确认), 失败不阻断 commit
+( cd "$ROOT" && "$PY" -m lclone capture "$TEXT" >/dev/null 2>&1 ) || true
+
+exit 0

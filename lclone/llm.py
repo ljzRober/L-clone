@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from typing import Iterable, List
 
 from . import config
@@ -94,26 +95,49 @@ def chat(messages: List[dict], temperature: float | None = None) -> str:
     return resp.choices[0].message.content or ""
 
 
-def extract_decisions(text: str) -> List[str]:
-    """从一段工作内容中提炼决策清单 (L1 层, 自动捕获用)。
+def extract_memories(text: str) -> List[dict]:
+    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note。
 
-    dummy 后端: 整段视为一条决策, 保证离线流程可跑通。
+    返回 [{"level": "decision"|"note", "content": str, "confidence": float}]。
+    decision = 确定的决策/选型/边界/时间点; note = 值得记的过程性事实/观察/TODO/灵感。
+
+    dummy 后端: 整段视为一条 note, 保证离线流程可跑通。
     """
     if backend() == "dummy":
         t = text.strip()
-        return [t[:300]] if t else []
+        return [{"level": "note", "content": t[:300], "confidence": 1.0}] if t else []
     prompt = (
-        "下面是一段工作/讨论记录。请只提炼其中【确定的决策】, 每条一行, "
-        "格式: 决定了什么 (原因简述)。没有决策就输出空。不要总结, 不要客套。\n\n"
+        "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 用前缀标注类型:\n"
+        "- decision: 确定了什么 (确定的决策/选型/边界/时间点)\n"
+        "- note: 值得记的过程性事实、观察、TODO、灵感\n"
+        "格式: decision: 内容  或  note: 内容。没有值得记的就输出空。不要总结, 不要客套。\n\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
     out = []
     for line in raw.splitlines():
         line = line.strip().strip("-•*").strip()
-        if line and len(line) > 3:
-            out.append(line)
+        if not line or len(line) <= 3:
+            continue
+        level = "note"
+        body = line
+        m = re.match(r"^(decision|note)\s*[:：]\s*(.+)$", line, re.IGNORECASE)
+        if m:
+            level = m.group(1).lower()
+            body = m.group(2).strip()
+        else:
+            m2 = re.match(r"^(decision|note)\b\s*(.*)$", line, re.IGNORECASE)
+            if m2:
+                level = m2.group(1).lower()
+                body = m2.group(2).strip(" :：").strip()
+        if body:
+            out.append({"level": level, "content": body, "confidence": 0.9})
     return out
+
+
+def extract_decisions(text: str) -> List[str]:
+    """兼容别名: 只返回 decision 档的内容 (旧调用点)。"""
+    return [it["content"] for it in extract_memories(text) if it["level"] == "decision"]
 
 
 def check_boundaries(project_ctx: str, proposal: str) -> str:

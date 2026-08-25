@@ -32,13 +32,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at   TEXT
 );
 
--- L1 层: 决策 / 重要修改点 / 记录
+-- L1 层: 决策 / 记录
 -- status: pending(草稿, 待确认) | active(正式) | archived(归档)
 -- source_type: auto(自动捕获) | manual(主动触发)
 CREATE TABLE IF NOT EXISTS memories (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-  level        TEXT NOT NULL DEFAULT 'note',   -- decision | milestone | note
+  level        TEXT NOT NULL DEFAULT 'note',   -- decision | note
   module       TEXT NOT NULL DEFAULT '',       -- 项目内可选模块 (次级竖向划分), 空=直接挂项目
   content      TEXT NOT NULL,
   reason       TEXT NOT NULL DEFAULT '',

@@ -9,14 +9,14 @@ lclone init                           初始化数据库
 lclone proj add <name> [仓库路径] [--charter "大方向"]
 lclone proj list / sync <id|name> / rm / restore / show
 lclone log "一句话摘要" [--project id]          # L0 流水
-lclone remember "内容" [--level decision|milestone|note] [--project id]
+lclone remember "内容" [--level decision|note] [--project id]
 lclone capture "本次工作内容" [--project id]     # B: 进草稿
 lclone review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
 lclone recall "查询" [--project id] [--k 5] [--no-follow]
 lclone promote <id>                            # 记忆上升: 项目 -> 全局层
 lclone demote <id> --project <id|name>         # 记忆下降: 挂到指定项目(含项目间横搬)
 lclone suggest [--dup-threshold 0.92] [--stale-days 7] [--unused-days 30]  # 删除提示
-lclone memories [--project id] [--level decision|milestone|note] [--status active|pending|archived] [--limit 20]
+lclone memories [--project id] [--level decision|note] [--status active|pending|archived] [--limit 20]
 lclone supervise "新提议" --project id           # 规范环
 lclone ask "问题" [--project id] [--thread id]  # 回顾环
 lclone web [--host 0.0.0.0] [--port 8000]
