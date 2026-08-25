@@ -308,10 +308,13 @@ WORK_BODY = r"""
         <option value="milestone">重要修改点</option>
         <option value="note">记录</option>
       </select>
-      <select id="m-owner" style="flex:1"><option value="">全局层</option></select>
+      <select id="m-owner" style="flex:1" onchange="populateModuleSelect()"><option value="">全局层</option></select>
       <span class="muted" id="m-owner-hint"></span>
     </div>
-    <input id="m-module" placeholder="模块名（可选，项目内次级竖向划分）">
+    <div class="row">
+      <span class="muted" style="width:150px">模块（底部，选项目后可选）</span>
+      <select id="m-module" style="flex:1" disabled><option value="">（全局层无模块）</option></select>
+    </div>
     <div class="links" id="m-links"></div>
     <div class="row" style="justify-content:flex-end">
       <button class="ghost" id="btn-del" onclick="delMem()">删除</button>
@@ -357,6 +360,18 @@ function fillOwnerSelect() {
   const sel = $('m-owner');
   const cur = sel.value;
   sel.innerHTML = '<option value="">全局层</option>' + PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+function populateModuleSelect() {
+  const sel = $('m-module');
+  const pid = $('m-owner').value;
+  const cur = sel.value;
+  if (!pid) { sel.innerHTML = '<option value="">（全局层无模块）</option>'; sel.disabled = true; }
+  else {
+    const mods = [...new Set(MEMS.filter(m => m.project_id === Number(pid)).map(m => m.module || '').filter(Boolean))];
+    sel.innerHTML = '<option value="">无模块</option>' + mods.map(mod => `<option value="${esc(mod)}">${esc(mod)}</option>`).join('');
+    sel.disabled = !mods.length;
+  }
   if (cur) sel.value = cur;
 }
 
@@ -555,6 +570,7 @@ function openMem(mid) {
   $('m-content').value = m.content;
   $('m-level').value = m.level || 'note';
   $('m-owner').value = m.project_id || '';
+  populateModuleSelect();
   $('m-module').value = m.module || '';
   $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
   $('m-preview').innerHTML = linkify(m.content);
@@ -592,6 +608,7 @@ async function delMem() {
 function openAdd() {
   $('m-content').value = ''; $('m-level').value = 'decision';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+  populateModuleSelect();
   $('m-module').value = '';
   $('m-meta').textContent = '新建记忆'; $('m-links').textContent = ''; $('m-preview').textContent = '';
   $('m-title').textContent = '新建记忆';
@@ -603,6 +620,7 @@ function openAddLevel(level) {
   openAdd();
   $('m-level').value = level || 'decision';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+  populateModuleSelect();
   $('m-module').value = FOCUS_MODULE || '';
 }
 async function saveAdd() {
