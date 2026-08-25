@@ -18,6 +18,8 @@ from . import llm
 from . import memory as mem_mod
 from . import projects as proj_mod
 from . import supervise as sup_mod
+from . import auth
+from . import mcp_server as mcp_srv
 
 # 注意: 模型必须定义在模块级。若定义在 create_app 内部, 配合
 # `from __future__ import annotations` 会产生未解析的 ForwardRef, 导致
@@ -784,8 +786,8 @@ ASK_HTML = ("<!doctype html>\n<html lang=\"zh\">\n<head>\n<meta charset=\"utf-8\
 # ================================================================ FastAPI
 def create_app(db_path: Optional[str] = None):
     from pathlib import Path
-    from fastapi import Depends, FastAPI, HTTPException
-    from fastapi.responses import HTMLResponse
+    from fastapi import Body, Depends, FastAPI, HTTPException
+    from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
 
     # 启动时确保 schema 存在; 每个请求使用独立连接 (FastAPI 同步接口跑在线程池)
@@ -800,11 +802,24 @@ def create_app(db_path: Optional[str] = None):
             conn.close()
 
     app = FastAPI(title="外置大脑", version="0.3.0")
+    # 鉴权中间件: 设了 LCLONE_API_KEY 时保护 /api/* 与 /mcp
+
+    @app.middleware("http")
+    async def auth_mw(request, call_next):
+        return await auth.enforce(request, call_next)
     # 静态资源目录可选: 当前 HTML/CSS/JS 全部内联, 无需外部静态文件;
     # 仅当 static/ 存在时才挂载, 避免目录缺失导致应用启动即崩。
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.post("/mcp")
+    async def mcp_endpoint(body: dict = Body(...)):
+        """MCP over HTTP: JSON-RPC 请求, 复用 mcp_server.handle_message 分发。"""
+        resp = mcp_srv.handle_message(body)
+        if resp is None:
+            return JSONResponse(None, status_code=202)
+        return JSONResponse(resp)
 
     def _page(html: str) -> HTMLResponse:
         return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})

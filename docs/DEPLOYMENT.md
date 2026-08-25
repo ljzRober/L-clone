@@ -17,12 +17,40 @@
 ```bash
 # 服务器上:
 git clone <你的仓库> && cd L-clone
-cp .env.example .env        # 填写 API Key
+cp .env.example .env        # 填写 API Key + LCLONE_API_KEY(服务鉴权)
 docker compose up -d
 # 访问 http://服务器IP:8000
 ```
 
 数据持久化在 `./data/lclone.db`, 容器重启不丢失。
+
+> 服务器上**务必设置 `LCLONE_API_KEY`**, 否则任何能访问 8000 端口的人都能读写你的记忆。
+
+## MCP over HTTP（agent 远程接入）
+
+Web 服务同时暴露 MCP 端点, Claude Code / Codex / DSH 等可远程读写大脑:
+
+```
+端点:   POST /mcp          (JSON-RPC over HTTP)
+鉴权:   Authorization: Bearer <LCLONE_API_KEY>   或   X-API-Key: <key>
+工具:   bootstrap / capture / recall / remember / promote / demote / suggest / projects / review / ask
+```
+
+配置示例(Claude Code 的 MCP server, 走 streamable-http):
+
+```json
+{
+  "mcpServers": {
+    "lclone": {
+      "url": "https://lclone.yourdomain.com/mcp",
+      "headers": { "Authorization": "Bearer <你的 LCLONE_API_KEY>" }
+    }
+  }
+}
+```
+
+> 注意: 当前 `/mcp` 是 JSON-RPC over HTTP(请求-响应), 覆盖 tools/list + tools/call;
+> 若客户端强制要求 SSE 流式响应, 后续可补 streamable-http 的 SSE 分支。
 
 ## 加 HTTPS(推荐 Caddy)
 
@@ -43,4 +71,4 @@ lclone.yourdomain.com {
 
 - 浏览器: 任何设备打开 `https://你的域名` 即用(Web 面板)
 - 命令行: `ssh 服务器` 后执行 `lclone ask "..."` 等
-- v1 起: MCP server, 让 Claude Code 等 AI 工具直接读写大脑
+- AI 工具: 通过 MCP over HTTP(`POST /mcp`)让 Claude Code / Codex / DSH 直接读写大脑

@@ -273,15 +273,41 @@ def call_tool(name: str, args: dict) -> str:
         conn.close()
 
 
-# ---------------------------------------------------------------- JSON-RPC 循环
-def _send(rid, result=None, error=None) -> None:
-    msg = {"jsonrpc": "2.0", "id": rid}
-    if error is not None:
-        msg["error"] = error
-    else:
-        msg["result"] = result
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+# ---------------------------------------------------------------- JSON-RPC 分发
+def handle_message(msg: dict):
+    """处理单条 JSON-RPC 消息, 返回响应 dict (通知类/无 id 返回 None)。
+
+    stdio 循环与 HTTP 传输共用此函数, 不绑 stdin/stdout。
+    """
+    rid = msg.get("id")
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0", "id": rid,
+            "result": {
+                "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "lclone", "version": "0.1.0"},
+            },
+        }
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
+    if method == "tools/call":
+        name = params.get("name", "")
+        args = params.get("arguments") or {}
+        text = call_tool(name, args)
+        return {
+            "jsonrpc": "2.0", "id": rid,
+            "result": {"content": [{"type": "text", "text": text}],
+                       "isError": text.startswith("错误:")},
+        }
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rid, "result": {}}
+    return {
+        "jsonrpc": "2.0", "id": rid,
+        "error": {"code": -32601, "message": f"Method not found: {method}"},
+    }
 
 
 def main() -> None:
@@ -295,30 +321,10 @@ def main() -> None:
             continue
         if "id" not in msg:
             continue  # 通知类消息, 忽略
-        rid = msg["id"]
-        method = msg.get("method")
-        params = msg.get("params") or {}
-        if method == "initialize":
-            _send(rid, {
-                "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "lclone", "version": "0.1.0"},
-            })
-        elif method == "tools/list":
-            _send(rid, {"tools": TOOLS})
-        elif method == "tools/call":
-            name = params.get("name", "")
-            args = params.get("arguments") or {}
-            text = call_tool(name, args)
-            _send(rid, {
-                "content": [{"type": "text", "text": text}],
-                "isError": text.startswith("错误:"),
-            })
-        elif method == "ping":
-            _send(rid, {})
-        else:
-            _send(rid, error={"code": -32601,
-                              "message": f"Method not found: {method}"})
+        resp = handle_message(msg)
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -303,13 +303,32 @@ check("64 doctor 返回清单", "skill 已装" in names and "配置 .env" in nam
 skill_ok = next(i for i in items if i["name"] == "skill 已装")
 check("65 doctor 识别 skill 已装", skill_ok["ok"] is True)
 
+# ---- 服务化: MCP 分发 + 鉴权 ----
+from lclone import mcp_server as mcp_srv, auth as auth_mod
+resp = mcp_srv.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+check("66 MCP tools/list", bool(resp["result"]["tools"]) and resp["id"] == 1)
+resp = mcp_srv.handle_message({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}})
+check("67 MCP initialize", resp["result"]["serverInfo"]["name"] == "lclone")
+resp = mcp_srv.handle_message({"jsonrpc": "2.0", "id": 3, "method": "ping"})
+check("68 MCP ping", resp["result"] == {})
+resp = mcp_srv.handle_message({"jsonrpc": "2.0", "id": 4, "method": "nope"})
+check("69 MCP 未知方法报错", resp["error"]["code"] == -32601)
+
+os.environ["LCLONE_API_KEY"] = "testkey"
+check("70 鉴权: 无 key 拒绝", auth_mod.check({}) is False)
+check("71 鉴权: Bearer 通过", auth_mod.check({"authorization": "Bearer testkey"}) is True)
+check("72 鉴权: X-API-Key 通过", auth_mod.check({"x-api-key": "testkey"}) is True)
+check("73 鉴权: 错 key 拒绝", auth_mod.check({"authorization": "Bearer wrong"}) is False)
+os.environ.pop("LCLONE_API_KEY", None)
+check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app
     app = create_app(dbp)
     routes = {r.path for r in app.routes}
     check("24 Web 路由", "/api/ask" in routes and "/api/supervise" in routes
-          and "/api/memories" in routes)
+          and "/api/memories" in routes and "/mcp" in routes)
 except ImportError:
     print("SKIP 24 Web (fastapi 未安装, 装依赖后自动启用)")
 
