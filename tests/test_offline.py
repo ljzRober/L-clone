@@ -63,22 +63,29 @@ row = conn.execute(
 ).fetchone()
 check("6 主动记忆立即生效", row["status"] == "active" and row["source_type"] == "manual")
 
-# ---- B 自动捕获: 进草稿待确认 ----
-ids = mem_mod.capture(
-    conn,
-    "讨论后确定: 6月1日上线; 放弃微服务改用单体; 部署用 Docker Compose",
-    project_id=pid, title="方案讨论",
-)
-check("7 自动捕获生成草稿", len(ids) >= 1, str(ids))
-row = conn.execute("SELECT status FROM memories WHERE id=?", (ids[0],)).fetchone()
-check("8 草稿状态 pending", row["status"] == "pending")
+# ---- B 自动捕获: 记录直接生效, 决策进草稿待确认 ----
+ids_note = mem_mod.capture(conn, "一条过程性记录, 无需确认", project_id=pid)
+row = conn.execute("SELECT status FROM memories WHERE id=?",
+                   (ids_note[0],)).fetchone()
+check("7 capture note 直接 active", row["status"] == "active", str(row["status"]))
+
+# 模拟分类器返回 decision → 应进 pending 待确认
+import lclone.llm as llm_mod
+_orig_extract = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t: [{"level": "decision",
+                                       "content": "确定 6月1日上线", "confidence": 0.9}]
+ids_dec = mem_mod.capture(conn, "确定 6月1日上线", project_id=pid, title="方案讨论")
+llm_mod.extract_memories = _orig_extract
+row = conn.execute("SELECT status FROM memories WHERE id=?",
+                   (ids_dec[0],)).fetchone()
+check("8 capture decision 进 pending", row["status"] == "pending", str(row["status"]))
 pend = mem_mod.pending_memories(conn)
 check("9 待确认列表", len(pend) >= 1, f"{len(pend)} 条")
-mem_mod.review(conn, ids[0], "keep")
+mem_mod.review(conn, ids_dec[0], "keep")
 row = conn.execute(
-    "SELECT status, confirmed_at FROM memories WHERE id=?", (ids[0],)
+    "SELECT status, confirmed_at FROM memories WHERE id=?", (ids_dec[0],)
 ).fetchone()
-check("10 确认后生效", row["status"] == "active" and row["confirmed_at"] is not None)
+check("10 决策确认后生效", row["status"] == "active" and row["confirmed_at"] is not None)
 
 # ---- 回顾环 ----
 items = mem_mod.recall(conn, "FastAPI 数据库", project_id=pid)
@@ -186,7 +193,12 @@ check("33 --no-follow 不跟随链接",
 # ---- 删除提示 suggest ----
 dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
 dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
+# note 现在直接 active, 造一条 pending 决策草稿来测"长期未确认"
+_orig_extract2 = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t: [{"level": "decision",
+                                       "content": "一个从未确认的旧草稿", "confidence": 0.9}]
 mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
+llm_mod.extract_memories = _orig_extract2
 stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
                      ).fetchone()["mid"]
 conn.execute("UPDATE memories SET created_at=datetime('now','-30 days')"

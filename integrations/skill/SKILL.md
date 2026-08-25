@@ -31,7 +31,7 @@ description: |
 ## 自动记忆规则（务必遵守）
 
 1. **会话开始（硬性）**：先调 `bootstrap`（query=用户首条消息的话题关键词），把返回的【项目方向】+【全局记忆】+【相关记忆】纳入回答上下文；返回为空则跳过，不打扰用户。
-2. **对话中**：出现确定信息（决定了 X / 边界是 Y / 上线时间 / 值得记的过程性事实）时，自动 `capture` 进草稿（B 类，AI 分类为 decision/note + 用户确认制），并在回复中告知"已记录为草稿 #N，可运行 lclone review 确认"。不要未经用户同意就 `remember` 直接生效——除非用户明确说"记一下/直接记/记住"（此时用 `remember`，C 类你说算）。
+2. **对话中**：出现确定信息（决定了 X / 边界是 Y / 上线时间 / 值得记的过程性事实）时，自动 `capture`。capture 会自动分类：**决策(decision) 进草稿待确认**（在回复里告知"已记录决策草稿 #N，lclone review 确认"）；**记录(note) 直接生效，无需确认**。不要未经用户同意就 `remember` 直接生效——除非用户明确说"记一下/直接记/记住"（此时用 `remember`，C 类你说算）。
 3. **归属判定（优先级：git → 全局判断 → 问用户）**：
    a. **先按 git 定项目**：确定当前对话/工作所在的 git 仓库（`git -C <目录> rev-parse --show-toplevel`），匹配 lclone 已注册项目；匹配到就用它——调用 `remember`/`capture` 时传 `project=<项目名>`，或传 `cwd=<仓库目录>` 让服务器自动检测。
    b. **再判断是否该升全局**：这条记忆是否被多个项目共读、是否不隶属于任何具体项目 → 是则不传 project（落到全局层，生命周期无限）；是否该把已有项目记忆 `promote` 也同理判断。
@@ -39,8 +39,8 @@ description: |
    c. **拿不准就问用户**：不确定归属哪个项目、或不确定该不该全局时，**问用户，不要猜**。
 4. **回答"上次定了什么 / 上次做到哪"**：`recall` 后用结果如实总结，记忆不足就明说，不编造。
 5. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
-6. **草稿提醒**：如果 `capture` 产生了草稿，提醒用户去确认（CLI: `lclone review`；Web: 「待确认」页签）。
-7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），分类为决策(decision)/记录(note) 两类；dummy 后端整段视为一条 note。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
+6. **草稿提醒**：如果 `capture` 产生了**决策**草稿，提醒用户去确认（CLI: `lclone review`；Web: 「待确认」页签）。记录(note) 无需提醒。
+7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），分类为决策(decision，进待确认)/记录(note，直接生效)；dummy 后端整段视为一条 note。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
 8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec），脑内记忆（决策/记录/charter）走 lclone。lclone 不重复存 spec 全文，只经 `specs_index` 索引；决策升格为硬边界时才进 sp-spec。
 
 ## 数据库

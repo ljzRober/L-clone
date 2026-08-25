@@ -110,9 +110,10 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             module: str = "") -> List[int]:
-    """自动捕获: LLM 提炼决策/记录 -> 写入 pending 草稿区, 待确认。
+    """自动捕获: LLM 提炼决策/记录。
 
-    分类器返回 [{level, content, confidence}], 按等级分别落草稿 (decision 和 note 都能写入);
+    决策(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
+    记录(note) → active 直接生效 (低风险过程性事实, 免确认)。
     写入前用向量相似度去重 (与 suggest 的 dup_threshold 一致)。
     """
     session_id = log_session(conn, project_id, title=title, summary=text[:300])
@@ -126,13 +127,24 @@ def capture(conn: sqlite3.Connection, text: str,
         emb = llm.embed_one(content)
         if _is_duplicate(conn, emb, project_id=project_id):
             continue
-        cur = conn.execute(
-            "INSERT INTO memories(project_id, level, module, content, reason, status,"
-            " source_type, source_ref, embedding)"
-            " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
-            (project_id, level, module.strip(), content, f"来自会话 #{session_id}",
-             f"session:{session_id}", pack_vec(emb)),
-        )
+        reason = f"来自会话 #{session_id}"
+        ref = f"session:{session_id}"
+        if level == "decision":
+            # 决策进草稿待确认 (B 类)
+            cur = conn.execute(
+                "INSERT INTO memories(project_id, level, module, content, reason,"
+                " status, source_type, source_ref, embedding)"
+                " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
+                (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
+            )
+        else:
+            # 记录直接生效 (免确认)
+            cur = conn.execute(
+                "INSERT INTO memories(project_id, level, module, content, reason,"
+                " status, source_type, source_ref, embedding, confirmed_at)"
+                " VALUES (?, ?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
+                (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
+            )
         _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
     conn.commit()

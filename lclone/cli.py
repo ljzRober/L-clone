@@ -107,8 +107,8 @@ def cmd_capture(args) -> None:
     else:
         where = f"项目 #{pid}" if pid is not None else "全局层"
         tag = " (git 自动归属)" if auto else ""
-        print(f"已生成 {len(ids)} 条草稿待确认 [{where}]{tag}: {ids}")
-        print("运行: lclone review")
+        print(f"已生成 {len(ids)} 条记忆 [{where}]{tag}: {ids}")
+        print("(记录已直接生效; 决策进「待确认」, 运行 lclone review 确认)")
 
 
 def cmd_review(args) -> None:

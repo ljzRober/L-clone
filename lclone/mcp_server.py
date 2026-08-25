@@ -212,8 +212,8 @@ def call_tool(name: str, args: dict) -> str:
                 where = f"项目 #{pid} (git 自动归属)"
             else:
                 where = f"项目 #{pid}"
-            return (f"已生成 {len(ids)} 条草稿待确认 [{where}]: {ids}\n"
-                    f"请提醒用户: lclone review 确认 (或告诉我 review keep/delete)")
+            return (f"已生成 {len(ids)} 条记忆 [{where}]: {ids}\n"
+                    f"(记录已直接生效; 决策进待确认, 请提醒用户 lclone review)")
         if name == "recall":
             pid = _resolve_project(conn, args.get("project"))
             items = mem_mod.recall(conn, args["query"], k=int(args.get("k", 5)),
