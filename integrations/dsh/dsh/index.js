@@ -11,9 +11,21 @@
 // 例如 '.venv/bin/python -m lclone' 或绝对路径)。
 
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { join, dirname } from 'node:path'
+import { existsSync } from 'node:fs'
 
-const LCLONE_CMD = (process.env.LCLONE_CMD || 'lclone').trim()
-const [lcloneBin, ...lcloneBaseArgs] = LCLONE_CMD.split(/\s+/)
+// 解析 lclone 命令: LCLONE_CMD 优先; 否则定位仓库 .venv/bin/python -m lclone;
+// 再兜底 PATH 上的 lclone。
+function resolveLclone() {
+  if (process.env.LCLONE_CMD) return process.env.LCLONE_CMD.trim().split(/\s+/)
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+  const py = join(repo, '.venv/bin/python')
+  if (existsSync(py)) return [py, '-m', 'lclone']
+  return ['lclone']
+}
+
+const [lcloneBin, ...lcloneBaseArgs] = resolveLclone()
 
 function extractText(event) {
   const d = event.data || {}
