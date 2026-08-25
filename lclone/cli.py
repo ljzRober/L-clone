@@ -189,6 +189,12 @@ def cmd_install(args) -> None:
         target=args.target, yes=args.yes, db_path=args.db))
 
 
+def cmd_backup(args) -> None:
+    from . import db as db_mod
+    dest = db_mod.backup(db_path=args.db, dest_dir=args.dest)
+    print(f"已备份到 {dest}")
+
+
 def cmd_promote(args) -> None:
     conn = _conn(args)
     try:
@@ -358,6 +364,11 @@ def build_parser() -> argparse.ArgumentParser:
                     default=None, help="配置哪些触发 (默认 all)")
     si.add_argument("--yes", action="store_true", help="非交互, 用默认值")
     si.set_defaults(func=cmd_install)
+
+    sbk = sub.add_parser("backup", parents=[parent],
+                         help="SQLite 在线备份到 backups/")
+    sbk.add_argument("--dest", default="backups", help="备份目录 (默认 backups/)")
+    sbk.set_defaults(func=cmd_backup)
 
     spm = sub.add_parser("promote", parents=[parent],
                          help="记忆上升: 项目记忆 -> 全局层 (生命周期无限)")

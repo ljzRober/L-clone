@@ -23,6 +23,7 @@ lclone ask "问题" [--project id] [--thread id]  # 回顾环
 lclone web [--host 0.0.0.0] [--port 8000]
 lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes]   # 一键接入向导
 lclone doctor [--check-llm]                                                 # 自检接入是否完整
+lclone backup [--dest backups]                                              # SQLite 在线快照备份
 ```
 
 所有子命令可用 `--db <路径>` 指定数据库(前后均可)。

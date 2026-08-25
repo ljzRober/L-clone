@@ -322,6 +322,10 @@ check("73 鉴权: 错 key 拒绝", auth_mod.check({"authorization": "Bearer wron
 os.environ.pop("LCLONE_API_KEY", None)
 check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
 
+# ---- 在线备份 ----
+bpath = db_mod.backup(db_path=dbp, dest_dir=os.path.join(tmp, "bak"))
+check("75 backup 生成快照", os.path.exists(bpath) and bpath.endswith(".db"))
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app

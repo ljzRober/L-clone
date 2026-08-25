@@ -177,3 +177,26 @@ def pack_vec(vec: List[float]) -> bytes:
 def unpack_vec(blob: bytes) -> List[float]:
     n = len(blob) // 4
     return list(struct.unpack(f"<{n}f", blob))
+
+
+# ---------------------------------------------------------------- 在线备份
+def backup(db_path: Optional[str] = None, dest_dir: str = "backups") -> str:
+    """SQLite 在线备份: 用 backup API 安全快照到 dest_dir/lclone-<时间戳>.db。
+
+    走 SQLite 的 online backup (而非直接 copy 文件), WAL 模式下也安全;
+    返回快照文件路径。
+    """
+    import datetime
+    src_path = db_path or config.db_path()
+    d = Path(dest_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = d / f"lclone-{stamp}.db"
+    src = sqlite3.connect(src_path)
+    dst = sqlite3.connect(str(dest))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    return str(dest)
