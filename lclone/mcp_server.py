@@ -68,6 +68,7 @@ TOOLS = [
                             "description": "项目名或 id; 不传则按 cwd 的 git 仓库自动判定, 判定不到 = 全局层(个人区)"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                "module": {"type": "string", "description": "项目内模块名 (可选, 次级竖向划分)"},
                 "level": {"type": "string", "enum": ["decision", "milestone", "note"],
                           "description": "默认 decision"},
             },
@@ -85,6 +86,7 @@ TOOLS = [
                             "description": "项目名或 id; 不传则按 cwd 的 git 仓库自动判定, 判定不到 = 全局层"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                "module": {"type": "string", "description": "项目内模块名 (可选)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
             },
             "required": ["text"],
@@ -172,7 +174,7 @@ def call_tool(name: str, args: dict) -> str:
                 auto = pid is not None
             mid = mem_mod.remember(conn, args["content"],
                                    level=args.get("level", "decision"),
-                                   project_id=pid)
+                                   project_id=pid, module=args.get("module", ""))
             if pid is None:
                 where = "全局层(个人区)"
             elif auto:
@@ -187,7 +189,8 @@ def call_tool(name: str, args: dict) -> str:
                 pid = proj_mod.detect_project_by_git(conn, cwd=args.get("cwd"))
                 auto = pid is not None
             ids = mem_mod.capture(conn, args["text"], project_id=pid,
-                                  title=args.get("title", ""))
+                                  title=args.get("title", ""),
+                                  module=args.get("module", ""))
             if not ids:
                 return "未提炼出确定的决策 (内容里可能没有结论)"
             if pid is None:

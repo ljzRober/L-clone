@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS memories (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   level        TEXT NOT NULL DEFAULT 'note',   -- decision | milestone | note
+  module       TEXT NOT NULL DEFAULT '',       -- 项目内可选模块 (次级竖向划分), 空=直接挂项目
   content      TEXT NOT NULL,
   reason       TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT 'active',
@@ -123,7 +124,7 @@ def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     parent = Path(path).parent
     if str(parent) not in ("", "."):
         parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -133,6 +134,10 @@ def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
 def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn = connect(db_path)
     conn.executescript(SCHEMA)
+    # 迁移: 旧库给 memories 补 module 列 (项目内模块维度, 可选)
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(memories)")]
+    if "module" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN module TEXT NOT NULL DEFAULT ''")
     tok = _fts_tokenizer(conn)
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "

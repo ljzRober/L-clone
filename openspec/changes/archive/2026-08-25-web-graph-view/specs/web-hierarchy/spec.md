@@ -1,8 +1,7 @@
-# web-hierarchy Specification
+# Web 面板
 
-## Purpose
-TBD - created by archiving change ui-hierarchy. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: 记忆工作台
 
 Web 面板主页面 SHALL 是记忆工作台：左侧树状层级导航 + 右侧架构图（全局层/项目/模块 三层，每层三个横向划分恒显示），用户通过点击查看、编辑、迁移、添加记忆。
@@ -36,18 +35,3 @@ THEN 记忆写入该横向划分列并刷新图形与计数
 
 WHEN 浏览任意页面
 THEN 界面不出现「记忆/spec」区分或 spec 计数；所有记忆即 spec
-
-### Requirement: 问答独立页面
-
-问答 SHALL 位于独立页面 /ask，与记忆工作台完全分开。
-
-#### Scenario: 独立访问
-
-WHEN 在工作台点击「问答 →」或在浏览器访问 /ask
-THEN 打开独立的问答页（带记忆聊天 + 边界监督），与记忆管理界面互不混合
-
-#### Scenario: 页面互链
-
-WHEN 在问答页点击「← 记忆工作台」
-THEN 返回记忆工作台主页
-

@@ -40,18 +40,21 @@ class RememberIn(BaseModel):
     level: str = "decision"
     project_id: Optional[int] = None
     reason: str = ""
+    module: str = ""
 
 
 class CaptureIn(BaseModel):
     text: str
     title: str = ""
     project_id: Optional[int] = None
+    module: str = ""
 
 
 class ReviewIn(BaseModel):
     id: int
     action: str = "keep"
     content: Optional[str] = None
+    module: Optional[str] = None
 
 
 class DemoteIn(BaseModel):
@@ -126,6 +129,8 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .rail.global { background:var(--acc); }
 .rail.project { background:var(--acc2); }
 .layer .nm { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer.sub { padding-left:24px; font-size:12px; }
+.layer.sub .nm { font-weight:normal; }
 .layer .cnt { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
 .layer .cnt b { color:var(--fg); }
 #reg-form { display:none; padding:8px; }
@@ -161,12 +166,13 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
             z-index:40; align-items:center; justify-content:center; }
 .modal-bg.on { display:flex; }
 .modal { width:min(520px,92vw); background:var(--surface); border:1px solid var(--line);
-         border-radius:14px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+         border-radius:14px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,.5);
+         max-height:88vh; overflow-y:auto; }
 .modal h3 { margin:0 0 14px; font-family:var(--serif); font-size:16px; font-weight:600; }
 .modal input, .modal textarea, .modal select { width:100%; background:#0d1424; color:var(--fg);
          border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:13px;
          margin-bottom:10px; font-family:inherit; }
-.modal textarea { min-height:96px; resize:vertical; }
+.modal textarea { min-height:150px; resize:vertical; }
 .row { display:flex; gap:8px; align-items:center; }
 
 /* ---- 问答页 ---- */
@@ -185,6 +191,58 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .muted { color:var(--dim); font-size:12px; }
 pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line); border-radius:8px;
           padding:10px 12px; font-size:12px; font-family:var(--mono); overflow-x:auto; }
+
+/* ---- 架构图 ---- */
+.toolbar { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+.toolbar .sum { font-family:var(--mono); font-size:11px; color:var(--dim); }
+.zoomb { width:30px; height:28px; padding:0; }
+#graph { height: calc(100vh - 210px); min-height:520px; overflow:auto;
+         border:1px solid var(--line); border-radius:14px; position:relative;
+         background:#f6f8fb; }
+#graph svg { display:block; transform-origin:0 0; }
+/* 分层块状架构图 (浅色画布, 还原参考图) */
+.bandbox { fill:#ffffff; stroke:#e4e9f1; }
+.bandhead { fill:#eef2f8; stroke:#e4e9f1; }
+.band.bg-g .bh { fill:#2f7d4f; } .band.bg-g .bandhead { fill:#e8f5ee; }
+.band.bg-p .bh { fill:#2b6cb0; } .band.bg-p .bandhead { fill:#e8f1fb; }
+.band.bg-m .bh { fill:#7a4fb0; } .band.bg-m .bandhead { fill:#f1eafa; }
+.band.bg-d .bh { fill:#2b6cb0; } .band.bg-d .bandhead { fill:#e8f1fb; }
+.band.bg-n .bh { fill:#67707f; } .band.bg-n .bandhead { fill:#f0f2f5; }
+.bh { fill:#2a3342; font-size:14px; font-weight:bold; font-family:Georgia,"Songti SC",serif; }
+.bs { fill:#8b95a9; font-size:11px; }
+.hd-g{fill:#e8f5ee;} .hd-p{fill:#e8f1fb;} .hd-m{fill:#f1eafa;} .hd-d{fill:#e8f1fb;} .hd-n{fill:#f0f2f5;}
+.box { cursor:pointer; }
+.box rect { fill:#fff; stroke:#cfd8e4; stroke-width:1; transition:stroke .15s; }
+.box:hover rect { stroke:#5b8def; stroke-width:2; }
+.bt { fill:#1f2733; font-size:12px; }
+/* 项目卡片独立色 (区别于记忆方块) */
+.projcard rect { fill:#eef6ff; stroke:#7fb0ff; stroke-width:1; }
+.projcard:hover rect { stroke:#3c82f6; stroke-width:2; }
+.projcard .bt { fill:#2b6cb0; font-weight:bold; }
+.projcard .bm { fill:#5b8def; }
+/* 列头模块/等级着色 */
+.colhead { stroke:#dfe6ef; stroke-width:1; }
+.bm { fill:#8b95a9; font-size:10px; font-family:ui-monospace,Menlo,monospace; }
+.box .inner { fill:#f4f7fb; stroke:#e4e9f1; }
+.rail-global { fill:#e0b15c; }
+.rail-project { fill:#5b8def; }
+.flow { stroke:#9aa5b5; stroke-width:2; }
+.cap { fill:#5a6474; font-size:14px; font-family:Georgia,"Songti SC",serif; font-weight:bold; }
+
+/* ---- 大弹窗 (记忆详情/编辑) ---- */
+.modal-lg { width:min(860px,95vw); }
+.modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.modal-head h3 { margin:0; }
+.modal-x { background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--dim);
+           width:32px; height:32px; cursor:pointer; font-size:15px; line-height:1; }
+.modal-x:hover { color:var(--fg); border-color:var(--acc); }
+.modal-lg .meta { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:10px; }
+.m-preview { background:#0d1424; border:1px solid var(--line); border-radius:8px; padding:10px;
+             font-size:13px; white-space:pre-wrap; margin-bottom:8px; max-height:180px; overflow-y:auto; }
+.m-preview a { color:var(--acc); cursor:pointer; }
+.modal-lg .links { font-size:12px; color:var(--dim); margin:10px 0; }
+.modal-lg .links a { color:var(--acc); cursor:pointer; margin-right:10px; }
+.modal-lg .row { margin-top:8px; }
 
 @media (max-width:760px) {
   .shell { flex-direction:column; }
@@ -206,7 +264,6 @@ WORK_BODY = r"""
   <span class="tag" id="backend"></span>
   <span class="sp"></span>
   <a class="navbtn" href="/ask">问答 →</a>
-  <button class="act" onclick="openAdd()">＋ 添加记忆</button>
 </header>
 <div class="shell">
   <aside class="sidebar">
@@ -224,175 +281,357 @@ WORK_BODY = r"""
     </div>
   </aside>
   <main class="main">
-    <div class="sec-head">
-      <h2 id="sec-title">全局层</h2>
-      <span class="sub" id="sec-sub"></span>
+    <div class="toolbar">
+      <button class="ghost zoomb" onclick="zoom(1.25)" title="放大">＋</button>
+      <button class="ghost zoomb" onclick="zoom(0.8)" title="缩小">－</button>
+      <button class="ghost zoomb" onclick="zoomFit()" title="适应">⛶</button>
+      <span class="sum" id="graph-sum"></span>
+      <span style="flex:1"></span>
+      <button class="act" onclick="openAdd()">＋ 添加记忆</button>
     </div>
-    <div class="cards" id="cards"></div>
+    <div id="graph"></div>
   </main>
 </div>
+
 <div class="modal-bg" id="modal">
-  <div class="modal">
-    <h3>添加记忆</h3>
-    <textarea id="mem-content" placeholder="要记住的内容（一句话决策 / 边界 / 记录）"></textarea>
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <h3 id="m-title">记忆详情</h3>
+      <button class="modal-x" onclick="closeModal()" title="关闭">✕</button>
+    </div>
+    <div class="meta" id="m-meta"></div>
+    <div class="m-preview" id="m-preview"></div>
+    <textarea id="m-content" placeholder="记忆内容…"></textarea>
     <div class="row">
-      <select id="mem-level" style="width:130px">
+      <select id="m-level" style="width:150px">
         <option value="decision">决策</option>
         <option value="milestone">重要修改点</option>
         <option value="note">记录</option>
       </select>
-      <select id="mem-owner" style="flex:1"><option value="">全局层</option></select>
+      <select id="m-owner" style="flex:1"><option value="">全局层</option></select>
+      <span class="muted" id="m-owner-hint"></span>
     </div>
+    <input id="m-module" placeholder="模块名（可选，项目内次级竖向划分）">
+    <div class="links" id="m-links"></div>
     <div class="row" style="justify-content:flex-end">
-      <button class="ghost" onclick="closeAdd()">取消</button>
-      <button class="act" onclick="addMemory()">记住</button>
+      <button class="ghost" id="btn-del" onclick="delMem()">删除</button>
+      <button class="ghost" id="btn-move" onclick="applyMove()">移动到所选</button>
+      <button class="act" id="btn-save" onclick="saveEdit()">保存修改</button>
     </div>
   </div>
 </div>
 """
 
-WORK_JS = r"""
-const $ = id => document.getElementById(id);
-let CUR = { kind: 'global', pid: null, name: '全局层' };
-let PROJS = [];
+WORK_JS = r"""const $ = id => document.getElementById(id);
+let PROJS = [], MEMS = [], LINKS = [];
+const EXPANDED = new Set();
+let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
+let CUR_MID = null;
 const API = {
   projects: async () => (await (await fetch('/api/projects')).json()).items,
   memories: async qs => (await fetch('/api/memories' + qs)).json(),
+  links: async () => (await fetch('/api/links')).json(),
   remember: async body => (await fetch('/api/remember', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   promote: async id => (await fetch('/api/memories/'+id+'/promote', {method:'POST'})).json(),
   demote: async (id, project_id) => (await fetch('/api/memories/'+id+'/demote', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({project_id})})).json(),
+  review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function fmt(t){ return esc(t).replace(/\[\[m:(\d+)\]\]/g, '<span class="lk">🔗 #$1</span>'); }
+function linkify(t){ return esc(t).replace(/\[\[m:(\d+)\]\]/g, '<a onclick="openMem($1)">🔗 #$1</a>'); }
 function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
+function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
   alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
 });
+const LN = { decision:'决策', milestone:'重要修改点', note:'记录' };
 
-/* ---------- 层级树 (含拖拽投放) ---------- */
-function treeNode(kind, pid, name, rail, cntHtml, id) {
-  const btn = document.createElement('button');
-  btn.className = 'layer'; btn.id = id;
-  btn.innerHTML = `<span class="rail ${rail}"></span><span class="nm">${esc(name)}</span><span class="cnt">${cntHtml}</span>`;
-  btn.onclick = () => selectLayer(kind, pid, name);
-  btn.addEventListener('dragover', e => { e.preventDefault(); btn.classList.add('drop'); });
-  btn.addEventListener('dragleave', () => btn.classList.remove('drop'));
-  btn.addEventListener('drop', e => {
-    e.preventDefault(); btn.classList.remove('drop');
-    const mid = e.dataTransfer.getData('text/plain');
-    if (mid) moveMem(Number(mid), kind, pid, name);
-  });
-  return btn;
+async function loadAll() {
+  const [p, m, l] = await Promise.all([API.projects(), API.memories('?status=active&limit=500'), API.links()]);
+  PROJS = p; MEMS = m.items; LINKS = l.items;
+  fillOwnerSelect();
+  renderSidebar(); renderGraph();
 }
-function renderTree() {
-  const box = $('tree'); box.innerHTML = '';
-  box.appendChild(treeNode('global', null, '全局层', 'global', '∞', 'lg-global'));
-  PROJS.forEach(p => box.appendChild(
-    treeNode('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>`, 'lg-p' + p.id)));
-  if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
-  highlightCur();
-}
-function highlightCur() {
-  document.querySelectorAll('.layer').forEach(x => x.classList.remove('on'));
-  const el = $(CUR.kind === 'project' ? 'lg-p' + CUR.pid : 'lg-global');
-  if (el) el.classList.add('on');
-}
-function selectLayer(kind, pid, name) {
-  CUR = kind === 'project' ? { kind:'project', pid, name } : { kind:'global', pid:null, name:'全局层' };
-  highlightCur();
-  $('sec-title').textContent = CUR.name;
-  $('sec-sub').textContent = kind === 'project'
-    ? '记忆生命周期随项目绑定' : '全局层 · 生命周期无限，多项目共读';
-  renderCards();
-}
-
-/* ---------- 卡片流 ---------- */
-async function renderCards() {
-  const qs = CUR.kind === 'project' ? '?project_id=' + CUR.pid : '?layer=global';
-  const r = await API.memories(qs);
-  const box = $('cards'); box.innerHTML = '';
-  if (!r.items.length) {
-    box.appendChild(makeEl('div', 'empty', '这一层还没有记忆 — 点右上角「＋ 添加记忆」'));
-    return;
-  }
-  r.items.forEach(x => box.appendChild(cardEl(x)));
-}
-function cardEl(x) {
-  const c = document.createElement('div');
-  c.className = 'card'; c.draggable = true; c.dataset.mid = x.id;
-  const layerBadge = x.project_id
-    ? '<span class="badge b-project">项目</span>'
-    : '<span class="badge b-global">全局</span>';
-  const lv = esc(x.level || 'note');
-  c.innerHTML =
-    `<div>${layerBadge}<span class="badge b-${lv}">${lv}</span></div>` +
-    `<div class="body">${fmt(x.content)}</div>` +
-    `<div class="meta">#${x.id} · ${esc(x.project || x.project_name || '个人区')} · ${x.created_at}</div>` +
-    `<div class="ops">` +
-    (x.project_id ? `<button class="ghost" onclick="moveMem(${x.id},'global',null,'全局层')">↑ 到全局</button>` : '') +
-    `<span class="muted" style="margin-left:auto">拖到左侧层级可移动</span></div>`;
-  c.addEventListener('dragstart', e => {
-    e.dataTransfer.setData('text/plain', String(x.id));
-    c.classList.add('dragging');
-  });
-  c.addEventListener('dragend', () => c.classList.remove('dragging'));
-  return c;
-}
-async function moveMem(mid, kind, pid, name) {
-  try {
-    if (kind === 'global') await API.promote(mid);
-    else await API.demote(mid, pid);
-    await reload();
-    alert('记忆 #' + mid + ' → ' + (kind === 'global' ? '全局层' : '项目「' + name + '」'));
-  } catch (e) { alert('移动失败: ' + ((e && e.message) || e)); }
-}
-async function reload() { await loadProjects(); await renderCards(); }
-
-/* ---------- 添加记忆 / 注册项目 ---------- */
-function openAdd() { $('modal').classList.add('on'); $('mem-content').focus(); }
-function closeAdd() { $('modal').classList.remove('on'); }
-async function addMemory() {
-  const content = $('mem-content').value.trim();
-  if (!content) return alert('内容不能为空');
-  const body = { content, level: $('mem-level').value };
-  if ($('mem-owner').value) body.project_id = Number($('mem-owner').value);
-  const r = await API.remember(body);
-  $('mem-content').value = '';
-  closeAdd();
-  await reload();
-  alert('已记住 #' + r.id);
-}
-function toggleReg() { $('reg-form').classList.toggle('on'); }
-async function addProject() {
-  const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(),
-                 charter: $('pj-charter').value.trim() };
-  if (!body.name) return alert('需要项目名');
-  const r = await API.addProject(body);
-  try { await API.sync(r.id); } catch (e) { /* 路径无效等, 忽略 */ }
-  $('pj-name').value=''; $('pj-path').value=''; $('pj-charter').value='';
-  toggleReg();
-  await loadProjects();
-}
-async function loadProjects() {
-  PROJS = await API.projects();
-  renderTree();
-  const sel = $('mem-owner');
+function fillOwnerSelect() {
+  const sel = $('m-owner');
   const cur = sel.value;
-  sel.innerHTML = '<option value="">全局层</option>' +
-    PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  sel.innerHTML = '<option value="">全局层</option>' + PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   if (cur) sel.value = cur;
 }
 
-/* ---------- 启动 ---------- */
+/* ---- 侧边栏 (快速选择) ---- */
+function treeBtn(kind, pid, name, rail, cntHtml, id) {
+  const b = document.createElement('button');
+  b.className = 'layer'; b.id = id;
+  b.innerHTML = `<span class="rail ${rail}"></span><span class="nm">${esc(name)}</span><span class="cnt">${cntHtml}</span>`;
+  b.onclick = () => selectSidebar(kind, pid);
+  return b;
+}
+function renderSidebar() {
+  const box = $('tree'); box.innerHTML = '';
+  box.appendChild(treeBtn('global', null, '全局层', 'global', '∞', 'lg-global'));
+  PROJS.forEach(p => {
+    box.appendChild(treeBtn('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>`, 'lg-p' + p.id));
+    // 展开项目时显示其模块子节点 (树状)
+    if (EXPANDED.has(p.id)) {
+      const mods = [...new Set(MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean))];
+      mods.forEach(mod => {
+        const cnt = MEMS.filter(m => m.project_id === p.id && (m.module || '') === mod).length;
+        const b = document.createElement('button');
+        b.className = 'layer sub'; b.id = 'lg-m-' + p.id + '-' + mod;
+        b.innerHTML = `<span class="rail" style="width:3px;height:10px;background:#3c82f6"></span><span class="nm">${esc(mod)}</span><span class="cnt">${cnt}</span>`;
+        b.onclick = () => openModule(p.id, mod);
+        box.appendChild(b);
+      });
+    }
+  });
+  if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
+  document.querySelectorAll('.layer').forEach(x => x.classList.remove('on'));
+  // 高亮: 模块 > 项目 > 全局层
+  let sel = 'lg-global';
+  if (FOCUS_MODULE && EXPANDED.size === 1) sel = 'lg-m-' + [...EXPANDED][0] + '-' + FOCUS_MODULE;
+  else if (EXPANDED.size === 1) sel = 'lg-p' + [...EXPANDED][0];
+  const el = $(sel); if (el) el.classList.add('on');
+}
+function selectSidebar(kind, pid) {
+  if (kind === 'project') { if (!EXPANDED.has(pid)) EXPANDED.add(pid); else EXPANDED.delete(pid); FOCUS_MODULE = null; renderGraph(); renderSidebar(); }
+  else { EXPANDED.clear(); FOCUS_MODULE = null; renderGraph(); renderSidebar(); }
+  $('graph').scrollTop = 0;
+}
+
+/* ---- 架构图: 全局/项目/模块 三层, 每层三横向划分; 默认=全局大框(三列+嵌套项目框); 项目=大框(三列+模块框); 模块=大框(三列, 叶子) ---- */
+function renderGraph() {
+  const globals = MEMS.filter(m => !m.project_id);
+  const selProj = EXPANDED.size ? PROJS.find(p => EXPANDED.has(p.id)) : null;
+  const selProjMems = selProj ? MEMS.filter(m => m.project_id === selProj.id) : [];
+  const selMod = FOCUS_MODULE;
+  const selModMems = selProj ? selProjMems.filter(m => (m.module || '') === selMod) : [];
+  const cont = document.getElementById('graph');
+  const W = Math.max(cont.clientWidth || 1200, 900);
+  const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
+  const boxLeft = padX, boxW = W - padX * 2;
+  const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
+  const levels = [ ['decision','决策','#2b6cb0','#e8f1fb'], ['milestone','重要修改点','#7a4fb0','#f1eafa'], ['note','记录','#67707f','#f0f2f5'] ];
+  function head(x, y, w, tint, col, title, sub) {
+    return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
+      `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
+      `<text x="${x + w - 14}" y="${y + G_H / 2 + 6}" class="bs" text-anchor="end">${sub}</text>`;
+  }
+  function memBox(m, x, y, w, col) {
+    const t1 = (m.content || '').replace(/\s+/g, ' ');
+    const a = t1.slice(0, 18) + (t1.length > 18 ? '…' : '');
+    const b = t1.length > 18 ? t1.slice(18, 36) + (t1.length > 36 ? '…' : '') : '';
+    return `<g class="box" onclick="openMem(${m.id})"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
+      `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
+      `<text x="${x + 12}" y="${y + 20}" class="bt">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt">${esc(b)}</text>` : '') +
+      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm">#${m.id} · ${(m.created_at || '').slice(0, 10)}${m.module ? ' · ' + esc(m.module) : ''}</text></g>`;
+  }
+  function levelColumns(ms, ox, oy) {
+    let s = '';
+    const colW = (innerW - GAP * (levels.length - 1)) / levels.length;
+    const cols = levels.map(([lv, n, c, t]) => ({ lv, name: n, col: c, tint: t, mems: ms.filter(m => m.level === lv) }));
+    const maxPer = Math.max(...cols.map(c => c.mems.length), 1);
+    const gh = G_H + 12 + maxPer * BOX_H + (maxPer - 1) * BOXGAP + 8;
+    cols.forEach((c, i) => {
+      const cx = ox + i * (colW + GAP);
+      s += `<g><rect x="${cx}" y="${oy}" width="${colW}" height="${gh}" rx="12" class="bandbox"/>` +
+        `<rect x="${cx}" y="${oy}" width="${colW}" height="${G_H}" rx="12" fill="${c.tint}"/>` +
+        `<text x="${cx + 10}" y="${oy + G_H / 2 + 6}" class="bh" style="fill:${c.col}">${c.name}</text>` +
+        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.mems.length} 条</text>` +
+        `<text x="${cx + colW - 14}" y="${oy + G_H / 2 + 6}" class="bs" style="fill:${c.col};cursor:pointer" text-anchor="middle" onclick="openAddLevel('${c.lv}')">＋</text></g>`;
+      let by = oy + G_H + 12;
+      if (!c.mems.length) s += `<text x="${cx + 12}" y="${by + 22}" class="bs">无记忆</text>`;
+      else c.mems.forEach(m => { s += memBox(m, cx + 10, by, colW - 20, c.col); by += BOX_H + BOXGAP; });
+    });
+    return { s, gh };
+  }
+
+  let bg = '';
+  let contentBottom = 0;
+  if (selMod && selProj) {
+    // ---- 模块视图 (叶子): 三横向划分 ----
+    const { s, gh } = levelColumns(selModMems, innerLeft, HEAD + G_H + 18);
+    const pvH = G_H + 18 + gh + 30;
+    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
+    bg += head(boxLeft, HEAD, boxW, '#e8f5ee', '#2f7d4f', '模块「' + esc(selMod) + '」', selModMems.length + ' 条记忆');
+    bg += s;
+    bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 点击项目「${esc(selProj.name)}」/ 侧边栏返回 · 记忆卡片点开编辑</text>`;
+    contentBottom = HEAD + pvH + 18;
+  } else if (selProj) {
+    // ---- 项目视图: 三横向划分 + 嵌套模块框(有模块) ----
+    const { s, gh } = levelColumns(selProjMems, innerLeft, HEAD + G_H + 18);
+    const modTint = ['#e8f1fb','#f1eafa','#e8f5ee','#fbeede','#f0f2f5'];
+    const mods = [...new Set(selProjMems.map(m => m.module || '').filter(Boolean))];
+    let modFrameH = 0;
+    if (mods.length) {
+      const rowN = 3, gap = 16;
+      const cardH = 62;   // 模块卡紧凑固定高
+      modFrameH = G_H + 14 + Math.ceil(mods.length / rowN) * cardH + (Math.ceil(mods.length / rowN) - 1) * gap + 14;
+    }
+    const pvH = G_H + 18 + gh + (mods.length ? XGAP + modFrameH : 0) + 30;
+    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
+    bg += head(boxLeft, HEAD, boxW, '#f1eafa', '#7a4fb0', '项目「' + esc(selProj.name) + '」', selProjMems.length + ' 条记忆');
+    bg += s;
+    if (mods.length) {
+      const mTop = HEAD + G_H + 18 + gh + XGAP;
+      bg += `<rect x="${innerLeft}" y="${mTop}" width="${innerW}" height="${modFrameH}" rx="14" class="bandbox"/>`;
+      bg += head(innerLeft, mTop, innerW, '#e8f1fb', '#2b6cb0', '模块（次级竖向划分）', mods.length + ' 个');
+      const rowN = 3, gap = 16, pw = (innerW - 2 * IN - (rowN - 1) * gap) / rowN, cardH = 62;
+      let mx = innerLeft + IN, my = mTop + G_H + 20;
+      mods.forEach((mod, i) => {
+        if (i > 0 && i % rowN === 0) { mx = innerLeft + IN; my += cardH + gap; }
+        const ms = selProjMems.filter(m => (m.module || '') === mod);
+        const tint = modTint[i % modTint.length];
+        bg += `<g class="box" onclick="openModule(${selProj.id}, '${mod.replace(/'/g, "\\'")}')">` +
+          `<rect x="${mx}" y="${my}" width="${pw}" height="${cardH}" rx="12" class="bandbox"/>` +
+          `<rect x="${mx}" y="${my}" width="${pw}" height="34" rx="12" fill="${tint}"/>` +
+          `<text x="${mx + 10}" y="${my + 23}" class="bt" style="fill:#3c82f6;font-weight:bold">${esc(mod)}</text>` +
+          `<text x="${mx + pw - 10}" y="${my + 23}" class="bs" text-anchor="end">${ms.length} 条</text>` +
+          `<text x="${mx + 10}" y="${my + cardH - 6}" class="bs" style="fill:#8b95a9">点击进入其结构 →</text></g>`;
+        mx += pw + gap;
+      });
+    }
+    bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 侧边栏「全局层」返回总览 · 记忆卡片点开编辑</text>`;
+    contentBottom = HEAD + pvH + 18;
+  } else {
+    // ---- 全局视图: 三横向划分 + 嵌套项目框 ----
+    const { s, gh } = levelColumns(globals, innerLeft, HEAD + G_H + 18);
+    const rowN = 4, pw = (innerW - 2 * IN - (rowN - 1) * 16) / rowN, ph = 96;
+    const projRows = Math.max(1, Math.ceil(PROJS.length / rowN));
+    const projFrameH = G_H + 14 + projRows * ph + (projRows - 1) * 12 + 14;
+    const globalH = G_H + 18 + gh + XGAP + projFrameH + 16;
+    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${globalH}" rx="16" class="bandbox"/>`;
+    bg += head(boxLeft, HEAD, boxW, '#e8f5ee', '#2f7d4f', '全局层 ∞', `${globals.length} 条记忆`);
+    bg += s;
+    const projTop = HEAD + G_H + 18 + gh + XGAP;
+    bg += `<rect x="${innerLeft}" y="${projTop}" width="${innerW}" height="${projFrameH}" rx="14" class="bandbox"/>`;
+    bg += head(innerLeft, projTop, innerW, '#e8f1fb', '#2b6cb0', '项目（竖向划分）', `${PROJS.length} 个`);
+    let bx = innerLeft + IN, byy = projTop + G_H + 20;
+    PROJS.forEach((p, i) => {
+      if (i > 0 && i % rowN === 0) { bx = innerLeft + IN; byy += ph + 12; }
+      bg += `<g class="box" onclick="toggleProj(${p.id})">` +
+        `<rect x="${bx}" y="${byy}" width="${pw}" height="${ph}" rx="12" class="bandbox"/>` +
+        `<rect x="${bx}" y="${byy}" width="${pw}" height="30" rx="12" fill="#e8f1fb"/>` +
+        `<text x="${bx + 12}" y="${byy + 21}" class="bt" style="fill:#2b6cb0;font-weight:bold">${esc(p.name)}</text>` +
+        `<text x="${bx + 12}" y="${byy + 48}" class="bm" style="fill:#5b8def">${p.mem_count} 条记忆</text>` +
+        `<text x="${bx + 12}" y="${byy + 64}" class="bs">${esc((p.charter || '').slice(0, 22))}</text>` +
+        `<text x="${bx + 12}" y="${byy + 84}" class="bs" style="fill:#8b95a9">点击进入 →</text></g>`;
+      bx += pw + 16;
+    });
+    if (!PROJS.length) bg += `<text x="${innerLeft + IN}" y="${byy + 22}" class="bs">暂无项目</text>`;
+    contentBottom = HEAD + globalH + 16;
+  }
+
+  const H = Math.max(cont.clientHeight || 640, contentBottom + padX);
+  const svg = `<svg id="graph-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="${W}" height="${H}" fill="#f6f8fb"/>` + bg + '</svg>';
+  $('graph').innerHTML = svg;
+  $('graph-svg').style.transform = 'scale(1)';
+  $('graph-sum').textContent = `记忆 ${MEMS.length} · 全局 ${globals.length} · 项目 ${PROJS.length}` + (selMod ? ' · 模块：' + selMod : selProj ? ' · 项目：' + selProj.name : '');
+}
+
+function toggleProj(pid) {
+  if (EXPANDED.has(pid)) EXPANDED.delete(pid); else EXPANDED.add(pid);
+  FOCUS_MODULE = null;
+  renderGraph(); renderSidebar();
+}
+function openModule(pid, mod) {
+  EXPANDED.add(pid); FOCUS_MODULE = mod;
+  renderGraph(); renderSidebar();
+}
+function zoom(f) {
+  const svg = $('graph-svg'); if (!svg) return;
+  const cur = parseFloat(svg.style.transform.replace(/[^0-9.]/g,'') || '1');
+  const nxt = Math.min(2.5, Math.max(0.4, cur * f));
+  svg.style.transform = `scale(${nxt})`; svg.style.transformOrigin = '0 0';
+}
+function zoomFit() { const svg = $('graph-svg'); if (svg) { svg.style.transform = 'scale(1)'; svg.style.transformOrigin = '0 0'; } }
+
+/* ---- 记忆弹窗 (查看/编辑/迁移/删除) ---- */
+function openMem(mid) {
+  const m = MEMS.find(x => x.id === mid); if (!m) return;
+  CUR_MID = mid;
+  $('m-title').textContent = '记忆详情';
+  $('m-content').value = m.content;
+  $('m-level').value = m.level || 'note';
+  $('m-owner').value = m.project_id || '';
+  $('m-module').value = m.module || '';
+  $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
+  $('m-preview').innerHTML = linkify(m.content);
+  $('m-owner-hint').textContent = m.project_id ? '（改为全局层 = 上升）' : '（选择项目 = 下降）';
+  const outs = LINKS.filter(l => l.source_id === mid).map(l => l.target_id);
+  const ins = LINKS.filter(l => l.target_id === mid).map(l => l.source_id);
+  const build = [];
+  outs.forEach(t => { const tm = MEMS.find(x => x.id === t); build.push(`<span>→ <a onclick="openMem(${t})">#${t}${tm ? ' · ' + esc(tm.content.slice(0, 14)) : ''}</a></span>`); });
+  ins.forEach(s => { const sm = MEMS.find(x => x.id === s); build.push(`<span>← <a onclick="openMem(${s})">#${s}${sm ? ' · ' + esc(sm.content.slice(0, 14)) : ''}</a></span>`); });
+  $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
+  $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').textContent = '保存修改';
+  $('modal').classList.add('on');
+}
+function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
+async function saveEdit() {
+  if (CUR_MID == null) return saveAdd();
+  const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
+  await API.review({ id: CUR_MID, action: 'edit', content, module: $('m-module').value });
+  await loadAll(); closeModal(); alert('已保存 #' + CUR_MID);
+}
+async function applyMove() {
+  if (CUR_MID == null) return;
+  const owner = $('m-owner').value;
+  if (owner === '') await API.promote(CUR_MID); else await API.demote(CUR_MID, Number(owner));
+  await loadAll(); closeModal(); alert('已移动 #' + CUR_MID + (owner === '' ? ' → 全局层' : ' → 项目'));
+}
+async function delMem() {
+  if (CUR_MID == null) return;
+  if (!confirm('确定删除记忆 #' + CUR_MID + ' 吗？')) return;
+  await API.review({ id: CUR_MID, action: 'delete' });
+  await loadAll(); closeModal(); alert('已删除 #' + CUR_MID);
+}
+
+/* ---- 添加记忆 / 注册项目 ---- */
+function openAdd() {
+  $('m-content').value = ''; $('m-level').value = 'decision';
+  $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+  $('m-module').value = '';
+  $('m-meta').textContent = '新建记忆'; $('m-links').textContent = ''; $('m-preview').textContent = '';
+  $('m-title').textContent = '新建记忆';
+  $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').textContent = '记住';
+  CUR_MID = null;
+  $('modal').classList.add('on'); $('m-content').focus();
+}
+function openAddLevel(level) {
+  openAdd();
+  $('m-level').value = level || 'decision';
+  $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+  $('m-module').value = FOCUS_MODULE || '';
+}
+async function saveAdd() {
+  const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
+  const body = { content, level: $('m-level').value };
+  if ($('m-module').value) body.module = $('m-module').value;
+  if ($('m-owner').value) body.project_id = Number($('m-owner').value);
+  const r = await API.remember(body);
+  await loadAll(); closeModal(); alert('已记住 #' + r.id);
+}
+function toggleReg() { $('reg-form').classList.toggle('on'); }
+async function addProject() {
+  const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(), charter: $('pj-charter').value.trim() };
+  if (!body.name) return alert('需要项目名');
+  const r = await API.addProject(body);
+  try { await API.sync(r.id); } catch (e) { /* 路径无效等, 忽略 */ }
+  $('pj-name').value=''; $('pj-path').value=''; $('pj-charter').value=''; toggleReg();
+  await loadAll();
+}
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
+$('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
 (async function boot() {
   const h = await (await fetch('/api/health')).json();
   $('backend').textContent = '后端: ' + h.backend;
-  await loadProjects();
-  selectLayer('global');
+  await loadAll();
 })();
 """
+
 
 
 # ================================================================ 问答页
@@ -508,20 +747,26 @@ ASK_HTML = ("<!doctype html>\n<html lang=\"zh\">\n<head>\n<meta charset=\"utf-8\
 
 # ================================================================ FastAPI
 def create_app(db_path: Optional[str] = None):
+    from pathlib import Path
     from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import HTMLResponse
+    from fastapi.staticfiles import StaticFiles
 
     # 启动时确保 schema 存在; 每个请求使用独立连接 (FastAPI 同步接口跑在线程池)
     db_mod.init(db_path)
 
     def get_db():
-        conn = db_mod.init(db_path)
+        # 每个请求只连库, 不重新执行 schema 初始化 (启动时已 init 一次)
+        conn = db_mod.connect(db_path)
         try:
             yield conn
         finally:
             conn.close()
 
-    app = FastAPI(title="外置大脑", version="0.2.0")
+    app = FastAPI(title="外置大脑", version="0.3.0")
+    app.mount("/static",
+              StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+              name="static")
 
     def _page(html: str) -> HTMLResponse:
         return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
@@ -562,13 +807,13 @@ def create_app(db_path: Optional[str] = None):
     def remember(body: RememberIn, conn: sqlite3.Connection = Depends(get_db)):
         pid = body.project_id
         mid = mem_mod.remember(conn, body.content, level=body.level,
-                               project_id=pid, reason=body.reason)
+                               project_id=pid, reason=body.reason, module=body.module)
         return {"id": mid}
 
     @app.post("/api/capture")
     def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_db)):
         ids = mem_mod.capture(conn, body.text, project_id=body.project_id,
-                              title=body.title)
+                              title=body.title, module=body.module)
         return {"ids": ids}
 
     @app.get("/api/pending")
@@ -584,10 +829,19 @@ def create_app(db_path: Optional[str] = None):
                                       status=status, limit=limit, layer=layer)
         return {"items": [dict(r) for r in items]}
 
+    @app.get("/api/links")
+    def links(conn: sqlite3.Connection = Depends(get_db)):
+        """记忆链接表 (架构图连线用)。"""
+        rows = conn.execute(
+            "SELECT source_id, target_id FROM memory_links ORDER BY id"
+        ).fetchall()
+        return {"items": [dict(r) for r in rows]}
+
     @app.post("/api/review")
     def review(body: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
-            mem_mod.review(conn, body.id, body.action, new_content=body.content)
+            mem_mod.review(conn, body.id, body.action, new_content=body.content,
+                           new_module=body.module)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {"ok": True}

@@ -67,14 +67,15 @@ def log_session(conn: sqlite3.Connection, project_id: Optional[int] = None,
 # ---------------------------------------------------------------- C 主动触发
 def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
              project_id: Optional[int] = None, reason: str = "",
-             source_ref: str = "") -> int:
+             source_ref: str = "", module: str = "") -> int:
     level = level if level in LEVELS else "decision"
     emb = llm.embed_one(content)
     cur = conn.execute(
-        "INSERT INTO memories(project_id, level, content, reason, status,"
+        "INSERT INTO memories(project_id, level, module, content, reason, status,"
         " source_type, source_ref, embedding, confirmed_at)"
-        " VALUES (?,?,?,?,'active','manual',?,?,datetime('now'))",
-        (project_id, level, content, reason, source_ref, pack_vec(emb)),
+        " VALUES (?,?,?,?,?,'active','manual',?,?,datetime('now'))",
+        (project_id, level, module.strip(), content, reason, source_ref,
+         pack_vec(emb)),
     )
     _store_links(conn, cur.lastrowid, content)
     conn.commit()
@@ -83,7 +84,8 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
 
 # ---------------------------------------------------------------- B 自动捕获 + 确认
 def capture(conn: sqlite3.Connection, text: str,
-            project_id: Optional[int] = None, title: str = "") -> List[int]:
+            project_id: Optional[int] = None, title: str = "",
+            module: str = "") -> List[int]:
     """自动捕获: LLM 提炼决策 -> 写入 pending 草稿区, 待确认。"""
     session_id = log_session(conn, project_id, title=title, summary=text[:300])
     decisions = llm.extract_decisions(text)
@@ -91,11 +93,11 @@ def capture(conn: sqlite3.Connection, text: str,
     for d in decisions:
         emb = llm.embed_one(d)
         cur = conn.execute(
-            "INSERT INTO memories(project_id, level, content, reason, status,"
+            "INSERT INTO memories(project_id, level, module, content, reason, status,"
             " source_type, source_ref, embedding)"
-            " VALUES (?, 'decision', ?, ?, 'pending', 'auto', ?, ?)",
-            (project_id, d, f"来自会话 #{session_id}", f"session:{session_id}",
-             pack_vec(emb)),
+            " VALUES (?, 'decision', ?, ?, ?, 'pending', 'auto', ?, ?)",
+            (project_id, module.strip(), d, f"来自会话 #{session_id}",
+             f"session:{session_id}", pack_vec(emb)),
         )
         _store_links(conn, cur.lastrowid, d)
         ids.append(cur.lastrowid)
@@ -122,7 +124,7 @@ def list_memories(conn: sqlite3.Connection,
     layer="global" 时只看全局层 (project_id IS NULL) 的记忆。
     """
     q = (
-        "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.status,"
+        "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason, m.status,"
         " m.source_type, m.source_ref, m.created_at,"
         " p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
@@ -146,7 +148,8 @@ def list_memories(conn: sqlite3.Connection,
 
 
 def review(conn: sqlite3.Connection, memory_id: int, action: str,
-           new_content: Optional[str] = None) -> None:
+           new_content: Optional[str] = None,
+           new_module: Optional[str] = None) -> None:
     """B 确认关卡: keep | edit | delete。"""
     action = action.lower()
     if action == "keep":
@@ -165,6 +168,9 @@ def review(conn: sqlite3.Connection, memory_id: int, action: str,
             " confirmed_at=datetime('now') WHERE id=?",
             (content, pack_vec(emb), memory_id),
         )
+        if new_module is not None:
+            conn.execute("UPDATE memories SET module=? WHERE id=?",
+                         (new_module.strip(), memory_id))
         _store_links(conn, memory_id, content)
     elif action == "delete":
         conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))

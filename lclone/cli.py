@@ -87,7 +87,7 @@ def cmd_remember(args) -> None:
         pid = proj_mod.detect_project_by_git(conn)
         auto = pid is not None
     mid = mem_mod.remember(conn, args.content, level=args.level,
-                           project_id=pid, reason=args.reason)
+                           project_id=pid, reason=args.reason, module=args.module)
     where = f"项目 #{pid}" if pid is not None else "全局层"
     tag = " (git 自动归属)" if auto else ""
     print(f"已主动记忆 #{mid} [{where}]{tag} (level={args.level})")
@@ -100,7 +100,8 @@ def cmd_capture(args) -> None:
     if pid is None and not args.project:
         pid = proj_mod.detect_project_by_git(conn)
         auto = pid is not None
-    ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title)
+    ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
+                          module=args.module)
     if not ids:
         print("没有提炼出决策 (可能内容里没有确定的决策)")
     else:
@@ -284,12 +285,14 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--level", default="decision",
                     choices=["decision", "milestone", "note"])
     sr.add_argument("--reason", default="")
+    sr.add_argument("--module", default="", help="项目内模块名(可选)")
     sr.add_argument("--project", default=None)
     sr.set_defaults(func=cmd_remember)
 
     sc = sub.add_parser("capture", parents=[parent], help="自动捕获决策 (B, 进草稿待确认)")
     sc.add_argument("text", help="本次工作/讨论内容")
     sc.add_argument("--title", default="")
+    sc.add_argument("--module", default="", help="项目内模块名(可选)")
     sc.add_argument("--project", default=None)
     sc.set_defaults(func=cmd_capture)
 
