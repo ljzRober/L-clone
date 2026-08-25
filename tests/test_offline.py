@@ -284,6 +284,25 @@ with contextlib.redirect_stdout(buf):
     cli.main(["bootstrap", "数据库", "--project", str(pid), "--db", dbp])
 check("58 CLI bootstrap 输出", "示例项目" in buf.getvalue(), buf.getvalue()[:80])
 
+# ---- 接入向导 + 自检 (presets / install / doctor) ----
+from lclone import presets, doctor, install as install_mod
+check("59 deepseek 预设 embedding 走本地",
+      presets.env_for("deepseek")["BRAIN_EMBED_BACKEND"] == "local")
+check("60 openai 预设 embedding 走 api",
+      presets.env_for("openai")["BRAIN_EMBED_BACKEND"] == "api")
+check("61 provider 反推",
+      presets.recognize_provider("https://api.deepseek.com/v1", "api") == "deepseek")
+check("62 dummy 反推", presets.recognize_provider("", "dummy") == "dummy")
+tmp_home = pathlib.Path(tempfile.mkdtemp(prefix="brain_home_"))
+res = install_mod.install_skill(tmp_home)
+check("63 install_skill 装到临时家目录",
+      "已安装" in res and (tmp_home / ".agents/skills/lclone-memory/SKILL.md").exists())
+items = doctor.check_all(home=tmp_home)
+names = {i["name"] for i in items}
+check("64 doctor 返回清单", "skill 已装" in names and "配置 .env" in names)
+skill_ok = next(i for i in items if i["name"] == "skill 已装")
+check("65 doctor 识别 skill 已装", skill_ok["ok"] is True)
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app

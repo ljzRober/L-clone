@@ -175,6 +175,20 @@ def cmd_bootstrap(args) -> None:
     print(out or "(暂无记忆)")
 
 
+def cmd_doctor(args) -> None:
+    from . import doctor
+    print(doctor.render(doctor.check_all(db_path=args.db,
+                                         check_llm=args.check_llm)))
+
+
+def cmd_install(args) -> None:
+    from . import install as install_mod
+    raise SystemExit(install_mod.run(
+        provider=args.provider, api_key=args.api_key,
+        project=args.project, charter=args.charter,
+        target=args.target, yes=args.yes, db_path=args.db))
+
+
 def cmd_promote(args) -> None:
     conn = _conn(args)
     try:
@@ -326,6 +340,24 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--project", default=None)
     sb.add_argument("--k", type=int, default=5)
     sb.set_defaults(func=cmd_bootstrap)
+
+    sd = sub.add_parser("doctor", parents=[parent],
+                        help="自检接入是否完整 (✅/❌ 清单)")
+    sd.add_argument("--check-llm", action="store_true",
+                    help="真调 LLM 验证连通 (默认只查配置)")
+    sd.set_defaults(func=cmd_doctor)
+
+    si = sub.add_parser("install", parents=[parent], help="一键接入向导")
+    si.add_argument("--provider",
+                    choices=["deepseek", "openai", "siliconflow", "zhipu", "dummy"],
+                    default=None, help="模型服务商 (默认交互选择)")
+    si.add_argument("--api-key", default=None)
+    si.add_argument("--project", default=None, help="项目名 (默认取 git 仓库名)")
+    si.add_argument("--charter", default=None, help="项目大方向一句话 (默认从 README 猜)")
+    si.add_argument("--target", choices=["dsh", "claude", "codex", "commit", "all"],
+                    default=None, help="配置哪些触发 (默认 all)")
+    si.add_argument("--yes", action="store_true", help="非交互, 用默认值")
+    si.set_defaults(func=cmd_install)
 
     spm = sub.add_parser("promote", parents=[parent],
                          help="记忆上升: 项目记忆 -> 全局层 (生命周期无限)")
