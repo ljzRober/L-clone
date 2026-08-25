@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS specs_index (
   UNIQUE(project_id, rel_path)
 );
 
+-- 项目内声明的模块 (modules): 让"添加模块"能创建空模块并显示; 记忆的 module 字段引用模块名
+CREATE TABLE IF NOT EXISTS modules (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(project_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_modules_proj ON modules(project_id);
+
 CREATE TABLE IF NOT EXISTS threads (
   id         TEXT PRIMARY KEY,
   project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,

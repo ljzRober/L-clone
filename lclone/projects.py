@@ -118,6 +118,29 @@ def restore_project(conn: sqlite3.Connection, project_id: int) -> None:
     conn.commit()
 
 
+def list_modules(conn: sqlite3.Connection, project_id: int) -> List[str]:
+    """项目内声明的模块名列表 (modules 表)。"""
+    return [r["name"] for r in conn.execute(
+        "SELECT name FROM modules WHERE project_id=? ORDER BY name",
+        (project_id,)).fetchall()]
+
+
+def add_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
+    """给项目声明一个模块 (允许空模块)。"""
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("模块名不能为空")
+    try:
+        cur = conn.execute("INSERT INTO modules(project_id, name) VALUES (?,?)",
+                           (project_id, name))
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError(f"模块已存在: {name}")
+
+
 def detect_project_by_git(conn: sqlite3.Connection,
                           cwd: Optional[str] = None) -> Optional[int]:
     """项目归属判定 (git 优先): 取目录的 git 仓库根, 匹配已注册项目。

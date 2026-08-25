@@ -78,6 +78,10 @@ class ProjectIn(BaseModel):
     charter: str = ""
 
 
+class AddModuleIn(BaseModel):
+    name: str
+
+
 # ================================================================ 共享样式
 CSS = r"""
 :root {
@@ -271,7 +275,7 @@ WORK_BODY = r"""
     <div id="tree"></div>
     <div class="eyebrow">整理</div>
     <button class="layer" id="reg-toggle" onclick="toggleReg()">
-      <span class="rail" style="background:transparent"></span><span class="nm">＋ 注册项目</span>
+      <span class="rail" style="background:transparent"></span><span class="nm">＋ 添加项目</span>
     </button>
     <div id="reg-form">
       <input id="pj-name" placeholder="项目名">
@@ -329,6 +333,7 @@ WORK_JS = r"""const $ = id => document.getElementById(id);
 let PROJS = [], MEMS = [], LINKS = [];
 const EXPANDED = new Set();
 let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
+let MODULES = {};   // pid -> [声明的模块名]
 let CUR_MID = null;
 const API = {
   projects: async () => (await (await fetch('/api/projects')).json()).items,
@@ -340,6 +345,7 @@ const API = {
   review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
+  addModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function linkify(t){ return esc(t).replace(/\[\[m:(\d+)\]\]/g, '<a onclick="openMem($1)">🔗 #$1</a>'); }
@@ -353,6 +359,8 @@ const LN = { decision:'决策', milestone:'重要修改点', note:'记录' };
 async function loadAll() {
   const [p, m, l] = await Promise.all([API.projects(), API.memories('?status=active&limit=500'), API.links()]);
   PROJS = p; MEMS = m.items; LINKS = l.items;
+  const mods = await Promise.all(p.map(async pr => [pr.id, (await (await fetch('/api/projects/'+pr.id+'/modules')).json()).items]));
+  MODULES = Object.fromEntries(mods);
   fillOwnerSelect();
   renderSidebar(); renderGraph();
 }
@@ -390,7 +398,7 @@ function renderSidebar() {
     box.appendChild(treeBtn('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>`, 'lg-p' + p.id));
     // 展开项目时显示其模块子节点 (树状)
     if (EXPANDED.has(p.id)) {
-      const mods = [...new Set(MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean))];
+      const mods = [...new Set([...(MODULES[p.id] || []), ...MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean)])];
       mods.forEach(mod => {
         const cnt = MEMS.filter(m => m.project_id === p.id && (m.module || '') === mod).length;
         const b = document.createElement('button');
@@ -399,6 +407,11 @@ function renderSidebar() {
         b.onclick = () => openModule(p.id, mod);
         box.appendChild(b);
       });
+      const ab = document.createElement('button');
+      ab.className = 'layer sub'; ab.id = 'lg-addm-' + p.id;
+      ab.innerHTML = `<span class="rail" style="background:transparent"></span><span class="nm" style="color:var(--acc)">＋ 添加模块</span>`;
+      ab.onclick = () => addModule(p.id);
+      box.appendChild(ab);
     }
   });
   if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
@@ -477,7 +490,7 @@ function renderGraph() {
     // ---- 项目视图: 三横向划分 + 嵌套模块框(有模块) ----
     const { s, gh } = levelColumns(selProjMems, innerLeft, HEAD + G_H + 18);
     const modTint = ['#e8f1fb','#f1eafa','#e8f5ee','#fbeede','#f0f2f5'];
-    const mods = [...new Set(selProjMems.map(m => m.module || '').filter(Boolean))];
+    const mods = [...new Set([...(MODULES[selProj.id] || []), ...selProjMems.map(m => m.module || '').filter(Boolean)])];
     let modFrameH = 0;
     if (mods.length) {
       const rowN = 3, gap = 16;
@@ -492,6 +505,7 @@ function renderGraph() {
       const mTop = HEAD + G_H + 18 + gh + XGAP;
       bg += `<rect x="${innerLeft}" y="${mTop}" width="${innerW}" height="${modFrameH}" rx="14" class="bandbox"/>`;
       bg += head(innerLeft, mTop, innerW, '#e8f1fb', '#2b6cb0', '模块（次级竖向划分）', mods.length + ' 个');
+      bg += `<text x="${innerLeft + innerW - 80}" y="${mTop + G_H / 2 + 6}" class="bs" style="fill:#2b6cb0;cursor:pointer" onclick="addModule(${selProj.id})">＋ 模块</text>`;
       const rowN = 3, gap = 16, pw = (innerW - 2 * IN - (rowN - 1) * gap) / rowN, cardH = 62;
       let mx = innerLeft + IN, my = mTop + G_H + 20;
       mods.forEach((mod, i) => {
@@ -553,6 +567,12 @@ function toggleProj(pid) {
 function openModule(pid, mod) {
   EXPANDED.add(pid); FOCUS_MODULE = mod;
   renderGraph(); renderSidebar();
+}
+async function addModule(pid) {
+  const name = prompt('新模块名');
+  if (!name) return;
+  try { await API.addModule(pid, name); } catch (e) { alert('添加失败: ' + ((e && e.message) || e)); }
+  await loadAll();
 }
 function zoom(f) {
   const svg = $('graph-svg'); if (!svg) return;
@@ -820,6 +840,19 @@ def create_app(db_path: Optional[str] = None):
             return proj_mod.sync_project(conn, pid)
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    @app.get("/api/projects/{pid}/modules")
+    def project_modules(pid: int, conn: sqlite3.Connection = Depends(get_db)):
+        return {"items": proj_mod.list_modules(conn, pid)}
+
+    @app.post("/api/projects/{pid}/modules")
+    def add_project_module(pid: int, body: AddModuleIn,
+                           conn: sqlite3.Connection = Depends(get_db)):
+        try:
+            proj_mod.add_module(conn, pid, body.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
 
     @app.post("/api/remember")
     def remember(body: RememberIn, conn: sqlite3.Connection = Depends(get_db)):
