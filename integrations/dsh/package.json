@@ -1,0 +1,15 @@
+{
+  "name": "lclone-memory-dsh",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "L-clone 记忆钩子：DSH 每轮结束(turn/end)自动 capture 到外置大脑。",
+  "main": "dsh/index.js",
+  "files": ["dsh/index.js", "dsh/cordis.patch.yml"],
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh/cordis.patch.yml"
+    }
+  },
+  "keywords": ["dsh-plugin", "memory", "lclone"],
+  "license": "MIT"
+}

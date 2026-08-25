@@ -1,0 +1,6 @@
+# L-clone 记忆钩子: 订阅 session/event, 每轮结束(turn/end)时 capture。
+# 格式照 superdesign 插件 bundle (dsh-market 里已装) 的已验证写法:
+#   - insert: 一行插件, id=插件名, name=npm 包名 (Node 解析到 dsh/index.js)
+- insert:
+    - id: lclone-memory
+      name: lclone-memory-dsh
