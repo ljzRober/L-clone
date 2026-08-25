@@ -378,6 +378,40 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
     return base
 
 
+# ---------------------------------------------------------------- 会话启动引导
+def bootstrap(conn: sqlite3.Connection, query: str = "",
+              project_id: Optional[int] = None, k: int = 5,
+              global_limit: int = 20) -> str:
+    """会话启动引导: charter + 全局层记忆(无条件注入) + 按 query 召回的相关记忆。
+
+    返回一段可直接注入上下文的文本; 无内容时返回空字符串。
+    CLI 与 MCP 共用此实现。
+    """
+    parts: List[str] = []
+    if project_id is not None:
+        proj = conn.execute(
+            "SELECT charter FROM projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if proj and proj["charter"]:
+            parts.append(f"【项目方向】{proj['charter']}")
+    g = conn.execute(
+        "SELECT content, level FROM memories"
+        " WHERE status='active' AND project_id IS NULL"
+        " ORDER BY id DESC LIMIT ?",
+        (global_limit,),
+    ).fetchall()
+    if g:
+        parts.append("【全局记忆】\n" + "\n".join(
+            f"- [{r['level']}] {r['content']}" for r in g))
+    q = (query or "").strip()
+    if q:
+        items = recall(conn, q, k=k, project_id=project_id)
+        if items:
+            parts.append("【相关记忆】\n" + "\n".join(
+                f"- [{i['project']}/{i['level']}] {i['content']}" for i in items))
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------- 删除提示 (算法建议, 删除仍由用户决定)
 def _cosine(a: List[float], b: List[float]) -> float:
     return sum(x * y for x, y in zip(a, b))

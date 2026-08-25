@@ -167,6 +167,14 @@ def cmd_recall(args) -> None:
               f"{it['project']}/{it['level']} ({it['created_at']}){tag}\n   {it['content']}")
 
 
+def cmd_bootstrap(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    out = mem_mod.bootstrap(conn, query=args.query or "", project_id=pid,
+                            k=args.k)
+    print(out or "(暂无记忆)")
+
+
 def cmd_promote(args) -> None:
     conn = _conn(args)
     try:
@@ -311,6 +319,13 @@ def build_parser() -> argparse.ArgumentParser:
     sr2.add_argument("--no-follow", action="store_true",
                      help="不跟随 [[m:N]] 链接 (默认自动带出被链接记忆)")
     sr2.set_defaults(func=cmd_recall)
+
+    sb = sub.add_parser("bootstrap", parents=[parent],
+                        help="会话启动引导 (charter+全局记忆+按话题召回)")
+    sb.add_argument("query", nargs="?", default="", help="本次话题/首条消息 (可为空)")
+    sb.add_argument("--project", default=None)
+    sb.add_argument("--k", type=int, default=5)
+    sb.set_defaults(func=cmd_bootstrap)
 
     spm = sub.add_parser("promote", parents=[parent],
                          help="记忆上升: 项目记忆 -> 全局层 (生命周期无限)")

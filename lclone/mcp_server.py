@@ -230,27 +230,9 @@ def call_tool(name: str, args: dict) -> str:
             return "\n\n".join(lines)
         if name == "bootstrap":
             pid = _resolve_project(conn, args.get("project"))
-            parts = []
-            if pid is not None:
-                proj = proj_mod.get_project(conn, pid)
-                if proj and proj["charter"]:
-                    parts.append(f"【项目方向】{proj['charter']}")
-            g = conn.execute(
-                "SELECT content, level FROM memories"
-                " WHERE status='active' AND project_id IS NULL"
-                " ORDER BY id DESC LIMIT 20"
-            ).fetchall()
-            if g:
-                parts.append("【全局记忆】\n" + "\n".join(
-                    f"- [{r['level']}] {r['content']}" for r in g))
-            q = (args.get("query") or "").strip()
-            if q:
-                items = mem_mod.recall(conn, q, k=int(args.get("k", 5)),
-                                       project_id=pid)
-                if items:
-                    parts.append("【相关记忆】\n" + "\n".join(
-                        f"- [{i['project']}/{i['level']}] {i['content']}" for i in items))
-            return "\n\n".join(parts) if parts else "(暂无记忆)"
+            out = mem_mod.bootstrap(conn, query=args.get("query", ""),
+                                    project_id=pid, k=int(args.get("k", 5)))
+            return out or "(暂无记忆)"
         if name == "promote":
             mem_mod.promote(conn, int(args["id"]))
             return f"记忆 #{args['id']} 已上升至全局层 (生命周期无限, 多项目共读)"

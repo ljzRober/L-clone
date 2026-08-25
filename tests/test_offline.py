@@ -274,6 +274,16 @@ cap_levels = [conn.execute("SELECT level FROM memories WHERE id=?",
                            (i,)).fetchone()["level"] for i in cap_ids]
 check("54 capture 产出 note 草稿", "note" in cap_levels, str(cap_levels))
 
+# ---- bootstrap 会话引导 (CLI + 共享函数) ----
+bs = mem_mod.bootstrap(conn, query="数据库", project_id=pid, k=3)
+check("55 bootstrap 含项目方向", "示例项目" in bs, bs[:60])
+check("56 bootstrap 无条件注入全局记忆", "先跑通再优化" in bs, bs[:120])
+check("57 bootstrap 返回非空", bool(bs.strip()), "")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["bootstrap", "数据库", "--project", str(pid), "--db", dbp])
+check("58 CLI bootstrap 输出", "示例项目" in buf.getvalue(), buf.getvalue()[:80])
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app

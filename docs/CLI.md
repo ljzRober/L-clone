@@ -13,6 +13,7 @@ lclone remember "内容" [--level decision|note] [--project id]
 lclone capture "本次工作内容" [--project id]     # B: 进草稿
 lclone review [--id N --action keep|edit|delete --edit-new "…"] [--all keep|delete]
 lclone recall "查询" [--project id] [--k 5] [--no-follow]
+lclone bootstrap ["话题"] [--project id] [--k 5]   # 会话启动引导: charter+全局记忆+召回
 lclone promote <id>                            # 记忆上升: 项目 -> 全局层
 lclone demote <id> --project <id|name>         # 记忆下降: 挂到指定项目(含项目间横搬)
 lclone suggest [--dup-threshold 0.92] [--stale-days 7] [--unused-days 30]  # 删除提示

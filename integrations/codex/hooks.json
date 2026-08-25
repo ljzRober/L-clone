@@ -1,0 +1,19 @@
+{
+  "description": "L-clone 记忆钩子：会话开始 bootstrap 注入，每轮结束 capture 沉淀。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash /Users/didi/github/L-clone/integrations/codex/hooks/session-start.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash /Users/didi/github/L-clone/integrations/codex/hooks/stop.sh" }
+        ]
+      }
+    ]
+  }
+}
