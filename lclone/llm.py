@@ -101,7 +101,7 @@ def extract_memories(text: str) -> List[dict]:
     返回 [{"level": "decision"|"note", "module": str, "content": str, "confidence": float}]。
     decision = 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼"选择/约定", 不提炼"做了什么");
     note = 值得记的过程性事实、观察、TODO、灵感。
-    module = 主题英文短名 (web/server/memory-capture/dsh-plugin/cli/deploy), 拿不准可空。
+    module = 按主题自动划分 (与 sp-spec 分 spec 同逻辑: 按关注点拆, 如 web/server/memory-capture/dsh-plugin/cli/deploy)。
 
     代码改动/接口变化/新增端点/重构/修 bug 属于 git 与 spec (sp-spec/openspec),
     不提炼进记忆。
@@ -115,8 +115,8 @@ def extract_memories(text: str) -> List[dict]:
     prompt = (
         "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 格式: 类型[模块]: 内容\n"
         "- 类型: decision(选了什么方案/定了什么规则/约定什么边界) 或 note(过程性事实/观察/TODO)\n"
-        "- 模块: 主题英文短名, 从 web / server / memory-capture / dsh-plugin / cli / deploy 里选, 拿不准可不写\n"
-        "示例: decision[server]: 选了 SQLite 不用 Postgres\n"
+        "- 模块: 按主题给英文短名 (如 web / server / memory-capture / dsh-plugin / cli / deploy), 拿不准留空\n"
+        "示例: decision[web]: Web 记忆图用网格布局分页\n"
         "注意: 代码改动、接口变化、新增端点、重构、修 bug 这些「做了什么」属于 git 和 spec,\n"
         "不要提炼。没有值得记的就输出空。不要总结, 不要客套。\n\n"
         "记录:\n" + text[:12000]
