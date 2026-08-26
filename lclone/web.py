@@ -114,6 +114,7 @@ button { font-family:inherit; }
 .ghost { background:transparent; color:var(--dim); border:1px solid var(--line); border-radius:8px;
          padding:6px 12px; cursor:pointer; font-size:12px; }
 .ghost:hover { color:var(--fg); border-color:var(--acc); }
+.ghost.hot { color:var(--warn); border-color:var(--warn); background:rgba(251,191,36,.08); }
 a.navbtn { text-decoration:none; color:var(--dim); border:1px solid var(--line); border-radius:8px;
            padding:6px 12px; font-size:12px; }
 a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
@@ -268,7 +269,7 @@ WORK_BODY = r"""
   <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
   <span class="sp"></span>
-  <button class="ghost" onclick="openPending()">待确认 <b id="pending-n">0</b></button>
+  <button class="ghost" id="btn-pending" onclick="openPending()" title="查看并处理待确认决策">待确认 <b id="pending-n">0</b></button>
   <a class="navbtn" href="/ask">问答 →</a>
 </header>
 <div class="shell">
@@ -375,7 +376,9 @@ async function loadAll() {
     (await fetch('/api/pending')).json(),
   ]);
   PROJS = p; MEMS = m.items; LINKS = l.items;
-  $('pending-n').textContent = (pend.items || []).length;
+  const pn = (pend.items || []).length;
+  $('pending-n').textContent = pn;
+  $('btn-pending').classList.toggle('hot', pn > 0);
   const mods = await Promise.all(p.map(async pr => [pr.id, (await (await fetch('/api/projects/'+pr.id+'/modules')).json()).items]));
   MODULES = Object.fromEntries(mods);
   fillOwnerSelect();
