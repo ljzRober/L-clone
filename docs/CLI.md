@@ -49,7 +49,7 @@ lclone backup [--dest backups]                                              # SQ
 | 服务 | BASE_URL | chat 模型示例 | embed 模型示例 |
 |---|---|---|---|
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | `text-embedding-3-small` |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` | (需配合其他 embed) |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-v4-flash` | (需配合其他 embed) |
 | 硅基流动 | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-7B-Instruct` | `BAAI/bge-m3` |
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | `embedding-3` |
 

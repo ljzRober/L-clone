@@ -243,9 +243,6 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
            width:32px; height:32px; cursor:pointer; font-size:15px; line-height:1; }
 .modal-x:hover { color:var(--fg); border-color:var(--acc); }
 .modal-lg .meta { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:10px; }
-.m-preview { background:#0d1424; border:1px solid var(--line); border-radius:8px; padding:10px;
-             font-size:13px; white-space:pre-wrap; margin-bottom:8px; max-height:180px; overflow-y:auto; }
-.m-preview a { color:var(--acc); cursor:pointer; }
 .modal-lg .links { font-size:12px; color:var(--dim); margin:10px 0; }
 .modal-lg .links a { color:var(--acc); cursor:pointer; margin-right:10px; }
 .modal-lg .row { margin-top:8px; }
@@ -307,7 +304,6 @@ WORK_BODY = r"""
       <button class="modal-x" onclick="closeModal()" title="关闭">✕</button>
     </div>
     <div class="meta" id="m-meta"></div>
-    <div class="m-preview" id="m-preview"></div>
     <textarea id="m-content" placeholder="记忆内容…"></textarea>
     <div class="row">
       <select id="m-level" style="width:150px" onchange="syncModuleUI()">
@@ -362,7 +358,6 @@ const API = {
   addModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function linkify(t){ return esc(t).replace(/\[\[m:(\d+)\]\]/g, '<a onclick="openMem($1)">🔗 #$1</a>'); }
 function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
 function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
@@ -454,8 +449,15 @@ function renderSidebar() {
   const el = $(sel); if (el) el.classList.add('on');
 }
 function selectSidebar(kind, pid) {
-  if (kind === 'project') { if (!EXPANDED.has(pid)) EXPANDED.add(pid); else EXPANDED.delete(pid); FOCUS_MODULE = null; renderGraph(); renderSidebar(); }
-  else { EXPANDED.clear(); FOCUS_MODULE = null; renderGraph(); renderSidebar(); }
+  if (kind === 'project') {
+    // 点击谁显示谁: 点其他项目直接切换; 点当前已展开的项目则收起回全局
+    if (EXPANDED.size === 1 && EXPANDED.has(pid)) EXPANDED.clear();
+    else { EXPANDED.clear(); EXPANDED.add(pid); }
+    FOCUS_MODULE = null;
+  } else {
+    EXPANDED.clear(); FOCUS_MODULE = null;
+  }
+  renderGraph(); renderSidebar();
   $('graph').scrollTop = 0;
 }
 
@@ -465,7 +467,8 @@ function renderGraph() {
   const selProj = EXPANDED.size ? PROJS.find(p => EXPANDED.has(p.id)) : null;
   const selProjMems = selProj ? MEMS.filter(m => m.project_id === selProj.id) : [];
   const selMod = FOCUS_MODULE;
-  const selModMems = selProj ? selProjMems.filter(m => (m.module || '') === selMod) : [];
+  // 模块视图只显示决策(decision); 记录(note)无模块, 不进入模块视图
+  const selModMems = selProj ? selProjMems.filter(m => (m.module || '') === selMod && m.level === 'decision') : [];
   const cont = document.getElementById('graph');
   const W = Math.max(cont.clientWidth || 1200, 900);
   const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
@@ -486,14 +489,15 @@ function renderGraph() {
       `<text x="${x + 12}" y="${y + 20}" class="bt">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt">${esc(b)}</text>` : '') +
       `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm">#${m.id} · ${(m.created_at || '').slice(0, 10)}${m.module ? ' · ' + esc(m.module) : ''}</text></g>`;
   }
-  function levelColumns(ms, ox, oy) {
+  function levelColumns(ms, ox, oy, lvls) {
+    const cols_src = lvls || levels;
     let s = '';
-    const colW = (innerW - GAP * (levels.length - 1)) / levels.length;
+    const colW = (innerW - GAP * (cols_src.length - 1)) / cols_src.length;
     // 网格化: 按列宽算每行放几个记忆 (1~3 个), 压缩高度
     const perRow = Math.max(1, Math.min(3, Math.floor((colW - 20) / 170)));
     const boxW = (colW - 20 - (perRow - 1) * BOXGAP) / perRow;
     const pageSize = perRow * ROWS_PER_PAGE;   // 页容量 = 整行数, 保证网格排满
-    const cols = levels.map(([lv, n, c, t]) => {
+    const cols = cols_src.map(([lv, n, c, t]) => {
       const mems = ms.filter(m => m.level === lv);
       const total = mems.length;
       const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -531,8 +535,9 @@ function renderGraph() {
   let bg = '';
   let contentBottom = 0;
   if (selMod && selProj) {
-    // ---- 模块视图 (叶子): 两横向划分 ----
-    const { s, gh } = levelColumns(selModMems, innerLeft, HEAD + G_H + 18);
+    // ---- 模块视图 (叶子): 只显示决策列 (记录无模块, 不在此显示) ----
+    const { s, gh } = levelColumns(selModMems, innerLeft, HEAD + G_H + 18,
+                                   [['decision','决策','#2b6cb0','#e8f1fb']]);
     const pvH = G_H + 18 + gh + 30;
     bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
     bg += head(boxLeft, HEAD, boxW, '#e8f5ee', '#2f7d4f', '模块「' + esc(selMod) + '」', selModMems.length + ' 条记忆');
@@ -655,7 +660,6 @@ function openMem(mid) {
   syncModuleUI();
   $('m-module').value = m.module || '';
   $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
-  $('m-preview').innerHTML = linkify(m.content);
   $('m-owner-hint').textContent = m.project_id ? '（改为全局层 = 上升）' : '（选择项目 = 下降）';
   const outs = LINKS.filter(l => l.source_id === mid).map(l => l.target_id);
   const ins = LINKS.filter(l => l.target_id === mid).map(l => l.source_id);
@@ -715,7 +719,7 @@ function openAdd() {
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
   syncModuleUI();
   $('m-module').value = '';
-  $('m-meta').textContent = '新建记忆'; $('m-links').textContent = ''; $('m-preview').textContent = '';
+  $('m-meta').textContent = '新建记忆'; $('m-links').textContent = '';
   $('m-title').textContent = '新建记忆';
   $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').textContent = '记住';
   CUR_MID = null;

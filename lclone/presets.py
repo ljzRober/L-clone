@@ -13,7 +13,7 @@ PROVIDERS: Dict[str, Dict[str, str]] = {
     "deepseek": {
         "BRAIN_LLM": "api",
         "BRAIN_BASE_URL": "https://api.deepseek.com/v1",
-        "BRAIN_CHAT_MODEL": "deepseek-chat",
+        "BRAIN_CHAT_MODEL": "deepseek-v4-flash",
         # DeepSeek 不提供 embedding 接口, 用本地确定性哈希向量 (零依赖)
         "BRAIN_EMBED_BACKEND": "local",
         "BRAIN_EMBED_MODEL": "",
