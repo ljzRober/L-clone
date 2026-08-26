@@ -189,6 +189,11 @@ TOOLS = [
             "required": ["question"],
         },
     },
+    {
+        "name": "organize",
+        "description": "整理: LLM 把语义相近的记忆合并成一条综合描述 (不能跨项目/等级/模块), 一键执行",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -254,19 +259,16 @@ def call_tool(name: str, args: dict) -> str:
                                    project_id=pid)
             if not items:
                 return "(没有相关记忆)"
-            lines = []
-            for i in items:
-                tag = " 🔗链接" if i.get("via_link") else ""
-                lines.append(
-                    f"#{i['id']} [{i['project']}/{i['level']}]"
-                    f" ({i['created_at']}){tag}\n  {i['content']}"
-                )
-            return "\n\n".join(lines)
+            return mem_mod._format_grouped(items, show_id=True)
         if name == "bootstrap":
             pid = _resolve_project(conn, args.get("project"))
             out = mem_mod.bootstrap(conn, query=args.get("query", ""),
                                     project_id=pid, k=int(args.get("k", 5)))
             return out or "(暂无记忆)"
+        if name == "organize":
+            res = mem_mod.organize(conn)
+            return (f"整理完成: 合并 {res['merged']} 组, "
+                    f"删除 {res['removed']} 条冗余记忆")
         if name == "promote":
             mem_mod.promote(conn, int(args["id"]))
             return f"记忆 #{args['id']} 已上升至全局层 (生命周期无限, 多项目共读)"

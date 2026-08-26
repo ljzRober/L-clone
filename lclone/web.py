@@ -291,6 +291,7 @@ WORK_BODY = r"""
       <button class="ghost zoomb" onclick="zoomFit()" title="适应">⛶</button>
       <span class="sum" id="graph-sum"></span>
       <span style="flex:1"></span>
+      <button class="ghost" onclick="organize()" title="把语义相近的记忆合并成一条（不跨项目/等级/模块）">整理</button>
       <button class="act" onclick="openAdd()">＋ 添加记忆</button>
     </div>
     <div id="graph"></div>
@@ -742,6 +743,15 @@ async function saveAdd() {
   await loadAll(); closeModal(); alert('已记住 #' + r.id);
 }
 function toggleReg() { $('reg-form').classList.toggle('on'); }
+async function organize() {
+  if (!confirm('整理会把语义相近的记忆合并成一条（不跨项目/等级/模块）。确定执行？')) return;
+  const btn = event && event.target;
+  try {
+    const r = await (await fetch('/api/organize', {method:'POST'})).json();
+    await loadAll();
+    alert(`整理完成: 合并 ${r.merged} 组, 删除 ${r.removed} 条冗余记忆`);
+  } catch (e) { alert('整理失败: ' + ((e && e.message) || e)); }
+}
 async function addProject() {
   const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(), charter: $('pj-charter').value.trim() };
   if (!body.name) return alert('需要项目名');
@@ -1037,6 +1047,11 @@ def create_app(db_path: Optional[str] = None):
     def suggest(conn: sqlite3.Connection = Depends(get_db)):
         """删除提示: 算法扫描候选, 删除由用户决定。"""
         return {"items": mem_mod.suggest(conn)}
+
+    @app.post("/api/organize")
+    def organize(conn: sqlite3.Connection = Depends(get_db)):
+        """整理: LLM 语义合并相近记忆 (不能跨项目/等级/模块)。"""
+        return mem_mod.organize(conn)
 
     @app.post("/api/recall")
     def recall(body: RecallIn, conn: sqlite3.Connection = Depends(get_db)):

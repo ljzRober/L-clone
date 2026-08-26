@@ -188,10 +188,15 @@ def cmd_recall(args) -> None:
                            follow_links=not args.no_follow)
     if not items:
         print("(没有相关记忆)")
-    for it in items:
-        tag = " 🔗链接" if it.get("via_link") else ""
-        print(f"[{it['score'] if it['score'] is not None else '--':>6}] #{it['id']} "
-              f"{it['project']}/{it['level']} ({it['created_at']}){tag}\n   {it['content']}")
+        return
+    # 分类加载: 按 项目 → 模块 分组展示
+    print(mem_mod._format_grouped(items, show_id=True))
+
+
+def cmd_organize(args) -> None:
+    conn = _conn(args)
+    res = mem_mod.organize(conn)
+    print(f"整理完成: 合并 {res['merged']} 组, 删除 {res['removed']} 条冗余记忆")
 
 
 def cmd_bootstrap(args) -> None:
@@ -431,6 +436,10 @@ def build_parser() -> argparse.ArgumentParser:
     sgg.add_argument("--unused-days", type=int, default=30,
                      help="active 记忆超过 N 天未被召回")
     sgg.set_defaults(func=cmd_suggest)
+
+    so = sub.add_parser("organize", parents=[parent],
+                         help="整理: LLM 语义合并相近记忆 (不能跨项目/等级/模块)")
+    so.set_defaults(func=cmd_organize)
 
     sm = sub.add_parser("memories", parents=[parent], help="列出记忆")
     sm.add_argument("--project", default=None, help="只看某项目")

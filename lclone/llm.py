@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from typing import Iterable, List, Optional
@@ -93,6 +94,23 @@ def chat(messages: List[dict], temperature: float | None = None) -> str:
         if temperature is None else temperature,
     )
     return resp.choices[0].message.content or ""
+
+
+def chat_json(prompt: str, temperature: float = 0.2):
+    """让 LLM 返回 JSON (数组), 容错解析。失败返回 None。"""
+    raw = chat([{"role": "user", "content": prompt}], temperature=temperature).strip()
+    try:
+        s = raw[raw.index("["): raw.rindex("]") + 1]
+        return json.loads(s)
+    except Exception:
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                try:
+                    return json.loads(line)
+                except Exception:
+                    continue
+        return None
 
 
 def extract_memories(text: str,
