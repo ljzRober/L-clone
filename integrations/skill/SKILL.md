@@ -41,7 +41,7 @@ description: |
 5. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
 6. **草稿提醒**：如果 `capture` 产生了**决策**草稿，提醒用户去确认（CLI: `lclone review`；Web: 「待确认」页签）。记录(note) 无需提醒。
 7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），分类为决策(decision，进待确认)/记录(note，直接生效)；dummy 后端整段视为一条 note。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
-8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec），脑内记忆（决策/记录/charter）走 lclone。lclone 不重复存 spec 全文，只经 `specs_index` 索引；决策升格为硬边界时才进 sp-spec。
+8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留「决策」（选了什么方案/定了什么规则）与「记录」（过程性事实/观察）。lclone 只经 `specs_index` 索引 spec，不重复存全文；决策升格为硬边界时才进 sp-spec。
 
 ## 数据库
 

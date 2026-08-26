@@ -99,7 +99,11 @@ def extract_memories(text: str) -> List[dict]:
     """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note。
 
     返回 [{"level": "decision"|"note", "content": str, "confidence": float}]。
-    decision = 确定的决策/选型/边界/时间点; note = 值得记的过程性事实/观察/TODO/灵感。
+    decision = 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼"选择/约定", 不提炼"做了什么");
+    note = 值得记的过程性事实、观察、TODO、灵感。
+
+    代码改动/接口变化/新增端点/重构/修 bug 属于 git 与 spec (sp-spec/openspec),
+    不提炼进记忆。
 
     dummy 后端: 整段视为一条 note, 保证离线流程可跑通。
     """
@@ -108,9 +112,10 @@ def extract_memories(text: str) -> List[dict]:
         return [{"level": "note", "content": t[:300], "confidence": 1.0}] if t else []
     prompt = (
         "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 用前缀标注类型:\n"
-        "- decision: 确定了什么 (确定的决策/选型/边界/时间点)\n"
+        "- decision: 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼「选择」和「约定」)\n"
         "- note: 值得记的过程性事实、观察、TODO、灵感\n"
-        "格式: decision: 内容  或  note: 内容。没有值得记的就输出空。不要总结, 不要客套。\n\n"
+        "注意: 代码改动、接口变化、新增端点、重构、修 bug 这些「做了什么」属于 git 和 spec,\n"
+        "不要提炼成 decision 或 note。没有值得记的就输出空。不要总结, 不要客套。\n\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
