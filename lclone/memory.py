@@ -31,6 +31,21 @@ NOTE_COMPACT_THRESHOLD = 3000
 GENERIC_MODULES = {"core", "misc", "general", "other", "todo", "notes", "memory",
                    "project", "module", "none", "miscellaneous", "stuff", "etc"}
 
+# ---- 记忆准入条件 (代码强制, 不依赖模型意图) ----
+# 1. 排除「做了什么」: 代码改动/接口/重构/bug 归 git & spec, 不进 lclone 记忆
+DID_MARKERS = (
+    "修复", "重构", "迁移", "回滚", "commit", "fix", "bug", "hotfix",
+    "refactor", "新增端点", "改接口", "实现了一个",
+)
+# 2. 决策信号: level=decision 的内容必须含其一, 否则降级为 note (不是真决策)
+DECISION_SIGNALS = (
+    "决定", "确定", "定为", "采用", "选择", "方案", "边界", "规则", "约定", "改为",
+    "统一", "规范", "策略", "命名", "职责", "归属", "分层", "架构", "选型",
+    "原则", "约束", "标准", "阈值", "默认", "必须", "只允许", "不再", "定义",
+)
+# 3. note 过短视为琐碎, 不记忆 (仅拦空壳/单字噪音)
+NOTE_MIN_LEN = 4
+
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
 
@@ -98,8 +113,8 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
              confirmed: bool = False) -> int:
     level = level if level in LEVELS else "decision"
     emb = llm.embed_one(content)
-    # 模块名经词表强制 (归一化/复用/防泛名); 不传则挂项目层
-    mod = _resolve_module(conn, project_id, module)
+    # 记录(note) 无模块: 记录都在 project 层 (偶尔全局); 仅决策挂模块 (词表强制)
+    mod = "" if level == "note" else _resolve_module(conn, project_id, module)
     # 决策强确认: decision 默认进 pending, 除非 confirmed=True (用户当场确认); note 恒 active
     status = "active" if (level != "decision" or confirmed) else "pending"
     if status == "active":
@@ -181,6 +196,33 @@ def _resolve_module(conn: sqlite3.Connection, project_id: Optional[int],
     return mod
 
 
+def _has_marker(text: str, markers) -> bool:
+    t = (text or "").lower()
+    return any(m.lower() in t for m in markers)
+
+
+def _filter_item(item: dict) -> Optional[dict]:
+    """记忆准入条件 (代码强制): 在 LLM 提炼之后、落库之前做确定性过滤。
+
+    返回过滤后的 item (可能改 level); None 表示不记忆。
+    1. 排除「做了什么」: 命中 DID_MARKERS (代码改动/接口/重构/bug) → 归 git & spec。
+    2. 决策信号: level=decision 但内容不含 DECISION_SIGNALS → 降级为 note。
+    3. 琐碎: note 过短 (< NOTE_MIN_LEN) → 丢弃。
+    """
+    content = (item.get("content") or "").strip()
+    if not content:
+        return None
+    if _has_marker(content, DID_MARKERS):
+        return None
+    level = item.get("level") if item.get("level") in LEVELS else "note"
+    item = dict(item, level=level)
+    if level == "decision" and not _has_marker(content, DECISION_SIGNALS):
+        item["level"] = "note"
+    if item["level"] == "note" and len(content) < NOTE_MIN_LEN:
+        return None
+    return item
+
+
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             module: str = "", session_key: str = "",
@@ -194,16 +236,20 @@ def capture(conn: sqlite3.Connection, text: str,
     同一个 session_key 只建一条 note, 每轮往这条 note 追加内容
     (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
     note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
-    模块: LLM 提炼时给每条内容归到已有模块或粗粒度新关注点; 代码经 _resolve_module
-    做词表强制 (归一化/复用/防泛名)。
+    准入: 每条内容先过 _filter_item (排除「做了什么」/ 决策需含信号 / note 不过短)。
+    模块: 仅决策(decision)挂模块 (LLM 分类 + _resolve_module 词表强制);
+    记录(note) 无模块, 落在 project 层 (偶尔全局)。
     """
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
     existing_modules = _list_module_names(conn, project_id)
     items = llm.extract_memories(text, existing_modules=existing_modules)
     ids = []
-    for it in items:
-        level = it["level"] if it["level"] in LEVELS else "note"
+    for raw in items:
+        it = _filter_item(raw)
+        if it is None:
+            continue
+        level = it["level"]
         content = (it.get("content") or "").strip()
         if not content:
             continue
@@ -211,7 +257,7 @@ def capture(conn: sqlite3.Connection, text: str,
         reason = f"来自会话 #{session_id}"
         ref = f"session:{session_id}"
         if level == "decision":
-            # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅在建记忆时)
+            # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅决策挂模块)
             mod = _resolve_module(conn, project_id, module or it.get("module") or "")
             # 决策进草稿待确认 (B 类); 写入前去重
             if _is_duplicate(conn, emb, project_id=project_id):
@@ -252,8 +298,8 @@ def capture(conn: sqlite3.Connection, text: str,
                 _store_links(conn, existing["id"], new_content)
                 ids.append(existing["id"])
             else:
-                mod = _resolve_module(conn, project_id,
-                                      module or it.get("module") or "")
+                # 记录(record) 无模块: 记录都在 project 层 (偶尔全局), 不挂 module
+                mod = ""
                 cur = conn.execute(
                     "INSERT INTO memories(project_id, level, module, content, reason,"
                     " status, source_type, source_ref, embedding, confirmed_at)"

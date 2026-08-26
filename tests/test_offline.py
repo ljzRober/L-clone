@@ -196,7 +196,7 @@ dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note"
 # note 现在直接 active, 造一条 pending 决策草稿来测"长期未确认"
 _orig_extract2 = llm_mod.extract_memories
 llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "decision",
-                                                               "content": "一个从未确认的旧草稿", "confidence": 0.9}]
+                                                               "content": "决定：一个从未确认的旧草稿", "confidence": 0.9}]
 mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
 llm_mod.extract_memories = _orig_extract2
 stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
@@ -388,6 +388,31 @@ check("85 模块名归一化+复用", r1 == "web" and r2 == "web" and r3 == "ser
 check("86 泛名模块挂项目层", r4 == "", f"{r4}")
 check("87 同名模块不重复建",
       mem_mod._list_module_names(conn, pid).count("web") == 1)
+conn.commit()
+
+# ---- 记忆准入条件 (代码强制过滤) ----
+_f = mem_mod._filter_item
+check("88 做了什么(修复)被排除",
+      _f({"level": "decision", "content": "修复了分页 bug"}) is None)
+check("89 决策无信号降级为 note",
+      _f({"level": "decision", "content": "Web 面板分页每行三个"})["level"] == "note")
+check("90 决策含信号保留",
+      _f({"level": "decision", "content": "决定了 Web 面板分页每行三个"})["level"] == "decision")
+check("91 琐碎 note 丢弃", _f({"level": "note", "content": "嗯"}) is None)
+
+# ---- 记录无模块 / 决策有模块 ----
+_orig3 = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t, existing_modules=None: [
+    {"level": "note", "module": "web", "content": "一条过程性记录内容"},
+    {"level": "decision", "module": "web", "content": "决定了 web 模块归属"},
+]
+ids_mod = mem_mod.capture(conn, "x", project_id=pid, session_key="modtest")
+llm_mod.extract_memories = _orig3
+rows_mod = {r["level"]: r["module"] for r in conn.execute(
+    "SELECT level, module FROM memories WHERE id IN (%s)"
+    % ",".join("?" * len(ids_mod)), ids_mod)}
+check("92 note 无模块 (project 层)", rows_mod.get("note") == "", f"{rows_mod}")
+check("93 decision 有模块", rows_mod.get("decision") == "web", f"{rows_mod}")
 conn.commit()
 
 # ---- Web 冒烟 (fastapi 可选) ----
