@@ -141,13 +141,8 @@ def add_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
         raise ValueError(f"模块已存在: {name}")
 
 
-def detect_project_by_git(conn: sqlite3.Connection,
-                          cwd: Optional[str] = None) -> Optional[int]:
-    """项目归属判定 (git 优先): 取目录的 git 仓库根, 匹配已注册项目。
-
-    返回匹配的项目 id; 不在任何已注册项目的 git 仓库内则返回 None
-    (调用方决定落到全局层或询问用户)。
-    """
+def _git_toplevel(cwd: Optional[str] = None) -> Optional[Path]:
+    """取目录所在 git 仓库根 (确定性); 不在 git 仓库内返回 None。"""
     import subprocess
     cwd = cwd or os.getcwd()
     try:
@@ -159,7 +154,12 @@ def detect_project_by_git(conn: sqlite3.Connection,
         return None
     if proc.returncode != 0:
         return None
-    repo = Path(proc.stdout.strip())
+    out = proc.stdout.strip()
+    return Path(out) if out else None
+
+
+def _match_registered(conn: sqlite3.Connection, repo: Path) -> Optional[int]:
+    """在已注册项目中匹配给定 git 仓库根, 返回项目 id 或 None。"""
     for p in list_projects(conn):
         if not p["path"]:
             continue
@@ -169,6 +169,51 @@ def detect_project_by_git(conn: sqlite3.Connection,
         except OSError:
             continue
     return None
+
+
+def detect_project_by_git(conn: sqlite3.Connection,
+                          cwd: Optional[str] = None) -> Optional[int]:
+    """项目归属判定 (git 优先): 取目录的 git 仓库根, 匹配已注册项目。
+
+    返回匹配的项目 id; 不在任何已注册项目的 git 仓库内则返回 None
+    (调用方决定落到全局层或询问用户)。不自动注册 —— 自动注册走 resolve_project。
+    """
+    repo = _git_toplevel(cwd)
+    if repo is None:
+        return None
+    return _match_registered(conn, repo)
+
+
+def _unique_project_name(conn: sqlite3.Connection, base: str) -> str:
+    """自动注册时保证项目名唯一: 与已有项目名冲突则追加 -2/-3... 后缀。"""
+    name = (base or "project").strip()
+    n = 2
+    while conn.execute("SELECT 1 FROM projects WHERE name=?",
+                       (name,)).fetchone() is not None:
+        name = f"{base}-{n}"
+        n += 1
+    return name
+
+
+def resolve_project(conn: sqlite3.Connection,
+                    cwd: Optional[str] = None) -> tuple:
+    """确定性项目归属 (代码强制): 返回 (status, project_id)。
+
+    status:
+      - "matched": git 仓库匹配到已注册项目, 记忆归该项目
+      - "created": git 检测到仓库但未注册 → 自动注册 (name=仓库 basename,
+                   path=仓库根, charter 留空), 记忆归新项目
+      - "no_git":  不在任何 git 仓库内 → 需向用户确认 (新建项目 or 全局层),
+                   调用方不得静默落全局
+    """
+    repo = _git_toplevel(cwd)
+    if repo is None:
+        return ("no_git", None)
+    pid = _match_registered(conn, repo)
+    if pid is not None:
+        return ("matched", pid)
+    pid = add_project(conn, _unique_project_name(conn, repo.name), str(repo), "")
+    return ("created", pid)
 
 
 def _walk_spec_files(root: Path) -> List[Path]:

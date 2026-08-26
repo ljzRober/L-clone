@@ -905,8 +905,10 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/remember")
     def remember(body: RememberIn, conn: sqlite3.Connection = Depends(get_db)):
         pid = body.project_id
+        # Web 手动添加 = 用户当场显式确认 → decision 直接生效
         mid = mem_mod.remember(conn, body.content, level=body.level,
-                               project_id=pid, reason=body.reason, module=body.module)
+                               project_id=pid, reason=body.reason, module=body.module,
+                               confirmed=True)
         return {"id": mid}
 
     @app.post("/api/capture")

@@ -54,7 +54,12 @@ function runCapture(text, sessionKey, cwd) {
   log(`capture ${t.length} chars cwd=${cwd || '(无)'}`)
   const args = [...lcloneBaseArgs, 'capture', t]
   if (sessionKey) args.push('--session-key', sessionKey)
-  if (cwd) args.push('--cwd', cwd)
+  if (cwd) {
+    args.push('--cwd', cwd) // git 仓库 → 代码自动归属/注册
+  } else {
+    args.push('--project', 'global') // 无会话 cwd: 显式归全局层, 不误归 lclone 仓库
+  }
+  args.push('--global-fallback') // cwd 存在但非 git: 后台静默落全局, 不丢数据
   const child = spawn(lcloneBin, args, {
     cwd: REPO, // 关键: 让 `python -m lclone` 能 import 到 lclone 包
     env: { ...process.env, BRAIN_DB_PATH: join(REPO, 'lclone.db') },

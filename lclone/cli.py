@@ -18,9 +18,14 @@ def _conn(args) -> None:
     return db_mod.init(args.db)
 
 
+_GLOBAL_REFS = {"global", "个人区", "个人", "personal", "none"}
+
+
 def _resolve_project(conn, ref) -> int | None:
     if ref is None:
         return None
+    if str(ref).strip().lower() in _GLOBAL_REFS:
+        return None  # 显式选择全局层
     if ref.isdigit():
         row = proj_mod.get_project(conn, int(ref))
         if row:
@@ -82,33 +87,54 @@ def cmd_log(args) -> None:
 def cmd_remember(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
-    auto = False
+    where = ""
     if pid is None and not args.project:
-        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
-        auto = pid is not None
+        status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
+        if status == "no_git":
+            raise SystemExit("未归属: 无 git 仓库, 未写入。请用 --project <名> 指定项目, "
+                             "或 --project global 归全局层, 或 lclone proj add 新建项目。")
+        where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
+    else:
+        where = f"项目 #{pid}" if pid is not None else "全局层"
     mid = mem_mod.remember(conn, args.content, level=args.level,
-                           project_id=pid, reason=args.reason, module=args.module)
-    where = f"项目 #{pid}" if pid is not None else "全局层"
-    tag = " (git 自动归属)" if auto else ""
-    print(f"已主动记忆 #{mid} [{where}]{tag} (level={args.level})")
+                           project_id=pid, reason=args.reason, module=args.module,
+                           confirmed=args.confirmed)
+    tail = ""
+    if args.level == "decision" and not args.confirmed:
+        tail = " (决策进待确认: lclone review 确认, 或加 --confirmed 直接生效)"
+    print(f"已主动记忆 #{mid} [{where}] (level={args.level}){tail}")
 
 
 def cmd_capture(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
-    auto = False
+    where = ""
     if pid is None and not args.project:
-        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
-        auto = pid is not None
+        status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
+        if status == "no_git":
+            if args.global_fallback:
+                pid = None
+                where = "全局层(后台捕获)"
+            else:
+                raise SystemExit("未归属: 无 git 仓库, 未写入。请用 --project <名> 指定项目, "
+                                 "或 --project global 归全局层, 或 lclone proj add 新建项目。")
+        else:
+            where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
+    else:
+        where = f"项目 #{pid}" if pid is not None else "全局层"
     ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
                           module=args.module, session_key=args.session_key or "")
     if not ids:
         print("没有提炼出可记忆的内容 (可能没有决策或值得记的事实, 或与已有记忆重复)")
     else:
-        where = f"项目 #{pid}" if pid is not None else "全局层"
-        tag = " (git 自动归属)" if auto else ""
-        print(f"已生成 {len(ids)} 条记忆 [{where}]{tag}: {ids}")
-        print("(记录已直接生效; 决策进「待确认」, 运行 lclone review 确认)")
+        rows = conn.execute(
+            "SELECT id, level FROM memories WHERE id IN (%s)"
+            % ",".join("?" * len(ids)), ids
+        ).fetchall()
+        decisions = [r["id"] for r in rows if r["level"] == "decision"]
+        print(f"已捕获 {len(ids)} 条记忆 [{where}]: {ids}")
+        if decisions:
+            print(f"(决策进待确认 #{decisions}, 运行 lclone review 确认; 记录已直接生效)")
 
 
 def cmd_review(args) -> None:
@@ -317,12 +343,14 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("--project", default=None)
     sl.set_defaults(func=cmd_log)
 
-    sr = sub.add_parser("remember", parents=[parent], help="主动记忆 (C, 直接生效)")
+    sr = sub.add_parser("remember", parents=[parent], help="主动记忆 (decision 默认待确认)")
     sr.add_argument("content")
     sr.add_argument("--level", default="decision",
                     choices=["decision", "note"])
     sr.add_argument("--reason", default="")
-    sr.add_argument("--module", default="", help="项目内模块名(可选)")
+    sr.add_argument("--module", default="", help="项目内模块名(可选, 缺省代码增量聚类)")
+    sr.add_argument("--confirmed", action="store_true",
+                    help="decision 当场已确认, 直接生效 (否则进待确认)")
     sr.add_argument("--project", default=None)
     sr.set_defaults(func=cmd_remember)
 
@@ -332,6 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--module", default="", help="项目内模块名(可选)")
     sc.add_argument("--project", default=None)
     sc.add_argument("--session-key", default="", help="外部会话 id, 同一会话只建一条 note 并逐轮追加")
+    sc.add_argument("--global-fallback", action="store_true",
+                    help="后台静默捕获: 无 git 时落全局层而非报错 (DSH 插件用)")
     sc.set_defaults(func=cmd_capture)
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")

@@ -65,10 +65,12 @@ CREATE TABLE IF NOT EXISTS specs_index (
 );
 
 -- 项目内声明的模块 (modules): 让"添加模块"能创建空模块并显示; 记忆的 module 字段引用模块名
+-- centroid: 该模块的记忆质心向量 (代码增量聚类用), 空 = 用户手动声明的空模块
 CREATE TABLE IF NOT EXISTS modules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name       TEXT NOT NULL DEFAULT '',
+  centroid   BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(project_id, name)
 );
@@ -152,6 +154,10 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "session_key" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
+    # 迁移: modules 补 centroid 列 (代码增量聚类的模块质心向量)
+    mcols = [r["name"] for r in conn.execute("PRAGMA table_info(modules)")]
+    if "centroid" not in mcols:
+        conn.execute("ALTER TABLE modules ADD COLUMN centroid BLOB")
     tok = _fts_tokenizer(conn)
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "

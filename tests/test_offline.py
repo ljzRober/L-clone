@@ -52,16 +52,16 @@ readme_idx = conn.execute(
 ).fetchone()["c"]
 check("5 普通 README 不入索引", readme_idx == 0, f"readme 索引数={readme_idx}")
 
-# ---- C 主动触发: 直接生效 ----
+# ---- C 主动触发: decision 默认待确认, confirmed=True 直接生效 ----
 mid = mem_mod.remember(
     conn,
     "后端使用 FastAPI, 数据库用 SQLite, 边界: 单用户部署",
-    level="decision", project_id=pid,
+    level="decision", project_id=pid, confirmed=True,
 )
 row = conn.execute(
     "SELECT status, source_type FROM memories WHERE id=?", (mid,)
 ).fetchone()
-check("6 主动记忆立即生效", row["status"] == "active" and row["source_type"] == "manual")
+check("6 主动记忆 confirmed 直接生效", row["status"] == "active" and row["source_type"] == "manual")
 
 # ---- B 自动捕获: 记录直接生效, 决策进草稿待确认 ----
 ids_note = mem_mod.capture(conn, "一条过程性记录, 无需确认", project_id=pid)
@@ -143,7 +143,7 @@ check("23 CLI memories", "FastAPI" in buf.getvalue())
 
 # ---- 上升 / 下降 (生命周期) ----
 m_up = mem_mod.remember(conn, "项目A独有的决策: 上线后立即灰度", level="decision",
-                        project_id=pid)
+                        project_id=pid, confirmed=True)
 mem_mod.promote(conn, m_up)
 row = conn.execute("SELECT project_id FROM memories WHERE id=?",
                    (m_up,)).fetchone()
@@ -216,7 +216,7 @@ check("37 suggest 每条都带删除命令",
 
 # ---- 项目墓碑: 移除后不再加载, 可 restore ----
 mem_mod.remember(conn, "projB 的独有记忆: B计划细节", level="decision",
-                 project_id=pid2)
+                 project_id=pid2, confirmed=True)
 proj_mod.remove_project(conn, pid2)
 check("38 移除后项目从列表消失",
       all(r["id"] != pid2 for r in proj_mod.list_projects(conn)))
@@ -361,6 +361,44 @@ c5 = mem_mod.capture(conn, "压缩事实E", project_id=pid, session_key="agg3",
 llm_mod.summarize = _orig_sum
 note3 = conn.execute("SELECT content FROM memories WHERE id=?", (c4[0],)).fetchone()
 check("80 超长 note 触发压缩", note3["content"] == "压缩摘要", note3["content"])
+
+# ---- 归属判定代码强制 (git 自动注册 / fail-closed) ----
+st, pid_l = proj_mod.resolve_project(conn, cwd=str(ROOT))
+check("81 git 检测到未注册仓库自动注册", st == "created" and pid_l is not None)
+st2, pid_l2 = proj_mod.resolve_project(conn, cwd=str(ROOT))
+check("82 再次解析命中已注册 (matched)", st2 == "matched" and pid_l2 == pid_l)
+no_git_dir = os.path.join(tmp, "plain_dir")
+os.makedirs(no_git_dir, exist_ok=True)
+st3, pid_none = proj_mod.resolve_project(conn, cwd=no_git_dir)
+check("83 无 git 返回 no_git 且不落库", st3 == "no_git" and pid_none is None)
+
+# ---- remember(decision) 默认 pending (决策强确认) ----
+_mid = mem_mod.remember(conn, "一个默认待确认的决策", level="decision", project_id=pid)
+check("84 remember decision 默认 pending",
+      conn.execute("SELECT status FROM memories WHERE id=?",
+                   (_mid,)).fetchone()["status"] == "pending")
+
+# ---- 模块增量聚类 (代码强制, 确定性向量) ----
+_orig_name = llm_mod.name_module
+
+
+def _unit(i, dim=16):
+    v = [0.0] * dim
+    v[i % dim] = 1.0
+    return v
+
+
+llm_mod.name_module = lambda c: "web" if "web" in c.lower() else "deploy"
+m1 = mem_mod.assign_module(conn, pid, _unit(0), "web layout grid")
+m2 = mem_mod.assign_module(conn, pid, _unit(0), "web layout more")
+check("85 相同向量聚到同一模块", m1 == m2 and m1 == "web", f"{m1} vs {m2}")
+m3 = mem_mod.assign_module(conn, pid, _unit(1), "deploy config")
+check("86 不同向量新建模块", m3 == "deploy" and m3 != m1, f"{m3}")
+llm_mod.name_module = lambda c: "core"
+m4 = mem_mod.assign_module(conn, pid, _unit(2), "core misc")
+llm_mod.name_module = _orig_name
+check("87 泛名模块挂项目层", m4 == "", f"{m4}")
+conn.commit()  # assign_module 是事务内辅助函数, 生产由 remember/capture 统一 commit
 
 # ---- Web 冒烟 (fastapi 可选) ----
 try:

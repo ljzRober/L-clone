@@ -42,9 +42,15 @@ def _db_path() -> str:
     return os.environ.get("BRAIN_DB_PATH") or config.get("BRAIN_DB_PATH") or DEFAULT_DB
 
 
+# project 参数里可用来显式指定「全局层」的哨兵值
+_GLOBAL_REFS = {"global", "个人区", "个人", "personal", "none"}
+
+
 def _resolve_project(conn, ref):
     if not ref:
         return None
+    if str(ref).strip().lower() in _GLOBAL_REFS:
+        return None  # 显式选择全局层 (个人区)
     if str(ref).isdigit():
         row = proj_mod.get_project(conn, int(ref))
         if row:
@@ -55,40 +61,49 @@ def _resolve_project(conn, ref):
     raise ValueError(f"项目不存在: {ref} (用 projects 工具查看)")
 
 
+def _unattributed_msg() -> str:
+    """未归属 (无 git) 时的 fail-closed 信号: 客户端据此向用户确认, 不静默落全局。"""
+    return ("⚠️未归属|无 git 仓库, 未写入任何记忆。请向用户确认归属后重试:\n"
+            "- 新建项目: 先记下项目名, 再传 project=<名>\n"
+            "- 全局层: 传 project=global")
+
+
 # ---------------------------------------------------------------- 工具定义
 TOOLS = [
     {
         "name": "remember",
-        "description": "主动记忆 (C 类, 直接生效): 用户明确确认的决策/边界/重要信息, 写入记忆库。归属判定: 优先按 git 仓库匹配已注册项目 (传 cwd 或当前目录), 匹配不到则落全局层; 是否该升全局由你判断, 拿不准问用户",
+        "description": "主动记忆: 写入一条已确认的决策/边界/事实。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册(名=仓库basename); 无 git 仓库时返回「⚠️未归属」信号, 需先问用户(新建项目 or project=global)。level=decision 时默认进待确认(pending), 除非用户当场已确认该决策(此时传 confirmed=true); level=note 恒直接生效。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "要记住的内容 (一句话)"},
                 "project": {"type": "string",
-                            "description": "项目名或 id; 不传则按 cwd 的 git 仓库自动判定, 判定不到 = 全局层(个人区)"},
+                            "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
-                "module": {"type": "string", "description": "项目内模块名 (可选, 次级竖向划分)"},
+                "module": {"type": "string", "description": "项目内模块名 (可选, 不传由代码增量聚类自动归)"},
                 "level": {"type": "string", "enum": ["decision", "note"],
                           "description": "默认 decision"},
+                "confirmed": {"type": "boolean",
+                              "description": "decision 是否已当场经用户确认 (true=直接生效, false/缺省=进待确认)"},
             },
             "required": ["content"],
         },
     },
     {
         "name": "capture",
-        "description": "自动捕获 (B 类, 进草稿待确认): 把一段对话/工作内容提炼成决策/记录草稿, 用户 review 后生效。归属判定: 优先按 git 仓库匹配已注册项目 (传 cwd 或当前目录), 匹配不到则落全局层; 是否该升全局由你判断, 拿不准问用户",
+        "description": "自动捕获: 把一段对话/工作内容提炼成决策/记录。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册; 无 git 仓库时返回「⚠️未归属」信号, 需先问用户。决策(decision)进待确认, 记录(note)直接生效; 返回结构化结果(区分决策/记录), 决策需立刻向用户逐条确认。module 由代码增量聚类自动归, LLM 不起名。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "本次对话/工作内容原文"},
                 "project": {"type": "string",
-                            "description": "项目名或 id; 不传则按 cwd 的 git 仓库自动判定, 判定不到 = 全局层"},
+                            "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
-                "module": {"type": "string", "description": "项目内模块名 (可选)"},
+                "module": {"type": "string", "description": "项目内模块名 (可选, 不传由代码增量聚类自动归)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
-                "session_key": {"type": "string", "description": "外部会话 id; 同一会话只建一条 note 并逐轮追加"},
+                "session_key": {"type": "string", "description": "外部会话 id; 缺省自动取 DSH_SESSION_ID, 同一会话只建一条 note 并逐轮追加"},
             },
             "required": ["text"],
         },
@@ -182,40 +197,57 @@ def call_tool(name: str, args: dict) -> str:
     try:
         if name == "remember":
             pid = _resolve_project(conn, args.get("project"))
-            auto = False
+            where = ""
             if pid is None and not args.get("project"):
-                pid = proj_mod.detect_project_by_git(conn, cwd=args.get("cwd"))
-                auto = pid is not None
-            mid = mem_mod.remember(conn, args["content"],
-                                   level=args.get("level", "decision"),
-                                   project_id=pid, module=args.get("module", ""))
-            if pid is None:
+                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
+                if status == "no_git":
+                    return _unattributed_msg()
+                where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
+            elif pid is None:
                 where = "全局层(个人区)"
-            elif auto:
-                where = f"项目 #{pid} (git 自动归属)"
             else:
                 where = f"项目 #{pid}"
-            return f"已主动记忆 #{mid} [{where}] (C 类, 直接生效)"
+            confirmed = bool(args.get("confirmed", False))
+            mid = mem_mod.remember(conn, args["content"],
+                                   level=args.get("level", "decision"),
+                                   project_id=pid, module=args.get("module", ""),
+                                   confirmed=confirmed)
+            tail = ""
+            if args.get("level", "decision") == "decision" and not confirmed:
+                tail = " (决策进待确认: 请向用户逐条确认保留/删除)"
+            return f"已主动记忆 #{mid} [{where}]{tail}"
         if name == "capture":
             pid = _resolve_project(conn, args.get("project"))
-            auto = False
+            where = ""
             if pid is None and not args.get("project"):
-                pid = proj_mod.detect_project_by_git(conn, cwd=args.get("cwd"))
-                auto = pid is not None
+                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
+                if status == "no_git":
+                    return _unattributed_msg()
+                where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
+            elif pid is None:
+                where = "全局层(个人区)"
+            else:
+                where = f"项目 #{pid}"
             ids = mem_mod.capture(conn, args["text"], project_id=pid,
                                   title=args.get("title", ""),
                                   module=args.get("module", ""),
                                   session_key=args.get("session_key", ""))
             if not ids:
                 return "未提炼出可记忆的内容 (内容里可能没有决策或值得记的事实)"
-            if pid is None:
-                where = "全局层(个人区)"
-            elif auto:
-                where = f"项目 #{pid} (git 自动归属)"
-            else:
-                where = f"项目 #{pid}"
-            return (f"已生成 {len(ids)} 条记忆 [{where}]: {ids}\n"
-                    f"(记录已直接生效; 决策进待确认, 请提醒用户 lclone review)")
+            rows = conn.execute(
+                "SELECT id, level, content FROM memories WHERE id IN (%s)"
+                % ",".join("?" * len(ids)), ids
+            ).fetchall()
+            decisions = [r for r in rows if r["level"] == "decision"]
+            notes = [r for r in rows if r["level"] == "note"]
+            lines = [f"已捕获 {len(ids)} 条记忆 [{where}]:"]
+            if notes:
+                lines.append("记录(已生效): " + ", ".join(f"#{r['id']}" for r in notes))
+            if decisions:
+                lines.append("决策(待确认): " + ", ".join(
+                    f"#{r['id']} {r['content'][:40]}" for r in decisions))
+                lines.append("⚠️ 请立刻向用户逐条确认这些决策保留/删除 (ask_user_question)")
+            return "\n".join(lines)
         if name == "recall":
             pid = _resolve_project(conn, args.get("project"))
             items = mem_mod.recall(conn, args["query"], k=int(args.get("k", 5)),
