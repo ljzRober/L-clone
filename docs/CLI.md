@@ -21,6 +21,7 @@ lclone memories [--project id] [--level decision|note] [--status active|pending|
 lclone supervise "新提议" --project id           # 规范环
 lclone ask "问题" [--project id] [--thread id]  # 回顾环
 lclone web [--host 0.0.0.0] [--port 8000]
+lclone serve start|stop|status|restart                                       # 管理 web 后台服务
 lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes]   # 一键接入向导
 lclone doctor [--check-llm]                                                 # 自检接入是否完整
 lclone backup [--dest backups]                                              # SQLite 在线快照备份

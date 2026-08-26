@@ -279,6 +279,13 @@ def cmd_web(args) -> None:
     run(host=args.host, port=args.port)
 
 
+def cmd_serve(args) -> None:
+    from . import serve
+    fn = {"start": serve.start, "stop": serve.stop,
+          "status": serve.status, "restart": serve.restart}[args.action]
+    print(fn())
+
+
 def build_parser() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--db", default=None,
@@ -421,6 +428,11 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--host", default=config.get("BRAIN_HOST"))
     sw.add_argument("--port", type=int, default=config.get_int("BRAIN_PORT", 8000))
     sw.set_defaults(func=cmd_web)
+
+    ss = sub.add_parser("serve", parents=[parent],
+                        help="管理 web 后台服务 (start/stop/status/restart)")
+    ss.add_argument("action", choices=["start", "stop", "status", "restart"])
+    ss.set_defaults(func=cmd_serve)
 
     return p
 
