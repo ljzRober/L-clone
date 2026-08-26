@@ -421,6 +421,15 @@ def bootstrap(conn: sqlite3.Connection, query: str = "",
         if items:
             parts.append("【相关记忆】\n" + "\n".join(
                 f"- [{i['project']}/{i['level']}] {i['content']}" for i in items))
+    # 待确认决策: 每轮 bootstrap 都带上, 供"强确认"——有决策草稿就主动找用户确认
+    pend = conn.execute(
+        "SELECT id, content FROM memories"
+        " WHERE level='decision' AND status='pending'"
+        " ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    if pend:
+        parts.append("【待确认决策】\n" + "\n".join(
+            f"- #{r['id']} {r['content']}" for r in pend))
     return "\n\n".join(parts)
 
 

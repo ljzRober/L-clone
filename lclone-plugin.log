@@ -1,0 +1,17 @@
+2026-08-25T12:03:53.437Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=26
+2026-08-25T12:03:53.438Z capture 1240 chars via /Users/didi/github/L-clone/.venv/bin/python -m lclone
+2026-08-25T12:03:53.499Z capture exit code 1
+2026-08-25T12:18:24.972Z plugin loaded, lclone = /Users/didi/github/L-clone/.venv/bin/python -m lclone
+2026-08-25T12:19:23.146Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=27
+2026-08-25T12:19:23.148Z capture 404 chars
+2026-08-25T12:19:25.526Z capture exit code 0
+2026-08-25T12:28:36.640Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=28
+2026-08-25T12:28:36.641Z capture 723 chars
+2026-08-25T12:28:39.721Z capture exit code 0
+2026-08-25T12:34:47.683Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=29
+2026-08-25T12:34:47.684Z capture 678 chars
+2026-08-25T12:34:50.285Z capture exit code 0
+2026-08-26T03:21:45.143Z plugin loaded, lclone = /Users/didi/github/L-clone/.venv/bin/python -m lclone
+2026-08-26T03:23:36.864Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=30
+2026-08-26T03:23:36.866Z capture 734 chars
+2026-08-26T03:23:40.229Z capture exit code 0
