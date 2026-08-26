@@ -54,8 +54,9 @@ def cmd_proj(args) -> None:
         if not rows:
             print("(暂无项目)")
         for r in rows:
+            pend = f" 待确认={r['pending_count']}" if r["pending_count"] else ""
             print(f"#{r['id']} {r['name']}  charter={r['charter'] or '-'}  "
-                  f"记忆={r['mem_count']} spec索引={r['spec_count']}  path={r['path']}")
+                  f"记忆={r['mem_count']}{pend} spec索引={r['spec_count']}  path={r['path']}")
     elif args.action == "sync":
         pid = _resolve_project(conn, ref)
         res = proj_mod.sync_project(conn, pid)

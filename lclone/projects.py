@@ -70,10 +70,17 @@ def add_project(conn: sqlite3.Connection, name: str, path: str = "",
 
 
 def list_projects(conn: sqlite3.Connection) -> List[sqlite3.Row]:
-    """列出项目 (已移除的墓碑项目不显示)。"""
+    """列出项目 (已移除的墓碑项目不显示)。
+
+    mem_count 只数正式(active)记忆, 与 Web 架构图展示口径一致;
+    pending_count 单列待确认决策数, 供 UI 角标提示。
+    """
     return conn.execute(
         "SELECT p.*,"
-        " (SELECT COUNT(*) FROM memories m WHERE m.project_id=p.id) AS mem_count,"
+        " (SELECT COUNT(*) FROM memories m WHERE m.project_id=p.id"
+        "    AND m.status='active') AS mem_count,"
+        " (SELECT COUNT(*) FROM memories m WHERE m.project_id=p.id"
+        "    AND m.status='pending') AS pending_count,"
         " (SELECT COUNT(*) FROM specs_index s WHERE s.project_id=p.id) AS spec_count"
         " FROM projects p"
         " LEFT JOIN project_removals pr ON pr.project_id = p.id"

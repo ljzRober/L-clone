@@ -289,8 +289,9 @@ def call_tool(name: str, args: dict) -> str:
                 return "(暂无项目)"
             return "\n".join(
                 f"#{r['id']} {r['name']}  charter={r['charter'] or '-'}"
-                f"  记忆={r['mem_count']} spec索引={r['spec_count']}"
-                f"  path={r['path']}"
+                f"  记忆={r['mem_count']}"
+                + (f" 待确认={r['pending_count']}" if r["pending_count"] else "")
+                + f" spec索引={r['spec_count']} path={r['path']}"
                 for r in rows
             )
         if name == "review":

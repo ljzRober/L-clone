@@ -268,6 +268,7 @@ WORK_BODY = r"""
   <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
   <span class="sp"></span>
+  <button class="ghost" onclick="openPending()">待确认 <b id="pending-n">0</b></button>
   <a class="navbtn" href="/ask">问答 →</a>
 </header>
 <div class="shell">
@@ -327,6 +328,16 @@ WORK_BODY = r"""
     </div>
   </div>
 </div>
+
+<div class="modal-bg" id="pending-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>待确认决策</h3>
+      <button class="modal-x" onclick="closePending()" title="关闭">✕</button>
+    </div>
+    <div id="pending-list"></div>
+  </div>
+</div>
 """
 
 WORK_JS = r"""const $ = id => document.getElementById(id);
@@ -359,8 +370,12 @@ window.addEventListener('unhandledrejection', e => {
 const LN = { decision:'决策', note:'记录' };
 
 async function loadAll() {
-  const [p, m, l] = await Promise.all([API.projects(), API.memories('?status=active&limit=500'), API.links()]);
+  const [p, m, l, pend] = await Promise.all([
+    API.projects(), API.memories('?status=active&limit=500'), API.links(),
+    (await fetch('/api/pending')).json(),
+  ]);
   PROJS = p; MEMS = m.items; LINKS = l.items;
+  $('pending-n').textContent = (pend.items || []).length;
   const mods = await Promise.all(p.map(async pr => [pr.id, (await (await fetch('/api/projects/'+pr.id+'/modules')).json()).items]));
   MODULES = Object.fromEntries(mods);
   fillOwnerSelect();
@@ -407,7 +422,8 @@ function renderSidebar() {
   const box = $('tree'); box.innerHTML = '';
   box.appendChild(treeBtn('global', null, '全局层', 'global', '∞', 'lg-global'));
   PROJS.forEach(p => {
-    box.appendChild(treeBtn('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>`, 'lg-p' + p.id));
+    const pendTag = p.pending_count ? ` 待确认 <b>${p.pending_count}</b>` : '';
+    box.appendChild(treeBtn('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>${pendTag}`, 'lg-p' + p.id));
     // 展开项目时显示其模块子节点 (树状)
     if (EXPANDED.has(p.id)) {
       const mods = [...new Set([...(MODULES[p.id] || []), ...MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean)])];
@@ -577,7 +593,7 @@ function renderGraph() {
         `<rect x="${bx}" y="${byy}" width="${pw}" height="${ph}" rx="12" class="bandbox"/>` +
         `<rect x="${bx}" y="${byy}" width="${pw}" height="30" rx="12" fill="#e8f1fb"/>` +
         `<text x="${bx + 12}" y="${byy + 21}" class="bt" style="fill:#2b6cb0;font-weight:bold">${esc(p.name)}</text>` +
-        `<text x="${bx + 12}" y="${byy + 48}" class="bm" style="fill:#5b8def">${p.mem_count} 条记忆</text>` +
+        `<text x="${bx + 12}" y="${byy + 48}" class="bm" style="fill:#5b8def">${p.mem_count} 条记忆${p.pending_count ? ' · 待确认 ' + p.pending_count : ''}</text>` +
         `<text x="${bx + 12}" y="${byy + 64}" class="bs">${esc((p.charter || '').slice(0, 22))}</text>` +
         `<text x="${bx + 12}" y="${byy + 84}" class="bs" style="fill:#8b95a9">点击进入 →</text></g>`;
       bx += pw + 16;
@@ -665,6 +681,29 @@ async function delMem() {
   if (!confirm('确定删除记忆 #' + CUR_MID + ' 吗？')) return;
   await API.review({ id: CUR_MID, action: 'delete' });
   await loadAll(); closeModal(); alert('已删除 #' + CUR_MID);
+}
+
+/* ---- 待确认决策 (B 类确认关卡) ---- */
+async function openPending() {
+  const r = await (await fetch('/api/pending')).json();
+  const items = r.items || [];
+  const box = $('pending-list');
+  if (!items.length) box.innerHTML = '<div class="empty">暂无待确认决策</div>';
+  else box.innerHTML = items.map(m => `
+    <div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-size:13px;color:var(--fg);margin-bottom:6px">${esc(m.content)}</div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:8px">#${m.id} · ${m.project_name ? '项目「'+esc(m.project_name)+'」' : '全局层'} · ${(m.created_at||'').slice(0,16)}</div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="ghost" onclick="confirmPending(${m.id},'delete')">删除</button>
+        <button class="act" onclick="confirmPending(${m.id},'keep')">保留</button>
+      </div>
+    </div>`).join('');
+  $('pending-modal').classList.add('on');
+}
+function closePending() { $('pending-modal').classList.remove('on'); }
+async function confirmPending(id, action) {
+  await API.review({ id, action });
+  await loadAll(); openPending();
 }
 
 /* ---- 添加记忆 / 注册项目 ---- */
