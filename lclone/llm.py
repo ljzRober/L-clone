@@ -98,9 +98,10 @@ def chat(messages: List[dict], temperature: float | None = None) -> str:
 def extract_memories(text: str) -> List[dict]:
     """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note。
 
-    返回 [{"level": "decision"|"note", "content": str, "confidence": float}]。
+    返回 [{"level": "decision"|"note", "module": str, "content": str, "confidence": float}]。
     decision = 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼"选择/约定", 不提炼"做了什么");
     note = 值得记的过程性事实、观察、TODO、灵感。
+    module = 主题英文短名 (web/server/memory-capture/dsh-plugin/cli/deploy), 拿不准可空。
 
     代码改动/接口变化/新增端点/重构/修 bug 属于 git 与 spec (sp-spec/openspec),
     不提炼进记忆。
@@ -109,13 +110,15 @@ def extract_memories(text: str) -> List[dict]:
     """
     if backend() == "dummy":
         t = text.strip()
-        return [{"level": "note", "content": t[:300], "confidence": 1.0}] if t else []
+        return [{"level": "note", "module": "", "content": t[:300],
+                 "confidence": 1.0}] if t else []
     prompt = (
-        "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 用前缀标注类型:\n"
-        "- decision: 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼「选择」和「约定」)\n"
-        "- note: 值得记的过程性事实、观察、TODO、灵感\n"
+        "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 格式: 类型[模块]: 内容\n"
+        "- 类型: decision(选了什么方案/定了什么规则/约定什么边界) 或 note(过程性事实/观察/TODO)\n"
+        "- 模块: 主题英文短名, 从 web / server / memory-capture / dsh-plugin / cli / deploy 里选, 拿不准可不写\n"
+        "示例: decision[server]: 选了 SQLite 不用 Postgres\n"
         "注意: 代码改动、接口变化、新增端点、重构、修 bug 这些「做了什么」属于 git 和 spec,\n"
-        "不要提炼成 decision 或 note。没有值得记的就输出空。不要总结, 不要客套。\n\n"
+        "不要提炼。没有值得记的就输出空。不要总结, 不要客套。\n\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
@@ -125,18 +128,22 @@ def extract_memories(text: str) -> List[dict]:
         if not line or len(line) <= 3:
             continue
         level = "note"
+        module = ""
         body = line
-        m = re.match(r"^(decision|note)\s*[:：]\s*(.+)$", line, re.IGNORECASE)
+        m = re.match(r"^(decision|note)\s*(?:\[([^\]]*)\])?\s*[:：]\s*(.+)$",
+                     line, re.IGNORECASE)
         if m:
             level = m.group(1).lower()
-            body = m.group(2).strip()
+            module = (m.group(2) or "").strip().lower()
+            body = m.group(3).strip()
         else:
             m2 = re.match(r"^(decision|note)\b\s*(.*)$", line, re.IGNORECASE)
             if m2:
                 level = m2.group(1).lower()
                 body = m2.group(2).strip(" :：").strip()
         if body:
-            out.append({"level": level, "content": body, "confidence": 0.9})
+            out.append({"level": level, "module": module, "content": body,
+                        "confidence": 0.9})
     return out
 
 

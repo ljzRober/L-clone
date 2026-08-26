@@ -73,7 +73,7 @@ def cmd_log(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
     if pid is None and not args.project:
-        pid = proj_mod.detect_project_by_git(conn)
+        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
     sid = mem_mod.log_session(conn, pid, title=args.title, summary=args.summary)
     where = f"项目 #{pid}" if pid is not None else "全局层"
     print(f"会话已记录 #{sid} [{where}]")
@@ -84,7 +84,7 @@ def cmd_remember(args) -> None:
     pid = _resolve_project(conn, args.project) if args.project else None
     auto = False
     if pid is None and not args.project:
-        pid = proj_mod.detect_project_by_git(conn)
+        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
         auto = pid is not None
     mid = mem_mod.remember(conn, args.content, level=args.level,
                            project_id=pid, reason=args.reason, module=args.module)
@@ -98,7 +98,7 @@ def cmd_capture(args) -> None:
     pid = _resolve_project(conn, args.project) if args.project else None
     auto = False
     if pid is None and not args.project:
-        pid = proj_mod.detect_project_by_git(conn)
+        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
         auto = pid is not None
     ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
                           module=args.module, session_key=args.session_key or "")
@@ -283,6 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument("--db", default=None,
                         help="数据库路径 (默认 BRAIN_DB_PATH 或 lclone.db)")
+    parent.add_argument("--cwd", default=None,
+                        help="工作目录 (git 归属判定用, 默认当前目录)")
 
     p = argparse.ArgumentParser(
         prog="lclone",

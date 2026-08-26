@@ -129,6 +129,17 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
     return False
 
 
+def _ensure_module(conn: sqlite3.Connection, project_id: Optional[int],
+                   name: str) -> None:
+    """自动补录项目模块 (像 sp-spec 分 spec 一样, 按主题自动分层)。"""
+    if not name or project_id is None:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO modules(project_id, name) VALUES (?,?)",
+        (project_id, name),
+    )
+
+
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             module: str = "", session_key: str = "",
@@ -153,6 +164,9 @@ def capture(conn: sqlite3.Connection, text: str,
         emb = llm.embed_one(content)
         reason = f"来自会话 #{session_id}"
         ref = f"session:{session_id}"
+        mod = (module or (it.get("module") or "")).strip().lower()
+        if mod:
+            _ensure_module(conn, project_id, mod)
         if level == "decision":
             # 决策进草稿待确认 (B 类); 写入前去重
             if _is_duplicate(conn, emb, project_id=project_id):
@@ -161,7 +175,7 @@ def capture(conn: sqlite3.Connection, text: str,
                 "INSERT INTO memories(project_id, level, module, content, reason,"
                 " status, source_type, source_ref, embedding)"
                 " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
-                (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
+                (project_id, level, mod, content, reason, ref, pack_vec(emb)),
             )
             _store_links(conn, cur.lastrowid, content)
             ids.append(cur.lastrowid)
@@ -189,7 +203,7 @@ def capture(conn: sqlite3.Connection, text: str,
                     "INSERT INTO memories(project_id, level, module, content, reason,"
                     " status, source_type, source_ref, embedding, confirmed_at)"
                     " VALUES (?, ?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
-                    (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
+                    (project_id, level, mod, content, reason, ref, pack_vec(emb)),
                 )
                 _store_links(conn, cur.lastrowid, content)
                 ids.append(cur.lastrowid)
