@@ -333,7 +333,7 @@ WORK_JS = r"""const $ = id => document.getElementById(id);
 let PROJS = [], MEMS = [], LINKS = [];
 const EXPANDED = new Set();
 const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
-const PAGE_SIZE = 20;    // 每列每页显示的记忆条数
+const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
 let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
 let MODULES = {};   // pid -> [声明的模块名]
 let CUR_MID = null;
@@ -463,13 +463,14 @@ function renderGraph() {
     // 网格化: 按列宽算每行放几个记忆 (1~3 个), 压缩高度
     const perRow = Math.max(1, Math.min(3, Math.floor((colW - 20) / 170)));
     const boxW = (colW - 20 - (perRow - 1) * BOXGAP) / perRow;
+    const pageSize = perRow * ROWS_PER_PAGE;   // 页容量 = 整行数, 保证网格排满
     const cols = levels.map(([lv, n, c, t]) => {
       const mems = ms.filter(m => m.level === lv);
       const total = mems.length;
-      const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      const pages = Math.max(1, Math.ceil(total / pageSize));
       let page = LEVEL_PAGE[lv] || 0;
       if (page >= pages) page = 0;
-      const shown = mems.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+      const shown = mems.slice(page * pageSize, (page + 1) * pageSize);
       return { lv, name: n, col: c, tint: t, total, pages, page, shown };
     });
     const maxRows = Math.max(...cols.map(c => Math.ceil(c.shown.length / perRow)), 1);
