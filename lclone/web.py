@@ -332,6 +332,8 @@ WORK_BODY = r"""
 WORK_JS = r"""const $ = id => document.getElementById(id);
 let PROJS = [], MEMS = [], LINKS = [];
 const EXPANDED = new Set();
+const EXPANDED_LEVELS = new Set();  // 已展开的记忆等级 (decision/note)
+const PAGE_SIZE = 20;               // 每列默认显示的记忆条数, 超出折叠
 let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
 let MODULES = {};   // pid -> [声明的模块名]
 let CUR_MID = null;
@@ -458,21 +460,43 @@ function renderGraph() {
   function levelColumns(ms, ox, oy) {
     let s = '';
     const colW = (innerW - GAP * (levels.length - 1)) / levels.length;
-    const cols = levels.map(([lv, n, c, t]) => ({ lv, name: n, col: c, tint: t, mems: ms.filter(m => m.level === lv) }));
-    const maxPer = Math.max(...cols.map(c => c.mems.length), 1);
-    const gh = G_H + 12 + maxPer * BOX_H + (maxPer - 1) * BOXGAP + 8;
+    // 网格化: 按列宽算每行放几个记忆 (1~3 个), 压缩高度
+    const perRow = Math.max(1, Math.min(3, Math.floor((colW - 20) / 170)));
+    const boxW = (colW - 20 - (perRow - 1) * BOXGAP) / perRow;
+    const cols = levels.map(([lv, n, c, t]) => {
+      const mems = ms.filter(m => m.level === lv);
+      const expanded = EXPANDED_LEVELS.has(lv);
+      const shown = expanded ? mems : mems.slice(0, PAGE_SIZE);
+      return { lv, name: n, col: c, tint: t, shown, hidden: mems.length - shown.length };
+    });
+    const maxRows = Math.max(...cols.map(c => Math.ceil(c.shown.length / perRow)), 1);
+    const gh = G_H + 12 + maxRows * BOX_H + (maxRows - 1) * BOXGAP + 8 + 30;  // +30 留给「展开」按钮
     cols.forEach((c, i) => {
       const cx = ox + i * (colW + GAP);
       s += `<g><rect x="${cx}" y="${oy}" width="${colW}" height="${gh}" rx="12" class="bandbox"/>` +
         `<rect x="${cx}" y="${oy}" width="${colW}" height="${G_H}" rx="12" fill="${c.tint}"/>` +
         `<text x="${cx + 10}" y="${oy + G_H / 2 + 6}" class="bh" style="fill:${c.col}">${c.name}</text>` +
-        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.mems.length} 条</text>` +
+        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.shown.length + c.hidden} 条</text>` +
         `<text x="${cx + colW - 14}" y="${oy + G_H / 2 + 6}" class="bs" style="fill:${c.col};cursor:pointer" text-anchor="middle" onclick="openAddLevel('${c.lv}')">＋</text></g>`;
       let by = oy + G_H + 12;
-      if (!c.mems.length) s += `<text x="${cx + 12}" y="${by + 22}" class="bs">无记忆</text>`;
-      else c.mems.forEach(m => { s += memBox(m, cx + 10, by, colW - 20, c.col); by += BOX_H + BOXGAP; });
+      if (!c.shown.length) s += `<text x="${cx + 12}" y="${by + 22}" class="bs">无记忆</text>`;
+      else c.shown.forEach((m, idx) => {
+        const r = Math.floor(idx / perRow), col = idx % perRow;
+        s += memBox(m, cx + 10 + col * (boxW + BOXGAP), by + r * (BOX_H + BOXGAP), boxW, c.col);
+      });
+      if (c.hidden > 0 || EXPANDED_LEVELS.has(c.lv)) {
+        const byy = by + (Math.ceil(c.shown.length / perRow) || 0) * (BOX_H + BOXGAP);
+        const label = EXPANDED_LEVELS.has(c.lv) ? '－ 收起' : `＋ 展开 ${c.hidden} 条`;
+        s += `<text x="${cx + 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px;font-weight:bold" onclick="toggleLevel('${c.lv}')">${label}</text>`;
+      }
     });
     return { s, gh };
+  }
+
+  function toggleLevel(lv) {
+    if (EXPANDED_LEVELS.has(lv)) EXPANDED_LEVELS.delete(lv);
+    else EXPANDED_LEVELS.add(lv);
+    renderGraph();
   }
 
   let bg = '';
