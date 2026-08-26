@@ -754,6 +754,16 @@ $('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeM
   $('backend').textContent = '后端: ' + h.backend;
   await loadAll();
 })();
+
+// 待确认角标实时刷新: 后台插件会持续捕获, 角标不能只靠页面加载时刷新一次
+setInterval(async () => {
+  try {
+    const r = await (await fetch('/api/pending')).json();
+    const n = (r.items || []).length;
+    $('pending-n').textContent = n;
+    $('btn-pending').classList.toggle('hot', n > 0);
+  } catch (e) { /* 忽略轮询失败 */ }
+}, 30000);
 """
 
 
