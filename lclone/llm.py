@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from . import config
 
@@ -95,11 +95,14 @@ def chat(messages: List[dict], temperature: float | None = None) -> str:
     return resp.choices[0].message.content or ""
 
 
-def extract_memories(text: str) -> List[dict]:
-    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note。
+def extract_memories(text: str,
+                     existing_modules: Optional[List[str]] = None) -> List[dict]:
+    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note,
+    并给出模块 (关注点)。
 
-    返回 [{"level": "decision"|"note", "content": str, "confidence": float}]。
-    注意: 不再返回 module —— 模块归属由代码 (embedding 增量聚类) 决定, LLM 不起名。
+    返回 [{"level": "decision"|"note", "module": str, "content": str, "confidence": float}]。
+    module 由 LLM 从 existing_modules 里复用, 或给出一个粗粒度新关注点;
+    词表强制 (归一化/去重/防泛名) 由 memory._resolve_module 在代码侧完成。
 
     decision = 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼"选择/约定", 不提炼"做了什么");
     note = 值得记的过程性事实、观察、TODO、灵感。
@@ -107,18 +110,23 @@ def extract_memories(text: str) -> List[dict]:
     代码改动/接口变化/新增端点/重构/修 bug 属于 git 与 spec (sp-spec/openspec),
     不提炼进记忆。
 
-    dummy 后端: 整段视为一条 note, 保证离线流程可跑通。
+    dummy 后端: 整段视为一条 note, module 为空, 保证离线流程可跑通。
     """
     if backend() == "dummy":
         t = text.strip()
-        return [{"level": "note", "content": t[:300],
+        return [{"level": "note", "module": "", "content": t[:300],
                  "confidence": 1.0}] if t else []
+    mod_hint = (", ".join(existing_modules) if existing_modules
+                else "(暂无, 请给一个粗粒度关注点)")
     prompt = (
-        "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 格式: 类型: 内容\n"
+        "下面是一段工作/讨论记录。请提炼其中值得长期记住的内容, 每条一行, 格式: 类型[模块]: 内容\n"
         "- 类型: decision(选了什么方案/定了什么规则/约定什么边界) 或 note(过程性事实/观察/TODO)\n"
-        "示例: decision: Web 记忆图用网格布局分页\n"
-        "注意: 代码改动、接口变化、新增端点、重构、修 bug 这些「做了什么」属于 git 和 spec,\n"
-        "不要提炼。没有值得记的就输出空。不要总结, 不要客套, 不要给模块名。\n\n"
+        "- 模块: 这条内容所属的关注点, 用英文短名。优先复用已有模块, 不要为每条起一个过于具体的名字;\n"
+        f"  已有模块: {mod_hint}。没有合适的就起一个粗粒度新关注点 (如 web/server/cli/deploy/memory-capture),\n"
+        "  同一关注点的多条内容必须用同一个模块名。\n"
+        "示例: decision[web]: Web 记忆图用网格布局分页\n"
+        "注意: 代码改动、接口变化、新增端点、重构、修 bug 这些「做了什么」属于 git 和 spec, 不要提炼。\n"
+        "没有值得记的就输出空。不要总结, 不要客套。\n\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
@@ -128,44 +136,28 @@ def extract_memories(text: str) -> List[dict]:
         if not line or len(line) <= 3:
             continue
         level = "note"
+        module = ""
         body = line
-        m = re.match(r"^(decision|note)\s*[:：]\s*(.+)$", line, re.IGNORECASE)
+        m = re.match(r"^(decision|note)\s*\[([^\]]*)\]\s*[:：]\s*(.+)$",
+                     line, re.IGNORECASE)
         if m:
             level = m.group(1).lower()
-            body = m.group(2).strip()
+            module = (m.group(2) or "").strip().lower()
+            body = m.group(3).strip()
         else:
-            m2 = re.match(r"^(decision|note)\b\s*(.*)$", line, re.IGNORECASE)
+            m2 = re.match(r"^(decision|note)\s*[:：]\s*(.+)$", line, re.IGNORECASE)
             if m2:
                 level = m2.group(1).lower()
-                body = m2.group(2).strip(" :：").strip()
+                body = m2.group(2).strip()
+            else:
+                m3 = re.match(r"^(decision|note)\b\s*(.*)$", line, re.IGNORECASE)
+                if m3:
+                    level = m3.group(1).lower()
+                    body = m3.group(2).strip(" :：").strip()
         if body:
-            out.append({"level": level, "content": body, "confidence": 0.9})
+            out.append({"level": level, "module": module, "content": body,
+                        "confidence": 0.9})
     return out
-
-
-def _dummy_module_name(text: str) -> str:
-    """dummy 后端确定性模块名: 取首个英文/数字 token (小写); 无则返回空。"""
-    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
-    return tokens[0][:24] if tokens else ""
-
-
-def name_module(content: str) -> str:
-    """给一条关注点内容起一个英文短模块名 (一次性, 结果由调用方缓存进 modules 表)。
-
-    只在代码判定「需要新建模块」时调用一次; 名字缓存后不复调用, 保证稳定。
-    dummy 后端返回确定性首 token (无英文则空, 空 = 挂项目层不建模块)。
-    """
-    t = (content or "").strip()
-    if not t:
-        return ""
-    if backend() == "dummy":
-        return _dummy_module_name(t)
-    prompt = (
-        "给下面这段内容起一个英文短模块名（关注点, 如 web/server/cli/deploy/memory-capture）。\n"
-        "只返回小写短名, 不要解释, 不要标点。\n\n内容:\n" + t[:2000]
-    )
-    raw = chat([{"role": "user", "content": prompt}], temperature=0.2)
-    return re.sub(r"[^a-z0-9-]", "", (raw or "").strip().lower())[:40]
 
 
 def extract_decisions(text: str) -> List[str]:

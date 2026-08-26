@@ -72,8 +72,8 @@ check("7 capture note 直接 active", row["status"] == "active", str(row["status
 # 模拟分类器返回 decision → 应进 pending 待确认
 import lclone.llm as llm_mod
 _orig_extract = llm_mod.extract_memories
-llm_mod.extract_memories = lambda t: [{"level": "decision",
-                                       "content": "确定 6月1日上线", "confidence": 0.9}]
+llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "decision",
+                                                               "content": "确定 6月1日上线", "confidence": 0.9}]
 ids_dec = mem_mod.capture(conn, "确定 6月1日上线", project_id=pid, title="方案讨论")
 llm_mod.extract_memories = _orig_extract
 row = conn.execute("SELECT status FROM memories WHERE id=?",
@@ -195,8 +195,8 @@ dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="note"
 dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
 # note 现在直接 active, 造一条 pending 决策草稿来测"长期未确认"
 _orig_extract2 = llm_mod.extract_memories
-llm_mod.extract_memories = lambda t: [{"level": "decision",
-                                       "content": "一个从未确认的旧草稿", "confidence": 0.9}]
+llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "decision",
+                                                               "content": "一个从未确认的旧草稿", "confidence": 0.9}]
 mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
 llm_mod.extract_memories = _orig_extract2
 stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
@@ -378,27 +378,17 @@ check("84 remember decision 默认 pending",
       conn.execute("SELECT status FROM memories WHERE id=?",
                    (_mid,)).fetchone()["status"] == "pending")
 
-# ---- 模块增量聚类 (代码强制, 确定性向量) ----
-_orig_name = llm_mod.name_module
-
-
-def _unit(i, dim=16):
-    v = [0.0] * dim
-    v[i % dim] = 1.0
-    return v
-
-
-llm_mod.name_module = lambda c: "web" if "web" in c.lower() else "deploy"
-m1 = mem_mod.assign_module(conn, pid, _unit(0), "web layout grid")
-m2 = mem_mod.assign_module(conn, pid, _unit(0), "web layout more")
-check("85 相同向量聚到同一模块", m1 == m2 and m1 == "web", f"{m1} vs {m2}")
-m3 = mem_mod.assign_module(conn, pid, _unit(1), "deploy config")
-check("86 不同向量新建模块", m3 == "deploy" and m3 != m1, f"{m3}")
-llm_mod.name_module = lambda c: "core"
-m4 = mem_mod.assign_module(conn, pid, _unit(2), "core misc")
-llm_mod.name_module = _orig_name
-check("87 泛名模块挂项目层", m4 == "", f"{m4}")
-conn.commit()  # assign_module 是事务内辅助函数, 生产由 remember/capture 统一 commit
+# ---- 模块词表强制 (LLM 分类到代码维护词表) ----
+r1 = mem_mod._resolve_module(conn, pid, "Web")
+r2 = mem_mod._resolve_module(conn, pid, "web")
+r3 = mem_mod._resolve_module(conn, pid, "  Server-API  ")
+r4 = mem_mod._resolve_module(conn, pid, "core")
+check("85 模块名归一化+复用", r1 == "web" and r2 == "web" and r3 == "server-api",
+      f"{r1}/{r2}/{r3}")
+check("86 泛名模块挂项目层", r4 == "", f"{r4}")
+check("87 同名模块不重复建",
+      mem_mod._list_module_names(conn, pid).count("web") == 1)
+conn.commit()
 
 # ---- Web 冒烟 (fastapi 可选) ----
 try:

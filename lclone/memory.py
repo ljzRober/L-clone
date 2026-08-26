@@ -27,11 +27,9 @@ LEVELS = ("note", "decision")
 # note 超长时的滚动压缩阈值: 超过这个长度, 把整条 note 摘要一次
 NOTE_COMPACT_THRESHOLD = 3000
 
-# 模块增量聚类: 记忆向量与模块质心的余弦相似度 >= 此阈值即归该模块
-MODULE_SIM_THRESHOLD = 0.8
-
 # 泛名模块黑名单: 命中则挂项目层, 不建模块 (防 core/misc/general 等无意义模块)
-GENERIC_MODULES = {"core", "misc", "general", "other", "todo", "notes", "memory"}
+GENERIC_MODULES = {"core", "misc", "general", "other", "todo", "notes", "memory",
+                   "project", "module", "none", "miscellaneous", "stuff", "etc"}
 
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
@@ -100,10 +98,8 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
              confirmed: bool = False) -> int:
     level = level if level in LEVELS else "decision"
     emb = llm.embed_one(content)
-    # module 未显式给出时, 用代码增量聚类归模块 (与 capture 一致)
-    mod = (module or "").strip().lower()
-    if not mod:
-        mod = assign_module(conn, project_id, emb, content)
+    # 模块名经词表强制 (归一化/复用/防泛名); 不传则挂项目层
+    mod = _resolve_module(conn, project_id, module)
     # 决策强确认: decision 默认进 pending, 除非 confirmed=True (用户当场确认); note 恒 active
     status = "active" if (level != "decision" or confirmed) else "pending"
     if status == "active":
@@ -150,60 +146,39 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
     return False
 
 
-def _update_centroid(conn: sqlite3.Connection, module_id: int,
-                     emb: List[float]) -> None:
-    """把一条记忆向量并入模块质心 (指数移动平均, 保持归一化)。"""
-    row = conn.execute(
-        "SELECT centroid FROM modules WHERE id=?", (module_id,)
-    ).fetchone()
-    old = unpack_vec(row["centroid"]) if row and row["centroid"] else []
-    if not old:
-        new = emb
-    else:
-        new = [0.5 * a + 0.5 * b for a, b in zip(old, emb)]
-        n = math.sqrt(sum(v * v for v in new)) or 1.0
-        new = [v / n for v in new]
-    conn.execute("UPDATE modules SET centroid=? WHERE id=?",
-                 (pack_vec(new), module_id))
+def _normalize_module(name: str) -> str:
+    """模块名归一化: 小写、非字母数字转连字符、去首尾连字符。"""
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
 
 
-def assign_module(conn: sqlite3.Connection, project_id: Optional[int],
-                  emb: List[float], content: str) -> str:
-    """代码增量聚类: 把一条记忆归到最近模块 (≥ 阈值), 否则新建 (一次性命名)。
+def _list_module_names(conn: sqlite3.Connection, project_id: Optional[int]) -> List[str]:
+    """项目内已有模块名列表 (词表, 供 LLM 复用)。"""
+    if project_id is None:
+        return []
+    return [r["name"] for r in conn.execute(
+        "SELECT name FROM modules WHERE project_id=? ORDER BY name", (project_id,))]
 
-    返回模块名 (空字符串 = 挂项目层, 不建模块)。project_id=None 时全局层无模块。
-    这是「模块与 spec 同逻辑、按关注点自组织」的代码强制实现: LLM 只提炼内容,
-    模块归属由向量相似度确定性决定, 新模块名只在该模块诞生时命名一次并缓存。
+
+def _resolve_module(conn: sqlite3.Connection, project_id: Optional[int],
+                    name: str) -> str:
+    """把 LLM 给的模块名归一化并落到代码维护的词表。
+
+    返回最终模块名 (空 = 挂项目层不建模块)。project_id=None 时全局层无模块。
+    命中已有模块 → 复用; 新名非泛名 → 入表; 泛名/空 → 挂项目层。
+    语义分类由 LLM 完成 (见 llm.extract_memories 的 module 字段), 这里只做词表强制。
     """
     if project_id is None:
         return ""
-    rows = conn.execute(
-        "SELECT id, name, centroid FROM modules"
-        " WHERE project_id=? AND centroid IS NOT NULL",
-        (project_id,),
-    ).fetchall()
-    best, best_sim = None, -1.0
-    for r in rows:
-        sim = _cosine(emb, unpack_vec(r["centroid"]))
-        if sim > best_sim:
-            best, best_sim = r, sim
-    if best is not None and best_sim >= MODULE_SIM_THRESHOLD:
-        _update_centroid(conn, best["id"], emb)
-        return best["name"]
-    name = (llm.name_module(content) or "").strip().lower()
-    if not name or name in GENERIC_MODULES:
-        return ""  # 泛名/无名: 挂项目层, 不建模块
-    existing = conn.execute(
-        "SELECT id FROM modules WHERE project_id=? AND name=?", (project_id, name)
+    mod = _normalize_module(name)
+    if not mod or mod in GENERIC_MODULES:
+        return ""
+    row = conn.execute(
+        "SELECT id FROM modules WHERE project_id=? AND name=?", (project_id, mod)
     ).fetchone()
-    if existing:
-        # 同名模块已存在但无质心 (用户手动声明的空模块): 补质心
-        conn.execute("UPDATE modules SET centroid=? WHERE id=?",
-                     (pack_vec(emb), existing["id"]))
-        return name
-    conn.execute("INSERT INTO modules(project_id, name, centroid) VALUES (?,?,?)",
-                 (project_id, name, pack_vec(emb)))
-    return name
+    if row is None:
+        conn.execute("INSERT INTO modules(project_id, name) VALUES (?,?)",
+                     (project_id, mod))
+    return mod
 
 
 def capture(conn: sqlite3.Connection, text: str,
@@ -219,11 +194,13 @@ def capture(conn: sqlite3.Connection, text: str,
     同一个 session_key 只建一条 note, 每轮往这条 note 追加内容
     (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
     note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
-    模块: 未显式传 module 时由代码增量聚类 (assign_module) 归模块, LLM 不起名。
+    模块: LLM 提炼时给每条内容归到已有模块或粗粒度新关注点; 代码经 _resolve_module
+    做词表强制 (归一化/复用/防泛名)。
     """
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
-    items = llm.extract_memories(text)
+    existing_modules = _list_module_names(conn, project_id)
+    items = llm.extract_memories(text, existing_modules=existing_modules)
     ids = []
     for it in items:
         level = it["level"] if it["level"] in LEVELS else "note"
@@ -233,11 +210,9 @@ def capture(conn: sqlite3.Connection, text: str,
         emb = llm.embed_one(content)
         reason = f"来自会话 #{session_id}"
         ref = f"session:{session_id}"
-        # 显式传 module 优先; 否则代码增量聚类 (LLM 不起名)
-        mod = (module or "").strip().lower()
-        if not mod:
-            mod = assign_module(conn, project_id, emb, content)
         if level == "decision":
+            # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅在建记忆时)
+            mod = _resolve_module(conn, project_id, module or it.get("module") or "")
             # 决策进草稿待确认 (B 类); 写入前去重
             if _is_duplicate(conn, emb, project_id=project_id):
                 continue
@@ -277,6 +252,8 @@ def capture(conn: sqlite3.Connection, text: str,
                 _store_links(conn, existing["id"], new_content)
                 ids.append(existing["id"])
             else:
+                mod = _resolve_module(conn, project_id,
+                                      module or it.get("module") or "")
                 cur = conn.execute(
                     "INSERT INTO memories(project_id, level, module, content, reason,"
                     " status, source_type, source_ref, embedding, confirmed_at)"
