@@ -145,6 +145,29 @@ def extract_decisions(text: str) -> List[str]:
     return [it["content"] for it in extract_memories(text) if it["level"] == "decision"]
 
 
+def summarize(text: str, max_chars: int = 400) -> str:
+    """把长文本压缩成有界摘要 (用于 note 超长时的滚动压缩)。
+
+    保留关键事实/决策/结论, 去掉重复与啰嗦。
+    dummy 后端: 直接截断。
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if len(t) <= max_chars:
+        return t
+    if backend() == "dummy":
+        return t[:max_chars]
+    prompt = (
+        "下面是一段工作记录, 请压缩成一段简洁摘要, 保留关键事实、决策、结论,"
+        "去掉重复和啰嗦。直接输出摘要, 不要客套。\n\n"
+        "记录:\n" + t[:16000]
+    )
+    raw = chat([{"role": "user", "content": prompt}], temperature=0.2)
+    out = (raw or "").strip()
+    return out[:max_chars] if out else t[:max_chars]
+
+
 def check_boundaries(project_ctx: str, proposal: str) -> str:
     """规范环: 让 LLM 对照项目上下文逐条检查提议的边界条件。"""
     if backend() == "dummy":

@@ -23,6 +23,9 @@ from .db import pack_vec, unpack_vec
 
 LEVELS = ("note", "decision")
 
+# note 超长时的滚动压缩阈值: 超过这个长度, 把整条 note 摘要一次
+NOTE_COMPACT_THRESHOLD = 3000
+
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
 
@@ -128,7 +131,8 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
 
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
-            module: str = "", session_key: str = "") -> List[int]:
+            module: str = "", session_key: str = "",
+            note_compact_threshold: int = NOTE_COMPACT_THRESHOLD) -> List[int]:
     """自动捕获: LLM 提炼决策/记录。
 
     决策(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
@@ -136,6 +140,7 @@ def capture(conn: sqlite3.Connection, text: str,
 
     聚合: 传入 session_key 时, 同一个外部会话只建一条 note, 每轮往这条 note 追加内容
     (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
+    note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
     """
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
     items = llm.extract_memories(text)
@@ -170,6 +175,8 @@ def capture(conn: sqlite3.Connection, text: str,
             ).fetchone()
             if existing:
                 new_content = (existing["content"] + "\n" + content).strip()
+                if len(new_content) > note_compact_threshold:
+                    new_content = llm.summarize(new_content)
                 new_emb = llm.embed_one(new_content)
                 conn.execute(
                     "UPDATE memories SET content=?, embedding=? WHERE id=?",

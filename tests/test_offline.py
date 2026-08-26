@@ -349,6 +349,19 @@ check("77 note 内容累计", "事实A" in note["content"] and "事实B" in note
 c3 = mem_mod.capture(conn, "聚合测试事实C", project_id=pid, session_key="agg2")
 check("78 新 session_key 新 note", bool(c3) and c3[0] != c1[0], f"{c3} vs {c1}")
 
+# ---- note 滚动压缩: 超长时摘要 ----
+summ = llm_mod.summarize("长" * 500, max_chars=100)
+check("79 summarize 截断到上限", len(summ) == 100, str(len(summ)))
+_orig_sum = llm_mod.summarize
+llm_mod.summarize = lambda t, max_chars=400: "压缩摘要"
+c4 = mem_mod.capture(conn, "压缩事实D", project_id=pid, session_key="agg3",
+                     note_compact_threshold=5)
+c5 = mem_mod.capture(conn, "压缩事实E", project_id=pid, session_key="agg3",
+                     note_compact_threshold=5)
+llm_mod.summarize = _orig_sum
+note3 = conn.execute("SELECT content FROM memories WHERE id=?", (c4[0],)).fetchone()
+check("80 超长 note 触发压缩", note3["content"] == "压缩摘要", note3["content"])
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app
