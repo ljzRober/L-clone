@@ -308,16 +308,16 @@ WORK_BODY = r"""
     <div class="m-preview" id="m-preview"></div>
     <textarea id="m-content" placeholder="记忆内容…"></textarea>
     <div class="row">
-      <select id="m-level" style="width:150px">
+      <select id="m-level" style="width:150px" onchange="syncModuleUI()">
         <option value="decision">决策</option>
         <option value="note">记录</option>
       </select>
-      <select id="m-owner" style="flex:1" onchange="populateModuleSelect()"><option value="">全局层</option></select>
+      <select id="m-owner" style="flex:1" onchange="syncModuleUI()"><option value="">全局层</option></select>
       <span class="muted" id="m-owner-hint"></span>
     </div>
     <div class="row">
-      <span class="muted" style="width:150px">模块（底部，选项目后可选）</span>
-      <select id="m-module" style="flex:1" disabled><option value="">（全局层无模块）</option></select>
+      <span class="muted" style="width:150px">模块（仅决策）</span>
+      <select id="m-module" style="flex:1" disabled><option value="">（记录无模块）</option></select>
     </div>
     <div class="links" id="m-links"></div>
     <div class="row" style="justify-content:flex-end">
@@ -383,6 +383,16 @@ function populateModuleSelect() {
     sel.disabled = !mods.length;
   }
   if (cur) sel.value = cur;
+}
+function syncModuleUI() {
+  // 记录(note) 无模块: 仅决策(decision) 可选模块
+  const sel = $('m-module');
+  if ($('m-level').value === 'note') {
+    sel.innerHTML = '<option value="">（记录无模块）</option>';
+    sel.disabled = true; sel.value = '';
+    return;
+  }
+  populateModuleSelect();
 }
 
 /* ---- 侧边栏 (快速选择) ---- */
@@ -623,7 +633,7 @@ function openMem(mid) {
   $('m-content').value = m.content;
   $('m-level').value = m.level || 'note';
   $('m-owner').value = m.project_id || '';
-  populateModuleSelect();
+  syncModuleUI();
   $('m-module').value = m.module || '';
   $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
   $('m-preview').innerHTML = linkify(m.content);
@@ -661,7 +671,7 @@ async function delMem() {
 function openAdd() {
   $('m-content').value = ''; $('m-level').value = 'decision';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
-  populateModuleSelect();
+  syncModuleUI();
   $('m-module').value = '';
   $('m-meta').textContent = '新建记忆'; $('m-links').textContent = ''; $('m-preview').textContent = '';
   $('m-title').textContent = '新建记忆';
@@ -673,13 +683,14 @@ function openAddLevel(level) {
   openAdd();
   $('m-level').value = level || 'decision';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
-  populateModuleSelect();
+  syncModuleUI();
   $('m-module').value = FOCUS_MODULE || '';
 }
 async function saveAdd() {
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
-  const body = { content, level: $('m-level').value };
-  if ($('m-module').value) body.module = $('m-module').value;
+  const level = $('m-level').value;
+  const body = { content, level };
+  if (level !== 'note' && $('m-module').value) body.module = $('m-module').value;
   if ($('m-owner').value) body.project_id = Number($('m-owner').value);
   const r = await API.remember(body);
   await loadAll(); closeModal(); alert('已记住 #' + r.id);
