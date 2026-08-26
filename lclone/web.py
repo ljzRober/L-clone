@@ -332,8 +332,8 @@ WORK_BODY = r"""
 WORK_JS = r"""const $ = id => document.getElementById(id);
 let PROJS = [], MEMS = [], LINKS = [];
 const EXPANDED = new Set();
-const EXPANDED_LEVELS = new Set();  // 已展开的记忆等级 (decision/note)
-const PAGE_SIZE = 20;               // 每列默认显示的记忆条数, 超出折叠
+const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
+const PAGE_SIZE = 20;    // 每列每页显示的记忆条数
 let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
 let MODULES = {};   // pid -> [声明的模块名]
 let CUR_MID = null;
@@ -465,18 +465,22 @@ function renderGraph() {
     const boxW = (colW - 20 - (perRow - 1) * BOXGAP) / perRow;
     const cols = levels.map(([lv, n, c, t]) => {
       const mems = ms.filter(m => m.level === lv);
-      const expanded = EXPANDED_LEVELS.has(lv);
-      const shown = expanded ? mems : mems.slice(0, PAGE_SIZE);
-      return { lv, name: n, col: c, tint: t, shown, hidden: mems.length - shown.length };
+      const total = mems.length;
+      const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+      let page = LEVEL_PAGE[lv] || 0;
+      if (page >= pages) page = 0;
+      const shown = mems.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+      return { lv, name: n, col: c, tint: t, total, pages, page, shown };
     });
     const maxRows = Math.max(...cols.map(c => Math.ceil(c.shown.length / perRow)), 1);
-    const gh = G_H + 12 + maxRows * BOX_H + (maxRows - 1) * BOXGAP + 8 + 30;  // +30 留给「展开」按钮
+    const hasPager = cols.some(c => c.pages > 1);
+    const gh = G_H + 12 + maxRows * BOX_H + (maxRows - 1) * BOXGAP + 8 + (hasPager ? 30 : 0);
     cols.forEach((c, i) => {
       const cx = ox + i * (colW + GAP);
       s += `<g><rect x="${cx}" y="${oy}" width="${colW}" height="${gh}" rx="12" class="bandbox"/>` +
         `<rect x="${cx}" y="${oy}" width="${colW}" height="${G_H}" rx="12" fill="${c.tint}"/>` +
         `<text x="${cx + 10}" y="${oy + G_H / 2 + 6}" class="bh" style="fill:${c.col}">${c.name}</text>` +
-        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.shown.length + c.hidden} 条</text>` +
+        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.total} 条</text>` +
         `<text x="${cx + colW - 14}" y="${oy + G_H / 2 + 6}" class="bs" style="fill:${c.col};cursor:pointer" text-anchor="middle" onclick="openAddLevel('${c.lv}')">＋</text></g>`;
       let by = oy + G_H + 12;
       if (!c.shown.length) s += `<text x="${cx + 12}" y="${by + 22}" class="bs">无记忆</text>`;
@@ -484,19 +488,14 @@ function renderGraph() {
         const r = Math.floor(idx / perRow), col = idx % perRow;
         s += memBox(m, cx + 10 + col * (boxW + BOXGAP), by + r * (BOX_H + BOXGAP), boxW, c.col);
       });
-      if (c.hidden > 0 || EXPANDED_LEVELS.has(c.lv)) {
+      if (c.pages > 1) {
         const byy = by + (Math.ceil(c.shown.length / perRow) || 0) * (BOX_H + BOXGAP);
-        const label = EXPANDED_LEVELS.has(c.lv) ? '－ 收起' : `＋ 展开 ${c.hidden} 条`;
-        s += `<text x="${cx + 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px;font-weight:bold" onclick="toggleLevel('${c.lv}')">${label}</text>`;
+        s += `<text x="${cx + 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px" onclick="prevPage('${c.lv}')">‹ 上一页</text>` +
+          `<text x="${cx + colW / 2}" y="${byy + 22}" class="bs" text-anchor="middle">第 ${c.page + 1} / ${c.pages} 页</text>` +
+          `<text x="${cx + colW - 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px" text-anchor="end" onclick="nextPage('${c.lv}')">下一页 ›</text>`;
       }
     });
     return { s, gh };
-  }
-
-  function toggleLevel(lv) {
-    if (EXPANDED_LEVELS.has(lv)) EXPANDED_LEVELS.delete(lv);
-    else EXPANDED_LEVELS.add(lv);
-    renderGraph();
   }
 
   let bg = '';
@@ -581,6 +580,15 @@ function renderGraph() {
   $('graph').innerHTML = svg;
   $('graph-svg').style.transform = 'scale(1)';
   $('graph-sum').textContent = `记忆 ${MEMS.length} · 全局 ${globals.length} · 项目 ${PROJS.length}` + (selMod ? ' · 模块：' + selMod : selProj ? ' · 项目：' + selProj.name : '');
+}
+
+function prevPage(lv) {
+  LEVEL_PAGE[lv] = Math.max(0, (LEVEL_PAGE[lv] || 0) - 1);
+  renderGraph();
+}
+function nextPage(lv) {
+  LEVEL_PAGE[lv] = (LEVEL_PAGE[lv] || 0) + 1;
+  renderGraph();
 }
 
 function toggleProj(pid) {
