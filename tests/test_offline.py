@@ -338,6 +338,17 @@ check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
 bpath = db_mod.backup(db_path=dbp, dest_dir=os.path.join(tmp, "bak"))
 check("75 backup 生成快照", os.path.exists(bpath) and bpath.endswith(".db"))
 
+# ---- 记录聚合: 同一 session_key 只一条 note, 逐轮追加 ----
+c1 = mem_mod.capture(conn, "聚合测试事实A", project_id=pid, session_key="agg1")
+c2 = mem_mod.capture(conn, "聚合测试事实B", project_id=pid, session_key="agg1")
+check("76 同 session 追加到同一 note", bool(c1) and bool(c2) and c1[0] == c2[0],
+      f"{c1} vs {c2}")
+note = conn.execute("SELECT content FROM memories WHERE id=?", (c1[0],)).fetchone()
+check("77 note 内容累计", "事实A" in note["content"] and "事实B" in note["content"],
+      note["content"][:60])
+c3 = mem_mod.capture(conn, "聚合测试事实C", project_id=pid, session_key="agg2")
+check("78 新 session_key 新 note", bool(c3) and c3[0] != c1[0], f"{c3} vs {c1}")
+
 # ---- Web 冒烟 (fastapi 可选) ----
 try:
     from lclone.web import create_app

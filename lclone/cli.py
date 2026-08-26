@@ -101,7 +101,7 @@ def cmd_capture(args) -> None:
         pid = proj_mod.detect_project_by_git(conn)
         auto = pid is not None
     ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
-                          module=args.module)
+                          module=args.module, session_key=args.session_key or "")
     if not ids:
         print("没有提炼出可记忆的内容 (可能没有决策或值得记的事实, 或与已有记忆重复)")
     else:
@@ -322,6 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--title", default="")
     sc.add_argument("--module", default="", help="项目内模块名(可选)")
     sc.add_argument("--project", default=None)
+    sc.add_argument("--session-key", default="", help="外部会话 id, 同一会话只建一条 note 并逐轮追加")
     sc.set_defaults(func=cmd_capture)
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")

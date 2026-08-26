@@ -48,11 +48,13 @@ function extractText(event) {
     .join('\n')
 }
 
-function runCapture(text) {
+function runCapture(text, sessionKey) {
   const t = (text || '').trim()
   if (!t) return
   log(`capture ${t.length} chars`)
-  const child = spawn(lcloneBin, [...lcloneBaseArgs, 'capture', t], {
+  const args = [...lcloneBaseArgs, 'capture', t]
+  if (sessionKey) args.push('--session-key', sessionKey)
+  const child = spawn(lcloneBin, args, {
     cwd: REPO, // 关键: 让 `python -m lclone` 能 import 到 lclone 包
     env: { ...process.env, BRAIN_DB_PATH: join(REPO, 'lclone.db') },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -87,7 +89,7 @@ export function apply(ctx) {
       log(`turn/end fired: session=${session.id} turn=${event.data && event.data.turn}`)
       const cur = buffers.get(session.id) || []
       buffers.delete(session.id)
-      runCapture(cur.join('\n'))
+      runCapture(cur.join('\n'), session.id)
     }
   })
 }

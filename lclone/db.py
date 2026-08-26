@@ -148,6 +148,10 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(memories)")]
     if "module" not in cols:
         conn.execute("ALTER TABLE memories ADD COLUMN module TEXT NOT NULL DEFAULT ''")
+    # 迁移: sessions 补 session_key 列 (对应外部会话 id, 用于「一个会话一条 note」聚合)
+    scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
+    if "session_key" not in scols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
     tok = _fts_tokenizer(conn)
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "

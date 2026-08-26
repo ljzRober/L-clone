@@ -55,13 +55,32 @@ def _alive_filter() -> str:
 
 # ---------------------------------------------------------------- L0 流水
 def log_session(conn: sqlite3.Connection, project_id: Optional[int] = None,
-                title: str = "", summary: str = "") -> int:
+                title: str = "", summary: str = "", key: str = "") -> int:
     cur = conn.execute(
-        "INSERT INTO sessions(project_id, title, summary) VALUES (?,?,?)",
-        (project_id, title, summary),
+        "INSERT INTO sessions(project_id, title, summary, session_key)"
+        " VALUES (?,?,?,?)",
+        (project_id, title, summary, key),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def _find_session_by_key(conn: sqlite3.Connection, key: str) -> Optional[int]:
+    if not key:
+        return None
+    row = conn.execute(
+        "SELECT id FROM sessions WHERE session_key=? ORDER BY id LIMIT 1", (key,)
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def _ensure_session(conn: sqlite3.Connection, project_id: Optional[int],
+                    title: str, summary: str, key: str) -> int:
+    """按 session_key 复用已有 session (一个外部会话对应一个 lclone session)。"""
+    sid = _find_session_by_key(conn, key)
+    if sid is not None:
+        return sid
+    return log_session(conn, project_id, title=title, summary=summary, key=key)
 
 
 # ---------------------------------------------------------------- C 主动触发
@@ -109,14 +128,16 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
 
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
-            module: str = "") -> List[int]:
+            module: str = "", session_key: str = "") -> List[int]:
     """自动捕获: LLM 提炼决策/记录。
 
     决策(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
     记录(note) → active 直接生效 (低风险过程性事实, 免确认)。
-    写入前用向量相似度去重 (与 suggest 的 dup_threshold 一致)。
+
+    聚合: 传入 session_key 时, 同一个外部会话只建一条 note, 每轮往这条 note 追加内容
+    (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
     """
-    session_id = log_session(conn, project_id, title=title, summary=text[:300])
+    session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
     items = llm.extract_memories(text)
     ids = []
     for it in items:
@@ -125,28 +146,46 @@ def capture(conn: sqlite3.Connection, text: str,
         if not content:
             continue
         emb = llm.embed_one(content)
-        if _is_duplicate(conn, emb, project_id=project_id):
-            continue
         reason = f"来自会话 #{session_id}"
         ref = f"session:{session_id}"
         if level == "decision":
-            # 决策进草稿待确认 (B 类)
+            # 决策进草稿待确认 (B 类); 写入前去重
+            if _is_duplicate(conn, emb, project_id=project_id):
+                continue
             cur = conn.execute(
                 "INSERT INTO memories(project_id, level, module, content, reason,"
                 " status, source_type, source_ref, embedding)"
                 " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
                 (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
             )
+            _store_links(conn, cur.lastrowid, content)
+            ids.append(cur.lastrowid)
         else:
-            # 记录直接生效 (免确认)
-            cur = conn.execute(
-                "INSERT INTO memories(project_id, level, module, content, reason,"
-                " status, source_type, source_ref, embedding, confirmed_at)"
-                " VALUES (?, ?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
-                (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
-            )
-        _store_links(conn, cur.lastrowid, content)
-        ids.append(cur.lastrowid)
+            # 记录直接生效 (免确认); 同一 session 只一条 note, 每轮追加
+            existing = conn.execute(
+                "SELECT id, content FROM memories"
+                " WHERE level='note' AND status='active' AND source_ref=?"
+                " ORDER BY id LIMIT 1",
+                (ref,),
+            ).fetchone()
+            if existing:
+                new_content = (existing["content"] + "\n" + content).strip()
+                new_emb = llm.embed_one(new_content)
+                conn.execute(
+                    "UPDATE memories SET content=?, embedding=? WHERE id=?",
+                    (new_content, pack_vec(new_emb), existing["id"]),
+                )
+                _store_links(conn, existing["id"], new_content)
+                ids.append(existing["id"])
+            else:
+                cur = conn.execute(
+                    "INSERT INTO memories(project_id, level, module, content, reason,"
+                    " status, source_type, source_ref, embedding, confirmed_at)"
+                    " VALUES (?, ?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
+                    (project_id, level, module.strip(), content, reason, ref, pack_vec(emb)),
+                )
+                _store_links(conn, cur.lastrowid, content)
+                ids.append(cur.lastrowid)
     conn.commit()
     return ids
 

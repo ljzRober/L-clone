@@ -88,6 +88,7 @@ TOOLS = [
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
                 "module": {"type": "string", "description": "项目内模块名 (可选)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
+                "session_key": {"type": "string", "description": "外部会话 id; 同一会话只建一条 note 并逐轮追加"},
             },
             "required": ["text"],
         },
@@ -203,7 +204,8 @@ def call_tool(name: str, args: dict) -> str:
                 auto = pid is not None
             ids = mem_mod.capture(conn, args["text"], project_id=pid,
                                   title=args.get("title", ""),
-                                  module=args.get("module", ""))
+                                  module=args.get("module", ""),
+                                  session_key=args.get("session_key", ""))
             if not ids:
                 return "未提炼出可记忆的内容 (内容里可能没有决策或值得记的事实)"
             if pid is None:
