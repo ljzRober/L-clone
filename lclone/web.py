@@ -180,6 +180,15 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .modal textarea { min-height:150px; resize:vertical; }
 .row { display:flex; gap:8px; align-items:center; }
 
+/* ---- 待确认弹窗 ---- */
+.pending-list { display:flex; flex-direction:column; gap:8px; max-height:52vh; overflow-y:auto; }
+.pending-item { background:var(--card2); border:1px solid var(--line); border-radius:10px;
+                padding:11px 13px; }
+.pending-item .p-body { font-size:14px; line-height:1.6; color:var(--fg); }
+.pending-item .p-meta { font-family:var(--mono); font-size:10px; color:var(--dim); margin:6px 0; }
+.pending-item .p-ops { display:flex; gap:8px; justify-content:flex-end; }
+.pending-item .p-ops button { padding:4px 14px; }
+
 /* ---- 问答页 ---- */
 .ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
 .ask-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
@@ -268,6 +277,7 @@ WORK_BODY = r"""
   <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
   <span class="sp"></span>
+  <button class="navbtn" onclick="openPending()">待确认 <b id="pending-count">0</b></button>
   <a class="navbtn" href="/ask">问答 →</a>
 </header>
 <div class="shell">
@@ -324,6 +334,20 @@ WORK_BODY = r"""
       <button class="ghost" id="btn-del" onclick="delMem()">删除</button>
       <button class="ghost" id="btn-move" onclick="applyMove()">移动到所选</button>
       <button class="act" id="btn-save" onclick="saveEdit()">保存修改</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="pending-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>待确认决策</h3>
+      <button class="modal-x" onclick="closePending()" title="关闭">✕</button>
+    </div>
+    <div id="pending-list" class="pending-list"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button class="ghost" onclick="reviewAllPending('delete')">全部删除</button>
+      <button class="act" onclick="reviewAllPending('keep')">全部保留</button>
     </div>
   </div>
 </div>
@@ -662,11 +686,44 @@ async function addProject() {
 }
 $('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
 $('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+$('pending-modal').addEventListener('click', e => { if (e.target === $('pending-modal')) closePending(); });
+
+/* ---- 待确认决策 (强确认弹窗) ---- */
+async function loadPending() {
+  try {
+    const r = await (await fetch('/api/pending')).json();
+    const items = r.items || [];
+    $('pending-count').textContent = items.length;
+    $('pending-list').innerHTML = items.map(m =>
+      `<div class="pending-item">
+        <div class="p-body">${esc(m.content)}</div>
+        <div class="p-meta">#${m.id} · ${m.project_name || '全局层'} · ${(m.created_at || '').slice(0, 16)}</div>
+        <div class="p-ops">
+          <button class="ghost" onclick="reviewPending(${m.id},'keep')">保留</button>
+          <button class="ghost" onclick="reviewPending(${m.id},'delete')">删除</button>
+        </div>
+      </div>`).join('') || '<div class="muted">暂无待确认决策 🎉</div>';
+  } catch (e) {}
+}
+function openPending() { $('pending-modal').classList.add('on'); }
+function closePending() { $('pending-modal').classList.remove('on'); }
+async function reviewPending(id, action) {
+  await API.review({ id, action });
+  await loadPending();
+  await loadAll();
+}
+async function reviewAllPending(action) {
+  const r = await (await fetch('/api/pending')).json();
+  for (const m of (r.items || [])) await API.review({ id: m.id, action });
+  await loadPending();
+  await loadAll();
+}
 
 (async function boot() {
   const h = await (await fetch('/api/health')).json();
   $('backend').textContent = '后端: ' + h.backend;
   await loadAll();
+  await loadPending();
 })();
 """
 

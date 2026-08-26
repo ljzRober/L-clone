@@ -153,8 +153,10 @@ def capture(conn: sqlite3.Connection, text: str,
 
 def pending_memories(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     return conn.execute(
-        "SELECT m.*, p.name AS project_name FROM memories m"
-        " LEFT JOIN projects p ON p.id = m.project_id"
+        "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason,"
+        " m.status, m.source_type, m.source_ref, m.created_at,"
+        " p.name AS project_name"
+        " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
         " WHERE m.status='pending' ORDER BY m.id"
     ).fetchall()
 

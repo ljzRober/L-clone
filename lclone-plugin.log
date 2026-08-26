@@ -15,3 +15,6 @@
 2026-08-26T03:23:36.864Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=30
 2026-08-26T03:23:36.866Z capture 734 chars
 2026-08-26T03:23:40.229Z capture exit code 0
+2026-08-26T03:39:34.605Z turn/end fired: session=session-6c127f4b-914a-4ce7-80d9-e39552c316da turn=31
+2026-08-26T03:39:34.608Z capture 1946 chars
+2026-08-26T03:39:37.520Z capture exit code 0
