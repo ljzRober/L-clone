@@ -101,11 +101,12 @@ function checkPendingAndNotify(ctx, sessionId) {
       const agent = ctx.agents.get(sessionId)
       if (!agent) { log('agent not found for ' + sessionId); return }
       try {
+        // 参照 dsh-better-sidebar 的 admitFollowup: followup 用 source {kind:'user'} 唤醒 agent
         agent.followup({
           id: randomUUID(),
           role: 'user',
           content: [{ type: 'text', text: `【系统】当前有 ${n} 条待确认决策（lclone pending）。请立即用 ask_user_question 逐条向用户确认「保留/删除」，用户拍板后调用 lclone review 处理，不要静默跳过。` }],
-          source: { kind: 'plugin', plugin: 'lclone-memory', form: 'notice', summary: `待确认决策 ${n} 条` },
+          source: { kind: 'user' },
         })
         log(`followup injected for ${sessionId}: ${n} pending`)
       } catch (e) {
@@ -119,6 +120,8 @@ function checkPendingAndNotify(ctx, sessionId) {
 }
 
 export const name = 'lclone-memory'
+// cordis 依赖注入: 访问 ctx.agents 前必须声明 (否则报 "cannot get property 'agents' without inject")
+export const inject = ['agents']
 
 export function apply(ctx) {
   log('plugin loaded, lclone = ' + lcloneBin + ' ' + lcloneBaseArgs.join(' '))
