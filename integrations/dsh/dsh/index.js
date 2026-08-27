@@ -102,16 +102,16 @@ function checkPendingAndNotify(ctx, sessionId) {
       const agent = ctx.agents.get(sessionId)
       if (!agent) { log('agent not found for ' + sessionId); return }
       try {
-        // 参照 dsh-better-sidebar 的 admitFollowup: followup 用 source {kind:'user'} 唤醒 agent
-        agent.followup({
+        // 用 steer + source {kind:'plugin'}: 作为插件引导消息唤醒 agent, 不显示成「用户消息」气泡
+        agent.steer({
           id: randomUUID(),
           role: 'user',
           content: [{ type: 'text', text: `【系统】当前有 ${n} 条待确认决策（lclone pending）。请立即用 ask_user_question 逐条向用户确认「保留/删除」，用户拍板后调用 lclone review 处理，不要静默跳过。` }],
-          source: { kind: 'user' },
+          source: { kind: 'plugin', plugin: 'lclone-memory' },
         })
-        log(`followup injected for ${sessionId}: ${n} pending`)
+        log(`steer injected for ${sessionId}: ${n} pending`)
       } catch (e) {
-        log('followup failed: ' + (e && e.message))
+        log('steer failed: ' + (e && e.message))
       }
     } else if (n === 0) {
       notified.set(sessionId, 0) // 清空后重置, 下次新增再提醒
