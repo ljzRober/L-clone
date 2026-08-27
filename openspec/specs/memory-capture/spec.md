@@ -39,7 +39,7 @@ THEN 不记忆
 
 ### Requirement: 决策强确认
 
-每轮会话开始 bootstrap SHALL 带出【待确认决策】，会话进行中每轮回复前 SHALL 也检查【待确认决策】；存在待确认决策时，SHALL 主动用弹窗请用户逐条保留/删除，而非静默跳过。
+后台捕获产生 pending 决策后，宿主插件 SHALL 在 turn/end 时用 agent.steer 强制注入一条引导消息（source=plugin，不显示成用户消息）唤醒 agent；agent 被唤醒后 SHALL 用 ask_user_question 逐条弹窗请用户保留/删除，而非静默跳过；bootstrap SHALL 每轮带出【待确认决策】。
 
 #### Scenario: bootstrap 带出待确认
 
@@ -48,13 +48,18 @@ THEN bootstrap 输出包含【待确认决策】段
 
 #### Scenario: 会话中逐轮检查
 
-WHEN 会话进行中（后台插件持续捕获决策）
-THEN 每轮回复前也检查【待确认决策】并弹窗确认，不只在会话开始
+WHEN turn/end 时探测到新增 pending 决策
+THEN 宿主插件用 agent.steer 注入引导消息唤醒 agent（代码强制，不靠 agent 自觉）
 
 #### Scenario: 弹窗确认
 
-WHEN 存在待确认决策
-THEN 用工具弹窗（ask_user_question 等）请用户保留/删除，不用纯文本列表
+WHEN agent 被唤醒且存在待确认决策
+THEN 用 ask_user_question 逐条弹窗请用户保留/删除，阻塞等用户拍板
+
+#### Scenario: 去重防循环
+
+WHEN pending 数未增加
+THEN 不重复注入，避免 agent 自身响应轮造成死循环
 
 ### Requirement: 分工边界
 
