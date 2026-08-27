@@ -912,14 +912,6 @@ def create_app(db_path: Optional[str] = None):
             conn.close()
 
     app = FastAPI(title="外置大脑", version="0.3.0")
-    # CORS: 允许 DSH Web (127.0.0.1:3080) 的客户端插件跨域读 /api/pending 等端点
-    from fastapi.middleware.cors import CORSMiddleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
     # 鉴权中间件: 设了 LCLONE_API_KEY 时保护 /api/* 与 /mcp
 
     @app.middleware("http")
