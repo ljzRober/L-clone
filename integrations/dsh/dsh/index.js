@@ -52,9 +52,9 @@ function extractText(event) {
     .join('\n')
 }
 
-function runCapture(text, sessionKey, cwd) {
+function runCapture(text, sessionKey, cwd, onDone) {
   const t = (text || '').trim()
-  if (!t) return
+  if (!t) { if (onDone) onDone(); return }
   log(`capture ${t.length} chars cwd=${cwd || '(无)'}`)
   const args = [...lcloneBaseArgs, 'capture', t]
   if (sessionKey) args.push('--session-key', sessionKey)
@@ -75,6 +75,7 @@ function runCapture(text, sessionKey, cwd) {
   child.on('error', (e) => log('spawn error: ' + e.message))
   child.on('exit', (code) => {
     log('capture exit code ' + code + (err ? '\n' + err.slice(0, 800) : ''))
+    if (onDone) onDone() // capture 完成后再探测 pending, 避免漏掉本轮刚捕获的决策
   })
   child.unref()
 }
@@ -143,8 +144,9 @@ export function apply(ctx) {
       const cur = buffers.get(session.id) || []
       buffers.delete(session.id)
       const cwd = (session.header && session.header.cwd) || session.cwd || session.meta?.cwd
-      runCapture(cur.join('\n'), session.id, cwd)
-      checkPendingAndNotify(ctx, session.id) // 决策强确认: 有 pending 就强制唤醒 agent 提醒
+      runCapture(cur.join('\n'), session.id, cwd, () => {
+        checkPendingAndNotify(ctx, session.id) // capture 完成后再探测 pending, 决策强确认
+      })
     }
   })
 }
