@@ -262,6 +262,15 @@ def cmd_suggest(args) -> None:
         print(f"   删除: {it['hint']}\n")
 
 
+def cmd_pending(args) -> None:
+    """打印待确认决策数 (供 DSH 插件非交互探测, 只输出一个整数)。"""
+    conn = _conn(args)
+    n = conn.execute(
+        "SELECT COUNT(*) c FROM memories WHERE status='pending'"
+    ).fetchone()["c"]
+    print(n)
+
+
 def cmd_memories(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
@@ -436,6 +445,10 @@ def build_parser() -> argparse.ArgumentParser:
     sgg.add_argument("--unused-days", type=int, default=30,
                      help="active 记忆超过 N 天未被召回")
     sgg.set_defaults(func=cmd_suggest)
+
+    spn = sub.add_parser("pending", parents=[parent],
+                          help="打印待确认决策数 (非交互, 供插件探测)")
+    spn.set_defaults(func=cmd_pending)
 
     so = sub.add_parser("organize", parents=[parent],
                          help="整理: LLM 语义合并相近记忆 (不能跨项目/等级/模块)")
