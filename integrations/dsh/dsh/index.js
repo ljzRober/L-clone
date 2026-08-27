@@ -83,7 +83,8 @@ export function apply(ctx) {
   const buffers = new Map()
 
   ctx.on('session/event', (session, event) => {
-    if (event.type === 'user/message' || event.type === 'assistant/message') {
+    // 只捕获用户消息: 决策由用户提出, assistant 的总结/元陈述不应被当成决策
+    if (event.type === 'user/message') {
       const text = extractText(event)
       if (text) {
         const cur = buffers.get(session.id) || []
