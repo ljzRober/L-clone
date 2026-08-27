@@ -179,6 +179,11 @@ def extract_memories(text: str,
                     level = m3.group(1).lower()
                     body = m3.group(2).strip(" :：").strip()
         if body:
+            # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
+            if any(mk in body for mk in
+                   ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
+                    "没有可提炼", "无内容", "无相关", "暂无")):
+                continue
             out.append({"level": level, "module": module, "content": body,
                         "confidence": 0.9})
     return out
