@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
       }
 
       check();
-      const timer = setInterval(check, 5000);
+      const timer = setInterval(check, 1500);  // 1.5s 近即时刷新, 决策进 pending 立刻弹横幅
       return () => clearInterval(timer);
     }
 
