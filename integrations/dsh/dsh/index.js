@@ -80,7 +80,7 @@ function runCapture(text, sessionKey, cwd, onDone) {
   child.unref()
 }
 
-// 检查 pending 决策数; 有新增 pending 时用 agent.followup 强制唤醒 agent 提醒用户
+// 检查 pending 决策 (含内容); 有新增 pending 时用 agent.steer 强制唤醒 agent, 内容直接塞进引导消息(agent 不用再查库)
 const notified = new Map() // sessionId -> 上次已提醒的 pending 数 (去重, 防循环)
 
 function checkPendingAndNotify(ctx, sessionId) {
@@ -94,19 +94,24 @@ function checkPendingAndNotify(ctx, sessionId) {
   child.stdout.on('data', (d) => { out += d.toString() })
   child.on('exit', (code) => {
     if (code !== 0) return
-    const n = parseInt(out.trim(), 10)
-    if (Number.isNaN(n)) return
+    let items = []
+    try { items = JSON.parse(out.trim()) } catch (e) { return }
+    if (!Array.isArray(items)) return
+    const n = items.length
     const last = notified.get(sessionId) || 0
     if (n > last) {
       notified.set(sessionId, n)
       const agent = ctx.agents.get(sessionId)
       if (!agent) { log('agent not found for ' + sessionId); return }
+      // 内容随引导消息一起注入, agent 直接照念, 不再查库/不触发权限
+      const lines = items.map(i => `#${i.id} ${i.content}`).join('\n')
+      const text = `【系统】以下 ${n} 条待确认决策需你向用户确认保留/删除（内容已给出，不要再查数据库）:\n${lines}\n请立即用 ask_user_question 逐条向用户确认，用户拍板后调用 lclone review 处理，不要静默跳过。`
       try {
         // 用 steer + source {kind:'plugin'}: 作为插件引导消息唤醒 agent, 不显示成「用户消息」气泡
         agent.steer({
           id: randomUUID(),
           role: 'user',
-          content: [{ type: 'text', text: `【系统】当前有 ${n} 条待确认决策（lclone pending）。请立即用 ask_user_question 逐条向用户确认「保留/删除」，用户拍板后调用 lclone review 处理，不要静默跳过。` }],
+          content: [{ type: 'text', text }],
           source: { kind: 'plugin', plugin: 'lclone-memory' },
         })
         log(`steer injected for ${sessionId}: ${n} pending`)

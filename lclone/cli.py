@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from . import chat as chat_mod
@@ -263,12 +264,13 @@ def cmd_suggest(args) -> None:
 
 
 def cmd_pending(args) -> None:
-    """打印待确认决策数 (供 DSH 插件非交互探测, 只输出一个整数)。"""
+    """打印待确认决策 (JSON 数组 [{id, content}], 供 DSH 插件把内容注入引导消息)。"""
     conn = _conn(args)
-    n = conn.execute(
-        "SELECT COUNT(*) c FROM memories WHERE status='pending'"
-    ).fetchone()["c"]
-    print(n)
+    rows = conn.execute(
+        "SELECT id, content FROM memories WHERE status='pending' ORDER BY id"
+    ).fetchall()
+    print(json.dumps([{"id": r["id"], "content": r["content"]} for r in rows],
+                     ensure_ascii=False))
 
 
 def cmd_memories(args) -> None:
