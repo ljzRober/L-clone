@@ -1,21 +1,28 @@
-"""安装向导 (install): 一条命令走完 lclone 接入。
+"""接入向导: 把「部署后端」与「接入前端工具」拆成两条命令。
 
-流程: 检测环境 → provider+key → 写 .env → init DB → 注册项目 → 装 skill →
-按环境配触发 → 自检。全程可 --yes 非交互。
+  lclone setup      部署后端: 选 provider + key → 写 .env → init DB → 后端自检 (空项目起步)
+  lclone integrate  接入工具: 选 target → 装 skill + 配对应工具钩子/插件 → 集成自检
+  lclone install    = setup + integrate 一键全流程(向后兼容)
+
+边界:
+  setup     只碰本机后端(.env / 数据库), 不注册项目、不碰任何 AI 工具前端。
+  integrate 只碰 AI 工具前端(skill / hooks / 插件), 不碰模型与数据库配置。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import config, db as db_mod, presets, projects as proj_mod
+from . import config, db as db_mod, presets, tui
 from .doctor import home_dir
+
+# integrate 可选的目标端
+TARGETS = ("skill", "dsh", "claude", "codex", "commit", "all")
 
 
 def _package_root() -> Path:
@@ -29,22 +36,6 @@ def _detect_git() -> Optional[Path]:
     except Exception:
         return None
     return Path(p.stdout.strip()) if p.returncode == 0 else None
-
-
-def _guess_charter(root: Path) -> str:
-    for name in ("README.md", "README.MD", "readme.md"):
-        p = root / name
-        if not p.exists():
-            continue
-        try:
-            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-                s = line.strip()
-                if not s or s.startswith("#") or s.startswith(">"):
-                    continue
-                return s[:80]
-        except OSError:
-            continue
-    return ""
 
 
 def _write_env(provider: str, api_key: str, db_path: str) -> Path:
@@ -142,76 +133,115 @@ def configure_triggers(home: Path, target: str, root: Optional[Path]) -> List[st
     if target in ("dsh", "all"):
         dsh_dir = _package_root() / "integrations/dsh"
         results.append(
-            f"DSH 插件请手动装 (避免改动当前运行时): dsh plugin --profile web add {dsh_dir}")
+            f"DSH 插件请手动装 (避免改动当前运行时): "
+            f"dsh plugin --profile web add {dsh_dir} -w")
     return results
 
 
-def run(provider: Optional[str] = None, api_key: Optional[str] = None,
-        project: Optional[str] = None, charter: Optional[str] = None,
-        target: Optional[str] = None, yes: bool = False,
-        db_path: Optional[str] = None, home: Optional[Path] = None) -> int:
-    home = Path(home) if home else home_dir()
+# ---------------------------------------------------------------- 后端: setup
+def setup(provider: Optional[str] = None, api_key: Optional[str] = None,
+          yes: bool = False, db_path: Optional[str] = None) -> int:
+    """部署后端(空项目起步): provider + key → .env → init DB → 后端自检。
+
+    不注册项目(项目用 lclone proj add 显式添加, 或 remember/capture 时按 git 懒注册)、
+    不装 skill、不配 hooks/插件(那些归 integrate)。
+
+    provider 选择: 已有 .env 时直接沿用, 不重复问; 否则交互式方向键单选菜单;
+    --provider 显式指定时强制写入(覆盖)。
+    """
     interactive = sys.stdin.isatty() and not yes
     lines: List[str] = []
-
-    # 1. provider + key
-    if provider is None:
-        provider = "deepseek"
-        if interactive:
-            print("可选 provider:", ", ".join(presets.provider_names()))
-            v = input(f"选 provider (默认 {provider}): ").strip()
-            provider = v or provider
-    if provider not in presets.PROVIDERS:
-        print(f"❌ 未知 provider: {provider} (可选: {', '.join(presets.provider_names())})")
-        return 1
-    if api_key is None and provider != "dummy":
-        api_key = ""
-        if interactive:
-            api_key = input("API key: ").strip()
-    lines.append(f"provider={provider}")
-
-    # 2. 写 .env
     dbp = db_path or str((Path.cwd() / "lclone.db").resolve())
-    envf = _write_env(provider, api_key, dbp)
-    lines.append(f".env → {envf}")
-    # 刷新 config 缓存, 让后续 init 用新配置
-    config._loaded = False
-    config._load_dotenv()
+    env_file = Path.cwd() / ".env"
 
-    # 3. init DB
-    conn = db_mod.init(dbp)
+    # 1. provider + key(已有 .env 则沿用, 不覆盖)
+    if env_file.exists() and provider is None:
+        lines.append(f"已检测到现有 .env ({env_file}), 沿用现有配置, 跳过 provider 选择")
+        config._loaded = False
+        config._load_dotenv()
+    else:
+        if provider is None:
+            provider = (tui.select_one(list(presets.PROVIDERS.keys()),
+                                       title="选择模型服务商 (方向键选择, 回车确认):",
+                                       default=0)
+                        if interactive else "deepseek")
+        if provider not in presets.PROVIDERS:
+            print(f"❌ 未知 provider: {provider} (可选: {', '.join(presets.provider_names())})")
+            return 1
+        lines.append(f"provider={provider}")
+        if api_key is None and provider != "dummy":
+            api_key = ""
+            if interactive:
+                api_key = input("API key: ").strip()
+        # 2. 写 .env
+        envf = _write_env(provider, api_key, dbp)
+        lines.append(f".env → {envf}")
+        config._loaded = False
+        config._load_dotenv()
+
+    # 3. init DB (空库起步, 不注册任何项目)
+    db_mod.init(dbp)
     lines.append(f"数据库 → {dbp}")
 
-    # 4. 注册项目
-    root = _detect_git()
-    name = project or (root.name if root else Path.cwd().name)
-    if charter is None:
-        charter = _guess_charter(root) if root else ""
-        if interactive:
-            v = input(f"charter (默认: {charter or '(空)'}): ").strip()
-            if v:
-                charter = v
-    if root is not None:
-        try:
-            pid = proj_mod.add_project(conn, name, str(root), charter)
-            lines.append(f"项目已注册 #{pid} name={name} charter={charter or '(空)'}")
-        except Exception as e:
-            lines.append(f"项目注册失败 (可能已存在): {e}")
-    else:
-        lines.append(f"⚠️ 不在 git 仓库, 跳过项目注册 (可稍后 lclone proj add {name})")
-
-    # 5. 装 skill
-    lines.append(install_skill(home))
-
-    # 6. 触发
-    if target is None:
-        target = "all"
-    lines.extend(configure_triggers(home, target, root))
-
-    # 7. 自检
+    # 4. 后端自检(不含项目/skill/hooks/插件)
     from . import doctor
+    llm_backend = (config.get("BRAIN_LLM") or "api").strip().lower()
     lines.append("")
-    lines.append(doctor.render(doctor.check_all(db_path=dbp, home=home)))
+    lines.append(doctor.render(doctor.check_backend(db_path=dbp,
+                                                    check_llm=llm_backend != "dummy")))
 
     print("\n".join(lines))
     return 0
+
+
+# ---------------------------------------------------------------- 前端: integrate
+def integrate(home: Optional[Path] = None, target: Optional[str] = None,
+              yes: bool = False) -> int:
+    """接入 AI 工具前端: 装 skill + 配 hooks/插件(Claude Code / Codex / DSH / commit)。
+
+    不碰 .env、数据库、项目与模型配置(那些归 setup)。
+    target 为空时交互式选择; 非交互(无 tty 或 yes=True)时默认 all。
+    """
+    home = Path(home) if home else home_dir()
+    root = _detect_git()
+    interactive = sys.stdin.isatty() and not yes
+
+    if target is None:
+        if interactive:
+            target = tui.select_one(list(TARGETS),
+                                    title="选择要接入的目标端 (方向键选择, 回车确认):",
+                                    default=TARGETS.index("all"))
+        else:
+            target = "all"
+    if target not in TARGETS:
+        print(f"❌ 未知 target: {target} (可选: {', '.join(TARGETS)})")
+        return 1
+
+    lines: List[str] = []
+
+    # 1. skill: 通用基座(任何支持 skill 的环境都用; 单独选 skill 时只装这个)
+    lines.append(install_skill(home))
+
+    # 2. 触发 hooks / 插件(仅当目标不是纯 skill 时)
+    if target != "skill":
+        lines.extend(configure_triggers(home, target, root))
+
+    # 3. 集成自检(只查 skill/hooks/插件)
+    from . import doctor
+    lines.append("")
+    lines.append(doctor.render(doctor.check_integration(home=home)))
+
+    print("\n".join(lines))
+    return 0
+
+
+# ---------------------------------------------------------------- 一键全流程(向后兼容)
+def run(provider: Optional[str] = None, api_key: Optional[str] = None,
+        target: Optional[str] = None, yes: bool = False,
+        db_path: Optional[str] = None, home: Optional[Path] = None) -> int:
+    """install = setup + integrate。新用户一键走完; 只想部署后端用 setup, 只想接工具用 integrate。"""
+    rc = setup(provider=provider, api_key=api_key, yes=yes, db_path=db_path)
+    if rc != 0:
+        return rc
+    print()
+    return integrate(home=home, target=target, yes=yes)

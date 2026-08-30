@@ -11,6 +11,7 @@ from . import config
 from . import db as db_mod
 from . import llm
 from . import memory as mem_mod
+from . import presets
 from . import projects as proj_mod
 from . import supervise as sup_mod
 
@@ -210,16 +211,36 @@ def cmd_bootstrap(args) -> None:
 
 def cmd_doctor(args) -> None:
     from . import doctor
-    print(doctor.render(doctor.check_all(db_path=args.db,
-                                         check_llm=args.check_llm)))
+    if args.backend:
+        print(doctor.render(doctor.check_backend(db_path=args.db,
+                                                 check_llm=args.check_llm)))
+    elif args.integration:
+        print(doctor.render(doctor.check_integration()))
+    else:
+        print(doctor.render_sections([
+            ("后端", doctor.check_backend(db_path=args.db,
+                                          check_llm=args.check_llm)),
+            ("前端集成", doctor.check_integration()),
+        ]))
 
 
 def cmd_install(args) -> None:
     from . import install as install_mod
     raise SystemExit(install_mod.run(
         provider=args.provider, api_key=args.api_key,
-        project=args.project, charter=args.charter,
         target=args.target, yes=args.yes, db_path=args.db))
+
+
+def cmd_setup(args) -> None:
+    from . import install as install_mod
+    raise SystemExit(install_mod.setup(
+        provider=args.provider, api_key=args.api_key,
+        yes=args.yes, db_path=args.db))
+
+
+def cmd_integrate(args) -> None:
+    from . import install as install_mod
+    raise SystemExit(install_mod.integrate(target=args.target))
 
 
 def cmd_backup(args) -> None:
@@ -405,22 +426,40 @@ def build_parser() -> argparse.ArgumentParser:
     sb.set_defaults(func=cmd_bootstrap)
 
     sd = sub.add_parser("doctor", parents=[parent],
-                        help="自检接入是否完整 (✅/❌ 清单)")
+                        help="自检接入 (默认前后端都查, 分段展示)")
     sd.add_argument("--check-llm", action="store_true",
                     help="真调 LLM 验证连通 (默认只查配置)")
+    sd.add_argument("--backend", action="store_true",
+                    help="只自检后端 (.env / provider / 数据库 / LLM)")
+    sd.add_argument("--integration", action="store_true",
+                    help="只自检前端集成 (skill / hooks / 插件)")
     sd.set_defaults(func=cmd_doctor)
 
-    si = sub.add_parser("install", parents=[parent], help="一键接入向导")
+    ss = sub.add_parser("setup", parents=[parent],
+                        help="部署后端(空项目起步): provider+key → .env → init DB (不注册项目、不碰前端工具)")
+    ss.add_argument("--provider",
+                    choices=presets.provider_names(),
+                    default=None, help="模型服务商 (默认交互选择)")
+    ss.add_argument("--api-key", default=None)
+    ss.add_argument("--yes", action="store_true", help="非交互, 用默认值")
+    ss.set_defaults(func=cmd_setup)
+
+    si = sub.add_parser("install", parents=[parent],
+                        help="一键全流程 = setup + integrate")
     si.add_argument("--provider",
-                    choices=["deepseek", "openai", "siliconflow", "zhipu", "dummy"],
+                    choices=presets.provider_names(),
                     default=None, help="模型服务商 (默认交互选择)")
     si.add_argument("--api-key", default=None)
-    si.add_argument("--project", default=None, help="项目名 (默认取 git 仓库名)")
-    si.add_argument("--charter", default=None, help="项目大方向一句话 (默认从 README 猜)")
     si.add_argument("--target", choices=["dsh", "claude", "codex", "commit", "all"],
-                    default=None, help="配置哪些触发 (默认 all)")
+                    default=None, help="集成哪些工具 (默认 all)")
     si.add_argument("--yes", action="store_true", help="非交互, 用默认值")
     si.set_defaults(func=cmd_install)
+
+    sig = sub.add_parser("integrate", parents=[parent],
+                         help="接入 AI 工具前端: 装 skill + 配 hooks/插件 (不碰后端; 交互式选 target)")
+    sig.add_argument("--target", choices=["skill", "dsh", "claude", "codex", "commit", "all"],
+                     default=None, help="目标端 (默认交互选择)")
+    sig.set_defaults(func=cmd_integrate)
 
     sbk = sub.add_parser("backup", parents=[parent],
                          help="SQLite 在线备份到 backups/")
@@ -492,7 +531,18 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _reconfigure_stdio() -> None:
+    """Windows 控制台默认 GBK, 打印 ✅/❌ 等 emoji 会抛 UnicodeEncodeError。
+    保留原编码、只把不可编码字符替换为 '?', 避免崩溃(中文照常输出)。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv=None) -> None:
+    _reconfigure_stdio()
     args = build_parser().parse_args(argv)
     args.func(args)
 

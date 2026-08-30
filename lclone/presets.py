@@ -25,6 +25,45 @@ PROVIDERS: Dict[str, Dict[str, str]] = {
         "BRAIN_EMBED_BACKEND": "api",
         "BRAIN_EMBED_MODEL": "text-embedding-3-small",
     },
+    "claude": {
+        "BRAIN_LLM": "api",
+        "BRAIN_BASE_URL": "https://api.anthropic.com/v1",
+        "BRAIN_CHAT_MODEL": "claude-3-5-haiku-latest",
+        # Anthropic 不提供 embedding 接口, 用本地哈希向量
+        "BRAIN_EMBED_BACKEND": "local",
+        "BRAIN_EMBED_MODEL": "",
+    },
+    "gemini": {
+        "BRAIN_LLM": "api",
+        "BRAIN_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "BRAIN_CHAT_MODEL": "gemini-2.0-flash",
+        "BRAIN_EMBED_BACKEND": "api",
+        "BRAIN_EMBED_MODEL": "text-embedding-004",
+    },
+    "copilot": {
+        "BRAIN_LLM": "api",
+        "BRAIN_BASE_URL": "https://models.inference.ai.azure.com",
+        "BRAIN_CHAT_MODEL": "gpt-4o-mini",
+        # GitHub Models 不保证 embedding 接口, 用本地哈希向量
+        "BRAIN_EMBED_BACKEND": "local",
+        "BRAIN_EMBED_MODEL": "",
+    },
+    "kimi": {
+        "BRAIN_LLM": "api",
+        "BRAIN_BASE_URL": "https://api.moonshot.cn/v1",
+        "BRAIN_CHAT_MODEL": "moonshot-v1-8k",
+        # Moonshot 不提供 embedding 接口, 用本地哈希向量
+        "BRAIN_EMBED_BACKEND": "local",
+        "BRAIN_EMBED_MODEL": "",
+    },
+    "minimax": {
+        "BRAIN_LLM": "api",
+        "BRAIN_BASE_URL": "https://api.minimaxi.com/v1",
+        "BRAIN_CHAT_MODEL": "MiniMax-Text-01",
+        # MiniMax 不保证 embedding 接口, 用本地哈希向量
+        "BRAIN_EMBED_BACKEND": "local",
+        "BRAIN_EMBED_MODEL": "",
+    },
     "siliconflow": {
         "BRAIN_LLM": "api",
         "BRAIN_BASE_URL": "https://api.siliconflow.cn/v1",
@@ -80,7 +119,7 @@ def env_for(provider: str, api_key: str = "", db_path: str = "lclone.db") -> Dic
 
 def render_env(env: Dict[str, str]) -> str:
     """把 env 字典渲染成 .env 文本。"""
-    lines = ["# 外置大脑配置 (由 lclone install 生成)", ""]
+    lines = ["# 外置大脑配置 (由 lclone setup 生成)", ""]
     for k, v in env.items():
         lines.append(f"{k}={v}")
     return "\n".join(lines) + "\n"

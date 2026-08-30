@@ -2,3 +2,4 @@
 openai>=1.30.0      # OpenAI-compatible API (OpenAI / DeepSeek / SiliconFlow / Zhipu ...)
 fastapi>=0.110.0    # Web panel
 uvicorn>=0.29.0     # Web server
+questionary>=2.0.0  # 交互式方向键单选菜单 (setup/integrate 的 provider/target 选择)
