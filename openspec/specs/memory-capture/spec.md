@@ -39,7 +39,7 @@ THEN 不记忆
 
 ### Requirement: 决策强确认
 
-后台捕获产生 pending 决策后，宿主插件 SHALL 在 turn/end 时用 agent.steer 强制注入一条引导消息（source=plugin，不显示成用户消息）唤醒 agent；agent 被唤醒后 SHALL 用 ask_user_question 逐条弹窗请用户保留/删除，而非静默跳过；bootstrap SHALL 每轮带出【待确认决策】。
+后台捕获产生 pending 决策后，**呈现由宿主按端分派**：capture 输入 SHALL 含用户与助手文本（判断纳入「助手是否确认/落地」），分类器 SHALL 仅把被助手确认、落地或持续推进的用户选择/规则提炼为 decision；DSH 宿主 SHALL 不用 agent.steer 劫持主 agent，改由客户端轮询宿主 `/api/lclone-decisions` 以 UI 弹窗/角标提示，用户经 `/api/lclone-review` 保留/删除（主 agent 全程不参与确认）；非 web 端 SHALL 由 bootstrap 每轮带出【待确认决策】。
 
 #### Scenario: bootstrap 带出待确认
 
@@ -48,18 +48,23 @@ THEN bootstrap 输出包含【待确认决策】段
 
 #### Scenario: 会话中逐轮检查
 
-WHEN turn/end 时探测到新增 pending 决策
-THEN 宿主插件用 agent.steer 注入引导消息唤醒 agent（代码强制，不靠 agent 自觉）
+WHEN turn/end 时探测到本轮产生了待确认决策
+THEN 判断基于该轮「用户 + 助手」交换；DSH 由客户端轮询呈现，非 web 端由 bootstrap 带出，均不再用 agent.steer 劫持主 agent
 
 #### Scenario: 弹窗确认
 
-WHEN agent 被唤醒且存在待确认决策
-THEN 用 ask_user_question 逐条弹窗请用户保留/删除，阻塞等用户拍板
+WHEN DSH 客户端轮询到新增 pending 决策
+THEN 以 UI 弹窗（决策内容 + 保留/删除/稍后按钮）+ 侧边栏角标提示用户，用户点击保留/删除经 `/api/lclone-review` 落地；主 agent 不参与确认
 
 #### Scenario: 去重防循环
 
-WHEN pending 数未增加
-THEN 不重复注入，避免 agent 自身响应轮造成死循环
+WHEN 客户端已提醒过某批 pending 决策（其 id 已入 seen 集合）
+THEN 该批不再重复弹窗；仅未见过的新 id（或用户处理失败未入 seen 的 id）触发渲染，避免刷屏
+
+#### Scenario: 判断纳入助手实现
+
+WHEN turn/end 提交「用户 + 助手」整段交换
+THEN 分类器判断用户提出的选择/规则是否被助手确认、落地或持续推进，仅提炼为 decision；未获回应/未落地的一律不提炼
 
 ### Requirement: 分工边界
 
@@ -77,26 +82,36 @@ THEN 提炼为 decision
 
 ### Requirement: 记录按会话聚合
 
-同一外部会话（session_key 相同）SHALL 只建一条 note，逐轮往这条 note 追加内容；新会话（新 session_key）SHALL 新建一条 note。
+同一外部会话（session_key 相同）SHALL 只建一条 note，**把每轮原始对话内容直接追加**进这条 note（不依赖 LLM 提炼）；新会话（新 session_key）SHALL 新建一条 note，并写入该轮原始内容。
 
 #### Scenario: 同会话追加
 
-WHEN 相同 session_key 连续捕获 note
-THEN 追加到同一条 note，不新建
+WHEN 相同 session_key 连续捕获（无论该轮 LLM 是否提炼出内容）
+THEN 每轮原始对话文本追加到同一条 note，不新建
 
 #### Scenario: 新会话新 note
 
-WHEN 新 session_key 捕获 note
-THEN 新建一条 note
+WHEN 新 session_key 首次捕获
+THEN 新建一条 note 并写入该轮原始内容
+
+#### Scenario: 探索性轮次也记录
+
+WHEN 某轮内容为探索/纯实现（LLM 提炼为空）
+THEN 该轮原始内容仍追加到该会话 note（不因提炼为空而中断）
 
 ### Requirement: note 滚动压缩
 
-note 追加后长度超过阈值（3000 字）时，SHALL 把整条 note 摘要压缩一次，保持有界。
+note 追加原始内容后长度超过阈值（3000 字）时，SHALL 把整条 note 摘要压缩一次，保持有界。
 
 #### Scenario: 超长触发压缩
 
-WHEN note 长度超过阈值
-THEN 整条 note 被摘要成有界摘要
+WHEN 追加原始内容后 note 长度超过阈值
+THEN 整条 note 被 LLM 摘要成有界摘要
+
+#### Scenario: 压缩后继续追加
+
+WHEN 压缩后的 note 在后续轮次继续追加
+THEN 仍按「追加 → 超阈值再压缩」滚动处理
 
 ### Requirement: 归属判定
 
@@ -173,4 +188,23 @@ THEN 按项目分组，项目内按模块分组列出
 
 WHEN recall 返回召回结果
 THEN 按项目 → 模块分组展示
+
+### Requirement: 删除项目与模块
+
+lclone SHALL 支持删除项目与模块：删除项目为墓碑式（登记 project_removals，不删行/记忆，可撤销，记忆读取时跳过）；删除模块连带删除该模块下所有决策记忆（note 无模块不受影响）。
+
+#### Scenario: 删除项目
+
+WHEN 用户删除项目
+THEN 项目登记到 project_removals（墓碑式），从列表消失、记忆停止加载，数据保留可撤销
+
+#### Scenario: 删除模块连带记忆
+
+WHEN 用户删除项目下的模块
+THEN 模块行删除，且该模块下的所有决策(decision)记忆一并删除（不可恢复）
+
+#### Scenario: 删除模块不影响 note
+
+WHEN 删除模块
+THEN 项目层的记录(note) 不受影响（note 无模块，不参与删除）
 

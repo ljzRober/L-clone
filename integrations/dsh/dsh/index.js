@@ -1,4 +1,12 @@
-// L-clone 记忆钩子 (DSH 静态插件 bundle): 每轮结束自动 capture 沉淀 + 待确认决策强制提醒。
+// L-clone 记忆钩子 (DSH 静态插件 bundle): 每轮结束自动 capture 沉淀 + 决策确认改由客户端 UI 呈现 (不劫持主 agent)。
+//
+// 本变更 (decision-confirm-dsh-ui):
+//   - 捕获输入变丰富: 改为累计「用户 + 助手」消息, turn/end 时把整段交换喂给 capture,
+//     分类器据此判断「用户定了什么 + 助手是否确认/落地 → 可否落成一条决策」。
+//   - 决策强确认呈现分端: 去掉 agent.steer 劫持主 agent; DSH 改由客户端轮询
+//     /api/lclone-decisions 弹窗 + 角标呈现 (保留/删除), 主 agent 全程不参与。
+//   - host 端新增 /api/lclone-decisions (GET pending) 与 /api/lclone-review (POST keep/delete)
+//     两个同源代理路由, 避免客户端跨 :8000 的 CORS/鉴权。
 //
 // 事件签名已从 dsh-session 源码确认:
 //   ctx.on('session/event', (session, event) => ...)
@@ -6,15 +14,12 @@
 //     - user/message:      event.data.content = [{type:'text', text}]
 //     - assistant/message: event.data.message.content = [{type:'text'|'reasoning', text}]
 //
-// 决策强确认: turn/end 时若存在 pending 决策, 用 agent.followup() 强制注入新一轮 turn,
-// 唤醒 agent 让其推一条选择消息给用户 (代码强制, 不靠 agent 自觉)。
-//
 // 安装: dsh plugin --profile web add <本目录绝对路径>
 // 环境变量 LCLONE_CMD 可覆盖 lclone 命令。
 // 关键: spawn 时必须 cwd=仓库根, 否则 `python -m lclone` 找不到 lclone 包。
 
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
 import { existsSync, appendFileSync } from 'node:fs'
@@ -52,6 +57,19 @@ function extractText(event) {
     .join('\n')
 }
 
+// 助手消息截断上限: 分类器只需看到「助手是否确认/落地」的轮廓, 不必吞整段长回复
+// (整段长回复会稀释决策信号并膨胀 token)。
+const ASSISTANT_CAP = 1500
+
+function buildCaptureText(userText, assistantText) {
+  const u = (userText || '').trim()
+  const a = (assistantText || '').trim()
+  if (!u && !a) return ''
+  if (u && a) return '用户：' + u + '\n\n助手：' + a.slice(0, ASSISTANT_CAP)
+  if (u) return '用户：' + u
+  return '助手：' + a.slice(0, ASSISTANT_CAP)
+}
+
 function runCapture(text, sessionKey, cwd, onDone) {
   const t = (text || '').trim()
   if (!t) { if (onDone) onDone(); return }
@@ -75,83 +93,169 @@ function runCapture(text, sessionKey, cwd, onDone) {
   child.on('error', (e) => log('spawn error: ' + e.message))
   child.on('exit', (code) => {
     log('capture exit code ' + code + (err ? '\n' + err.slice(0, 800) : ''))
-    if (onDone) onDone() // capture 完成后再探测 pending, 避免漏掉本轮刚捕获的决策
+    if (onDone) onDone()
   })
   child.unref()
 }
 
-// 检查 pending 决策 (含内容); 有新增 pending 时用 agent.steer 强制唤醒 agent, 内容直接塞进引导消息(agent 不用再查库)
-const notified = new Map() // sessionId -> 上次已提醒的 pending 数 (去重, 防循环)
+// 健康检查: 探测 lclone Web 服务 (:8000) 存活, 供 client 端「大脑看板」按钮显示在线状态。
+// 若设置了 LCLONE_API_KEY 则带上凭证 (server-api spec: /api/* 需 Bearer 或 X-API-Key)。
+function probeLcloneHealth(onDone) {
+  const apiKey = process.env.LCLONE_API_KEY
+  const req = httpRequest(
+    { host: '127.0.0.1', port: 8000, path: '/api/health', method: 'GET', timeout: 2000,
+      headers: apiKey ? { 'X-API-Key': apiKey } : {} },
+    (res) => {
+      let body = ''
+      res.on('data', (d) => { body += d.toString() })
+      res.on('end', () => {
+        let ok = false
+        try { ok = JSON.parse(body).ok === true } catch (e) {}
+        onDone(ok)
+      })
+    },
+  )
+  req.on('timeout', () => { req.destroy(); onDone(false) })
+  req.on('error', () => onDone(false))
+  req.end()
+}
 
-function checkPendingAndNotify(ctx, sessionId) {
-  const child = spawn(lcloneBin, [...lcloneBaseArgs, 'pending'], {
-    cwd: REPO,
-    env: { ...process.env, BRAIN_DB_PATH: join(REPO, 'lclone.db') },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  })
-  let out = ''
-  child.stdout.on('data', (d) => { out += d.toString() })
-  child.on('exit', (code) => {
-    if (code !== 0) return
-    let items = []
-    try { items = JSON.parse(out.trim()) } catch (e) { return }
-    if (!Array.isArray(items)) return
-    const n = items.length
-    const last = notified.get(sessionId) || 0
-    if (n > last) {
-      notified.set(sessionId, n)
-      const agent = ctx.agents.get(sessionId)
-      if (!agent) { log('agent not found for ' + sessionId); return }
-      // 内容随引导消息一起注入, agent 直接照念, 不再查库/不触发权限
-      const lines = items.map(i => `#${i.id} ${i.content}`).join('\n')
-      const text = `【系统】以下 ${n} 条待确认决策需你向用户确认保留/删除（内容已给出，不要再查数据库）:\n${lines}\n请立即用 ask_user_question 逐条向用户确认，用户拍板后调用 lclone review 处理，不要静默跳过。`
-      try {
-        // 用 steer + source {kind:'plugin'}: 作为插件引导消息唤醒 agent, 不显示成「用户消息」气泡
-        agent.steer({
-          id: randomUUID(),
-          role: 'user',
-          content: [{ type: 'text', text }],
-          source: { kind: 'plugin', plugin: 'lclone-memory' },
-        })
-        log(`steer injected for ${sessionId}: ${n} pending`)
-      } catch (e) {
-        log('steer failed: ' + (e && e.message))
-      }
-    } else if (n === 0) {
-      notified.set(sessionId, 0) // 清空后重置, 下次新增再提醒
-    }
-  })
-  child.unref()
+// 读 HTTP 请求体 (POST body), 供 /api/lclone-review 用。
+function readBody(request, cb) {
+  let data = ''
+  request.on('data', (d) => { data += d.toString() })
+  request.on('end', () => cb(data))
+  request.on('error', () => cb(''))
+}
+
+// 代理到 lclone Web (:8000)。带 LCLONE_API_KEY 鉴权; 与健康探测同源, 避免客户端跨域。
+function lcloneFetch(method, path, body, onDone) {
+  const apiKey = process.env.LCLONE_API_KEY
+  const payload = body ? JSON.stringify(body) : null
+  const headers = {}
+  if (apiKey) headers['X-API-Key'] = apiKey
+  if (payload) {
+    headers['Content-Type'] = 'application/json'
+    headers['Content-Length'] = Buffer.byteLength(payload)
+  }
+  const req = httpRequest(
+    { host: '127.0.0.1', port: 8000, path, method, timeout: 3000, headers },
+    (res) => {
+      let data = ''
+      res.on('data', (d) => { data += d.toString() })
+      res.on('end', () => {
+        let json = null
+        try { json = JSON.parse(data || 'null') } catch (e) {}
+        onDone(res.statusCode >= 200 && res.statusCode < 300, json)
+      })
+    },
+  )
+  req.on('timeout', () => { req.destroy(); onDone(false, null) })
+  req.on('error', () => onDone(false, null))
+  if (payload) req.write(payload)
+  req.end()
 }
 
 export const name = 'lclone-memory'
-// cordis 依赖注入: 访问 ctx.agents 前必须声明 (否则报 "cannot get property 'agents' without inject")
-export const inject = ['agents']
+// cordis 依赖注入: 访问 ctx.agents 前必须声明。本变更已去掉 steer, 不再用 agents。
+export const inject = []
 
 export function apply(ctx) {
   log('plugin loaded, lclone = ' + lcloneBin + ' ' + lcloneBaseArgs.join(' '))
-  // 按 session 累计本轮 user 文本, turn/end 时 flush 进 lclone capture
+  // 健康检查 + 决策代理路由: client 端同源探测/确认 (无 CORS 问题)
+  try {
+    ctx.inject(['webServer'], (hostCtx) => {
+      hostCtx.effect(() => {
+        log('registering lclone web routes')
+        const disposers = []
+        const register = (cfg) => {
+          const d = hostCtx.webServer.register(cfg)
+          if (typeof d === 'function') disposers.push(d)
+        }
+        register({
+          kind: 'exact',
+          path: '/api/lclone-health',
+          handler: (request, response) => {
+            if (request.method !== 'GET') {
+              response.writeHead(405, { allow: 'GET' })
+              response.end()
+              return
+            }
+            probeLcloneHealth((ok) => {
+              response.writeHead(200, { 'content-type': 'application/json' })
+              response.end(JSON.stringify({ ok }))
+            })
+          },
+        })
+        // 待确认决策列表 (client 轮询, 弹窗 + 角标用)
+        register({
+          kind: 'exact',
+          path: '/api/lclone-decisions',
+          handler: (request, response) => {
+            if (request.method !== 'GET') {
+              response.writeHead(405, { allow: 'GET' })
+              response.end()
+              return
+            }
+            lcloneFetch('GET', '/api/pending', null, (ok, json) => {
+              response.writeHead(200, { 'content-type': 'application/json' })
+              response.end(JSON.stringify({ ok, items: (json && json.items) || [] }))
+            })
+          },
+        })
+        // 决策确认 (keep/delete); 落地为 active 或删除
+        register({
+          kind: 'exact',
+          path: '/api/lclone-review',
+          handler: (request, response) => {
+            if (request.method !== 'POST') {
+              response.writeHead(405, { allow: 'POST' })
+              response.end()
+              return
+            }
+            readBody(request, (raw) => {
+              let body = {}
+              try { body = JSON.parse(raw || '{}') } catch (e) {}
+              if (typeof body.id !== 'number' || !Number.isFinite(body.id)) {
+                response.writeHead(400, { 'content-type': 'application/json' })
+                response.end(JSON.stringify({ ok: false, error: 'missing/invalid id' }))
+                return
+              }
+              lcloneFetch('POST', '/api/review', { id: body.id, action: body.action || 'keep' }, (ok, json) => {
+                const good = ok && json && json.ok === true
+                // 后端失败返回非 2xx, 让 client 能区分「已落地」与「未生效」
+                response.writeHead(good ? 200 : 502, { 'content-type': 'application/json' })
+                response.end(JSON.stringify({ ok: good, ...(json || {}) }))
+              })
+            })
+          },
+        })
+        return () => { for (const d of disposers) { try { d() } catch {} } }
+      }, 'lclone-memory: web routes')
+    })
+  } catch (e) {
+    log('web routes skipped: ' + (e && e.message))
+  }
+  // 按 session 累计本轮 user+assistant 文本, turn/end 时 flush 进 lclone capture
   const buffers = new Map()
 
   ctx.on('session/event', (session, event) => {
-    // 只捕获用户消息: 决策由用户提出, assistant 的总结/元陈述不应被当成决策
-    if (event.type === 'user/message') {
+    // 同时捕获用户消息与助手回复: 分类器据此判断「用户定了什么 + 助手是否确认/落地」。
+    if (event.type === 'user/message' || event.type === 'assistant/message') {
       const text = extractText(event)
       if (text) {
-        const cur = buffers.get(session.id) || []
-        cur.push(text)
+        const cur = buffers.get(session.id) || { user: [], assistant: [] }
+        cur[event.type === 'user/message' ? 'user' : 'assistant'].push(text)
         buffers.set(session.id, cur)
       }
     }
     if (event.type === 'turn/end') {
       log(`turn/end fired: session=${session.id} turn=${event.data && event.data.turn}`)
-      const cur = buffers.get(session.id) || []
+      const cur = buffers.get(session.id) || { user: [], assistant: [] }
       buffers.delete(session.id)
       const cwd = (session.header && session.header.cwd) || session.cwd || session.meta?.cwd
-      runCapture(cur.join('\n'), session.id, cwd, () => {
-        checkPendingAndNotify(ctx, session.id) // capture 完成后再探测 pending, 决策强确认
-      })
+      // capture 完成即止; 决策确认由客户端轮询 /api/lclone-decisions 呈现, 不再劫持主 agent
+      runCapture(buildCaptureText(cur.user.join('\n'), cur.assistant.join('\n')), session.id, cwd)
     }
   })
 }
