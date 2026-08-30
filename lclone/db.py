@@ -175,6 +175,14 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
         "CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN "
         "DELETE FROM memories_fts WHERE rowid = old.id; END"
     )
+    # 修复: 内容被 UPDATE (追加/编辑/整理合并) 后 FTS 不刷新 -> 补 AFTER UPDATE 触发器,
+    # 让关键词索引始终与主表一致 (否则编辑/合并后的内容仍用旧文案检索)。
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN "
+        "DELETE FROM memories_fts WHERE rowid = old.id; "
+        "INSERT INTO memories_fts(rowid, content, reason) "
+        "VALUES (new.id, new.content, new.reason); END"
+    )
     conn.commit()
     return conn
 

@@ -305,6 +305,16 @@ check("60 openai 预设 embedding 走 api",
 check("61 provider 反推",
       presets.recognize_provider("https://api.deepseek.com/v1", "api") == "deepseek")
 check("62 dummy 反推", presets.recognize_provider("", "dummy") == "dummy")
+check("62b claude 预设 embedding 走本地",
+      presets.env_for("claude")["BRAIN_EMBED_BACKEND"] == "local")
+check("62c gemini 预设存在",
+      presets.env_for("gemini")["BRAIN_BASE_URL"].startswith("https://generativelanguage"))
+check("62d copilot 预设存在",
+      presets.env_for("copilot")["BRAIN_CHAT_MODEL"] == "gpt-4o-mini")
+check("62e kimi 预设 embedding 走本地",
+      presets.env_for("kimi")["BRAIN_EMBED_BACKEND"] == "local")
+check("62f minimax 预设存在",
+      presets.env_for("minimax")["BRAIN_BASE_URL"].startswith("https://api.minimaxi.com"))
 tmp_home = pathlib.Path(tempfile.mkdtemp(prefix="brain_home_"))
 res = install_mod.install_skill(tmp_home)
 check("63 install_skill 装到临时家目录",
@@ -314,6 +324,13 @@ names = {i["name"] for i in items}
 check("64 doctor 返回清单", "skill 已装" in names and "配置 .env" in names)
 skill_ok = next(i for i in items if i["name"] == "skill 已装")
 check("65 doctor 识别 skill 已装", skill_ok["ok"] is True)
+backend_items = doctor.check_backend(db_path=dbp)
+check("65b backend 自检不含前端项",
+      all(i["name"] not in ("skill 已装", "DSH 插件", "Claude Code hooks")
+          for i in backend_items))
+integ_items = doctor.check_integration(home=tmp_home)
+check("65c integration 自检含 skill",
+      "skill 已装" in {i["name"] for i in integ_items})
 
 # ---- 服务化: MCP 分发 + 鉴权 ----
 from lclone import mcp_server as mcp_srv, auth as auth_mod
@@ -424,6 +441,43 @@ try:
           and "/api/memories" in routes and "/mcp" in routes)
 except ImportError:
     print("SKIP 24 Web (fastapi 未安装, 装依赖后自动启用)")
+
+# ---- 记录严格按会话聚合: 同一会话项目归属变化仍只一条 note (不拆全局/项目) ----
+cn1 = mem_mod.capture(conn, "归属段A", project_id=None, session_key="split1")
+_sr = conn.execute("SELECT source_ref FROM memories WHERE id=?",
+                   (cn1[0],)).fetchone()["source_ref"]
+cn2 = mem_mod.capture(conn, "归属段B", project_id=pid, session_key="split1")
+_cnt = conn.execute(
+    "SELECT COUNT(*) c FROM memories WHERE level='note' AND status='active'"
+    " AND source_ref=?", (_sr,)).fetchone()["c"]
+_note = conn.execute("SELECT project_id, content FROM memories WHERE id=?",
+                     (cn1[0],)).fetchone()
+check("94 同会话项目变化仍一条 note",
+      cn1[0] == cn2[0] and _cnt == 1, f"cn1={cn1} cn2={cn2} cnt={_cnt}")
+check("95 note 跟随当前归属落到项目", _note["project_id"] == pid,
+      f"project_id={_note['project_id']}")
+check("96 note 内容累计两段", "归属段A" in _note["content"] and "归属段B" in _note["content"],
+      _note["content"][:40])
+
+# ---- organize 通道一(确定性): 同一会话多条 note(不同归属) -> 合并成一条 ----
+a1 = mem_mod.remember(conn, "同会话A", level="note", project_id=None,
+                      source_ref="session:9901")
+a2 = mem_mod.remember(conn, "同会话B", level="note", project_id=pid,
+                      source_ref="session:9901")
+_res = mem_mod.organize(conn)
+_cnt = conn.execute(
+    "SELECT COUNT(*) c FROM memories WHERE level='note' AND status='active'"
+    " AND source_ref='session:9901'").fetchone()["c"]
+_keep = conn.execute(
+    "SELECT id, project_id, content FROM memories"
+    " WHERE level='note' AND status='active' AND source_ref='session:9901'"
+).fetchone()
+check("97 organize 合并同会话 note", _cnt == 1 and a1 == _keep["id"],
+      f"cnt={_cnt} a1={a1} a2={a2}")
+check("98 合并后归属落到项目", _keep["project_id"] == pid,
+      f"pid={_keep['project_id']}")
+check("99 合并后内容累计", "同会话A" in _keep["content"] and "同会话B" in _keep["content"],
+      _keep["content"][:40])
 
 print()
 if fails:

@@ -235,6 +235,8 @@ def capture(conn: sqlite3.Connection, text: str,
     聚合: session_key 默认从环境变量 DSH_SESSION_ID 取 (代码确定性, 不靠调用方传);
     同一个 session_key 只建一条 note, 每轮往这条 note 追加内容
     (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
+    记录严格按「会话」聚合: 即使会话中途项目归属变化, 也只往同一条 note 追加,
+    不按 project_id 拆成多条 (避免同一会话被拆成全局+项目两条 note)。
     note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
     准入: 每条内容先过 _filter_item (排除「做了什么」/ 决策需含信号 / note 不过短)。
     模块: 仅决策(decision)挂模块 (LLM 分类 + _resolve_module 词表强制);
@@ -272,31 +274,28 @@ def capture(conn: sqlite3.Connection, text: str,
         _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
     # ---- 通道二: 记录(note) 直接记录本轮原始内容 → active + 每轮追加 + 超长压缩 ----
+    # 记录严格按「会话」聚合: 同一 session 只建一条 note, 按 source_ref 找已有 note,
+    # 不看 project_id —— 避免同一会话因项目归属中途变化被拆成全局+项目两条 note。
     note_text = (text or "").strip()
     if note_text:
         note_level = "note"
-        if project_id is None:
-            existing = conn.execute(
-                "SELECT id, content FROM memories"
-                " WHERE level='note' AND status='active' AND source_ref=?"
-                " AND project_id IS NULL ORDER BY id LIMIT 1",
-                (ref,),
-            ).fetchone()
-        else:
-            existing = conn.execute(
-                "SELECT id, content FROM memories"
-                " WHERE level='note' AND status='active' AND source_ref=?"
-                " AND project_id=? ORDER BY id LIMIT 1",
-                (ref, project_id),
-            ).fetchone()
+        existing = conn.execute(
+            "SELECT id, content, project_id FROM memories"
+            " WHERE level='note' AND status='active' AND source_ref=?"
+            " ORDER BY id LIMIT 1",
+            (ref,),
+        ).fetchone()
         if existing:
             new_content = (existing["content"] + "\n" + note_text).strip()
             if len(new_content) > note_compact_threshold:
                 new_content = llm.summarize(new_content)
             new_emb = llm.embed_one(new_content)
+            # note 跟随会话当前归属: 一旦解析出项目就落到该项目, 否则保持原归属
             conn.execute(
-                "UPDATE memories SET content=?, embedding=? WHERE id=?",
-                (new_content, pack_vec(new_emb), existing["id"]),
+                "UPDATE memories SET content=?, embedding=?,"
+                " project_id=CASE WHEN ? IS NOT NULL THEN ? ELSE project_id END"
+                " WHERE id=?",
+                (new_content, pack_vec(new_emb), project_id, project_id, existing["id"]),
             )
             _store_links(conn, existing["id"], new_content)
             ids.append(existing["id"])
@@ -719,21 +718,60 @@ def _format_grouped(items: List[dict], show_id: bool = False) -> str:
 
 # ---------------------------------------------------------------- 整理合并 (LLM 语义合并)
 def organize(conn: sqlite3.Connection) -> dict:
-    """整理: LLM 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。
-
-    硬约束 (不能跨区域): 只能合并 同项目 + 同等级(decision/note) + 同模块 的记忆;
-    跨项目/跨等级/跨模块的合并由代码强制校验拒绝 (LLM 输出后)。
+    """整理:
+    通道一(确定性, 不依赖 LLM): 记录按「一个会话一条 note」修正 —— 同一 source_ref 的多条
+        note 合并成一条 (修复历史上因项目归属变化被拆成全局+项目两条的 note, 如 #3/#10)。
+    通道二(LLM 语义): 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。
+    硬约束 (通道二): 只能合并 同项目 + 同等级(decision/note) + 同模块 的记忆;
+        跨项目/跨等级/跨模块的合并由代码强制校验拒绝 (LLM 输出后)。
     """
+    merged = removed = 0
+    applied = []
+
+    # ---- 通道一: 同会话多条 note -> 合并成一条 (确定性修正, 不跨会话/不依赖 LLM) ----
+    notes = conn.execute(
+        "SELECT id, project_id, source_ref, content FROM memories"
+        " WHERE level='note' AND status='active' AND source_ref LIKE 'session:%'"
+        " ORDER BY source_ref, id"
+    ).fetchall()
+    by_sess: dict = {}
+    for n in notes:
+        by_sess.setdefault(n["source_ref"], []).append(n)
+    for sess, group in by_sess.items():
+        if len(group) < 2:
+            continue
+        keep = group[0]
+        # 合并完整保留原文, 不做压缩 (用户要求不丢细节);
+        # 超长时由后续 capture 的 note 追加压缩兜底, 而非在这里丢内容。
+        new_content = "\n".join(n["content"] for n in group)
+        # 归属: 取非空的 project_id (优先项目层, 避免停在全局层)
+        pid = next((n["project_id"] for n in group if n["project_id"] is not None), None)
+        emb = llm.embed_one(new_content)
+        conn.execute(
+            "UPDATE memories SET content=?, embedding=?, project_id=?,"
+            " confirmed_at=datetime('now') WHERE id=?",
+            (new_content, pack_vec(emb), pid, keep["id"]),
+        )
+        _store_links(conn, keep["id"], new_content)
+        extra = [n["id"] for n in group[1:]]
+        conn.execute("DELETE FROM memories WHERE id IN (%s)"
+                     % ",".join("?" * len(extra)), extra)
+        merged += 1
+        removed += len(extra)
+        applied.append({"id": keep["id"], "content": new_content, "merged": [n["id"] for n in group]})
+    conn.commit()
+
+    # ---- 通道二: LLM 语义合并 (区域硬约束) ----
     rows = conn.execute(
         "SELECT m.id, m.project_id, m.level, m.module, m.content, p.name AS proj"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
         " WHERE m.status='active' ORDER BY m.project_id, m.level, m.module, m.id"
     ).fetchall()
     if not rows:
-        return {"merged": 0, "removed": 0, "groups": []}
+        return {"merged": merged, "removed": removed, "groups": applied}
     idx = {r["id"]: r for r in rows}
     body = "\n".join(
-        f"#{r['id']} [{('全局' if r['project_id'] is None else r['proj'])}/"
+        f"#{r['id']} [({('全局' if r['project_id'] is None else r['proj'])})/"
         f"{r['level']}/{r['module'] or '-'}] {r['content'][:120]}"
         for r in rows
     )
@@ -747,8 +785,6 @@ def organize(conn: sqlite3.Connection) -> dict:
         "没有可合并的就输出 []\n\n" + body
     )
     groups = llm.chat_json(prompt) or []
-    merged = removed = 0
-    applied = []
     for g in groups:
         try:
             ids = [int(x) for x in (g.get("ids") or [])]
