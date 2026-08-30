@@ -138,8 +138,22 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .layer .nm { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .layer.sub { padding-left:24px; font-size:12px; }
 .layer.sub .nm { font-weight:normal; }
-.layer .cnt { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
+.layer .cnt { font-family:var(--mono); font-size:11px; color:var(--dim); }
 .layer .cnt b { color:var(--fg); }
+/* 节点行右侧组 (垃圾桶 + 数量): 靠右排版 */
+.layer .right { margin-left:auto; display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; }
+/* 删除/添加 图标按钮 (垃圾桶/加号) */
+.icon-btn { background:transparent; border:none; color:var(--dim); cursor:pointer; width:20px; height:20px;
+            display:inline-flex; align-items:center; justify-content:center; padding:0; border-radius:5px;
+            font-family:inherit; transition:color .12s, background .12s; }
+.icon-btn:hover { color:var(--bad); background:rgba(248,113,113,.12); }
+.icon-btn:focus-visible { outline:2px solid var(--bad); outline-offset:1px; }
+/* 节点行内图标 (垃圾桶): 嵌在名字与计数之间 */
+.icon-inline { color:var(--dim); cursor:pointer; width:18px; height:18px; margin:0 2px;
+               display:inline-flex; align-items:center; justify-content:center; border-radius:4px;
+               opacity:.45; transition:opacity .12s, color .12s, background .12s; }
+.icon-inline:hover { opacity:1; color:var(--bad); background:rgba(248,113,113,.12); }
+.icon-inline:focus-visible { outline:2px solid var(--bad); outline-offset:1px; }
 #reg-form { display:none; padding:8px; }
 #reg-form.on { display:block; }
 #reg-form input { width:100%; background:#0d1424; color:var(--fg); border:1px solid var(--line);
@@ -151,6 +165,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 14px;
         display:flex; flex-direction:column; gap:8px; cursor:grab;
+        min-width:0; overflow:hidden;
         transition:border-color .15s, transform .15s; }
 .card:hover { border-color:#2e3b55; transform:translateY(-1px); }
 .card.dragging { opacity:.45; }
@@ -159,7 +174,8 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .b-note { background:#26303f; color:#a9bdd6; }
 .b-global { background:#4a3a14; color:var(--acc); }
 .b-project { background:#1d2b4a; color:#7fb0ff; }
-.card .body { font-size:13px; line-height:1.6; color:var(--fg);
+.card .body { font-size:13px; line-height:1.6; color:var(--fg); min-width:0;
+              word-break:break-word; overflow-wrap:anywhere;
               display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
 .lk { color:var(--acc); font-family:var(--mono); font-size:11px; }
 .card .meta { font-family:var(--mono); font-size:10px; color:var(--dim); }
@@ -291,6 +307,7 @@ WORK_BODY = r"""
       <button class="ghost zoomb" onclick="zoomFit()" title="适应">⛶</button>
       <span class="sum" id="graph-sum"></span>
       <span style="flex:1"></span>
+      <button class="ghost" onclick="loadAll()" title="重新拉取并刷新记忆/项目/链接">刷新</button>
       <button class="ghost" onclick="organize()" title="把语义相近的记忆合并成一条（不跨项目/等级/模块）">整理</button>
       <button class="act" onclick="openAdd()">＋ 添加记忆</button>
     </div>
@@ -357,6 +374,9 @@ const API = {
   addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
   addModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
+  delModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
+  removeProject: async id => (await fetch('/api/projects/'+id+'/remove', {method:'POST'})).json(),
+  restoreProject: async id => (await fetch('/api/projects/'+id+'/restore', {method:'POST'})).json(),
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
@@ -417,23 +437,87 @@ function treeBtn(kind, pid, name, rail, cntHtml, id) {
   b.onclick = () => selectSidebar(kind, pid);
   return b;
 }
+
+/* ---- 项目/模块 删除 UI (垃圾桶图标内嵌到节点行右侧) ---- */
+const TRASH_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M5.5 4V2.8a.8.8 0 0 1 .8-.8h3.4a.8.8 0 0 1 .8.8V4M3.5 4l.7 9.2a.8.8 0 0 0 .8.7h6a.8.8 0 0 0 .8-.7L12.5 4M6.5 7v4M9.5 7v4"/></svg>';
+
+// 项目树节点: 名字靠左, 垃圾桶 + 记忆数量靠右
+function _projectNode(p, cntHtml) {
+  const b = document.createElement('button');
+  b.className = 'layer'; b.id = 'lg-p' + p.id;
+  const nm = document.createElement('span');
+  nm.className = 'nm'; nm.textContent = p.name;
+  const right = document.createElement('span');
+  right.className = 'right';
+  const trash = document.createElement('span');
+  trash.className = 'icon-inline'; trash.title = '删除项目';
+  trash.setAttribute('role', 'button');
+  trash.innerHTML = TRASH_ICON;
+  trash.onclick = (ev) => { ev.stopPropagation(); delProject(p); };
+  const cnt = document.createElement('span');
+  cnt.className = 'cnt'; cnt.innerHTML = cntHtml;
+  right.appendChild(trash); right.appendChild(cnt);
+  b.appendChild(nm); b.appendChild(right);
+  b.onclick = () => selectSidebar('project', p.id);
+  return b;
+}
+
+// 模块树节点: 名字靠左, 垃圾桶 + 数量靠右
+function _moduleNode(p, mod, cnt) {
+  const b = document.createElement('button');
+  b.className = 'layer sub'; b.id = 'lg-m-' + p.id + '-' + mod;
+  const rail = document.createElement('span');
+  rail.className = 'rail'; rail.style.cssText = 'width:3px;height:10px;background:#3c82f6';
+  const nm = document.createElement('span');
+  nm.className = 'nm'; nm.textContent = mod;
+  const right = document.createElement('span');
+  right.className = 'right';
+  const trash = document.createElement('span');
+  trash.className = 'icon-inline'; trash.title = '删除模块 ' + mod;
+  trash.setAttribute('role', 'button');
+  trash.innerHTML = TRASH_ICON;
+  trash.onclick = (ev) => { ev.stopPropagation(); delModule(p.id, mod); };
+  const cntEl = document.createElement('span');
+  cntEl.className = 'cnt'; cntEl.textContent = cnt;
+  right.appendChild(trash); right.appendChild(cntEl);
+  b.appendChild(rail); b.appendChild(nm); b.appendChild(right);
+  b.onclick = () => openModule(p.id, mod);
+  return b;
+}
+
+async function delProject(p) {
+  if (!confirm(`确定删除项目「${p.name}」吗？\n\n墓碑式删除: 项目从列表消失、记忆停止加载，但数据保留，可撤销。`)) return;
+  try { await API.removeProject(p.id); }
+  catch (e) { alert('删除失败: ' + ((e && e.message) || e)); return; }
+  EXPANDED.delete(p.id);
+  await loadAll();
+  alert(`已删除项目「${p.name}」(数据保留, 可撤销)`);
+}
+
+async function delModule(pid, mod) {
+  if (!confirm(`确定删除模块「${mod}」吗？\n\n将连带删除该模块下的所有决策记忆，不可恢复。`)) return;
+  try { await API.delModule(pid, mod); }
+  catch (e) { alert('删除失败: ' + ((e && e.message) || e)); return; }
+  if (FOCUS_MODULE === mod) FOCUS_MODULE = null;
+  await loadAll();
+  alert(`已删除模块「${mod}」`);
+}
 function renderSidebar() {
   const box = $('tree'); box.innerHTML = '';
   box.appendChild(treeBtn('global', null, '全局层', 'global', '∞', 'lg-global'));
   PROJS.forEach(p => {
     const pendTag = p.pending_count ? ` 待确认 <b>${p.pending_count}</b>` : '';
-    box.appendChild(treeBtn('project', p.id, p.name, 'project', `记忆 <b>${p.mem_count}</b>${pendTag}`, 'lg-p' + p.id));
+    // 项目节点: 名字 + 行内垃圾桶 (删除项目), 点击节点本身仍为选中
+    box.appendChild(_projectNode(p, `记忆 <b>${p.mem_count}</b>${pendTag}`));
     // 展开项目时显示其模块子节点 (树状)
     if (EXPANDED.has(p.id)) {
       const mods = [...new Set([...(MODULES[p.id] || []), ...MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean)])];
       mods.forEach(mod => {
         const cnt = MEMS.filter(m => m.project_id === p.id && (m.module || '') === mod).length;
-        const b = document.createElement('button');
-        b.className = 'layer sub'; b.id = 'lg-m-' + p.id + '-' + mod;
-        b.innerHTML = `<span class="rail" style="width:3px;height:10px;background:#3c82f6"></span><span class="nm">${esc(mod)}</span><span class="cnt">${cnt}</span>`;
-        b.onclick = () => openModule(p.id, mod);
-        box.appendChild(b);
+        // 模块节点: 名字 + 行内垃圾桶 (删除模块)
+        box.appendChild(_moduleNode(p, mod, cnt));
       });
+      // 末尾: 添加模块
       const ab = document.createElement('button');
       ab.className = 'layer sub'; ab.id = 'lg-addm-' + p.id;
       ab.innerHTML = `<span class="rail" style="background:transparent"></span><span class="nm" style="color:var(--acc)">＋ 添加模块</span>`;
@@ -482,13 +566,15 @@ function renderGraph() {
       `<text x="${x + w - 14}" y="${y + G_H / 2 + 6}" class="bs" text-anchor="end">${sub}</text>`;
   }
   function memBox(m, x, y, w, col) {
-    const t1 = (m.content || '').replace(/\s+/g, ' ');
-    const a = t1.slice(0, 18) + (t1.length > 18 ? '…' : '');
-    const b = t1.length > 18 ? t1.slice(18, 36) + (t1.length > 36 ? '…' : '') : '';
+    const t1 = (m.content || '').replace(/\s+/g, ' ').trim();
+    // 按实际列宽动态截断: 保守字宽 14px (中文全角略宽), 可用宽 = w - 34 (左右留白 + 安全余量)
+    const perLine = Math.max(4, Math.floor((w - 34) / 14));
+    const a = t1.slice(0, perLine) + (t1.length > perLine ? '…' : '');
+    const b = t1.length > perLine ? t1.slice(perLine, perLine * 2) + (t1.length > perLine * 2 ? '…' : '') : '';
     return `<g class="box" onclick="openMem(${m.id})"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
-      `<text x="${x + 12}" y="${y + 20}" class="bt">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt">${esc(b)}</text>` : '') +
-      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm">#${m.id} · ${(m.created_at || '').slice(0, 10)}${m.module ? ' · ' + esc(m.module) : ''}</text></g>`;
+      `<text x="${x + 12}" y="${y + 20}" class="bt" style="font-size:12px">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt" style="font-size:12px">${esc(b)}</text>` : '') +
+      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">#${m.id} · ${(m.created_at || '').slice(0, 10)}${m.module ? ' · ' + esc(m.module) : ''}</text></g>`;
   }
   function levelColumns(ms, ox, oy, lvls) {
     const cols_src = lvls || levels;
@@ -975,6 +1061,34 @@ def create_app(db_path: Optional[str] = None):
                            conn: sqlite3.Connection = Depends(get_db)):
         try:
             proj_mod.add_module(conn, pid, body.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.post("/api/projects/{pid}/modules/delete")
+    def delete_project_module(pid: int, body: AddModuleIn,
+                              conn: sqlite3.Connection = Depends(get_db)):
+        """删除模块并连带删除该模块下的决策记忆。"""
+        try:
+            removed = proj_mod.remove_module(conn, pid, body.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "removed": removed}
+
+    @app.post("/api/projects/{pid}/remove")
+    def remove_project(pid: int, conn: sqlite3.Connection = Depends(get_db)):
+        """墓碑式移除项目: 项目从列表消失、记忆停止加载, 可恢复。"""
+        try:
+            proj_mod.remove_project(conn, pid)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.post("/api/projects/{pid}/restore")
+    def restore_project(pid: int, conn: sqlite3.Connection = Depends(get_db)):
+        """复活被移除的项目。"""
+        try:
+            proj_mod.restore_project(conn, pid)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {"ok": True}

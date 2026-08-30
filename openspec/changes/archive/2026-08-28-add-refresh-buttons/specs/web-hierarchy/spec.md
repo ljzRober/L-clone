@@ -1,8 +1,7 @@
 # web-hierarchy Specification
 
-## Purpose
-TBD - created by archiving change ui-hierarchy. Update Purpose after archive.
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: 记忆工作台
 
 Web 面板主页面 SHALL 是记忆工作台：左侧树状层级导航 + 右侧架构图（全局层/项目/模块 三层，每层两个横向划分恒显示），用户通过点击查看、编辑、迁移、添加**或删除**记忆/项目/模块。工具栏 SHALL 提供「刷新」按钮，一键重新拉取项目/记忆/链接数据并重渲染。
@@ -71,18 +70,3 @@ THEN 重新拉取项目/记忆/链接/待确认数并重渲染图形与树状导
 
 WHEN dsh 捕获产生新记忆后用户点工具栏「刷新」
 THEN 新记忆出现在对应层级卡片，待确认角标更新
-
-### Requirement: 问答独立页面
-
-问答 SHALL 位于独立页面 /ask，与记忆工作台完全分开。
-
-#### Scenario: 独立访问
-
-WHEN 在工作台点击「问答 →」或在浏览器访问 /ask
-THEN 打开独立的问答页（带记忆聊天 + 边界监督），与记忆管理界面互不混合
-
-#### Scenario: 页面互链
-
-WHEN 在问答页点击「← 记忆工作台」
-THEN 返回记忆工作台主页
-
