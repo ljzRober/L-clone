@@ -244,70 +244,73 @@ def capture(conn: sqlite3.Connection, text: str,
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
     existing_modules = _list_module_names(conn, project_id)
     items = llm.extract_memories(text, existing_modules=existing_modules)
+    reason = f"来自会话 #{session_id}"
+    ref = f"session:{session_id}"
     ids = []
-    for raw in items:
+    # ---- 通道一: 决策(decision) 由 LLM 提炼 → 进草稿待确认 + LLM 判断归属(module/project) ----
+    for raw in items or []:
+        if (raw.get("level") or "").lower() != "decision":
+            continue
         it = _filter_item(raw)
         if it is None:
             continue
-        level = it["level"]
         content = (it.get("content") or "").strip()
         if not content:
             continue
         emb = llm.embed_one(content)
-        reason = f"来自会话 #{session_id}"
-        ref = f"session:{session_id}"
-        if level == "decision":
-            # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅决策挂模块)
-            mod = _resolve_module(conn, project_id, module or it.get("module") or "")
-            # 决策进草稿待确认 (B 类); 写入前去重
-            if _is_duplicate(conn, emb, project_id=project_id):
-                continue
+        # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅决策挂模块)
+        mod = _resolve_module(conn, project_id, module or it.get("module") or "")
+        # 决策进草稿待确认 (B 类); 写入前去重
+        if _is_duplicate(conn, emb, project_id=project_id):
+            continue
+        cur = conn.execute(
+            "INSERT INTO memories(project_id, level, module, content, reason,"
+            " status, source_type, source_ref, embedding)"
+            " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
+            (project_id, "decision", mod, content, reason, ref, pack_vec(emb)),
+        )
+        _store_links(conn, cur.lastrowid, content)
+        ids.append(cur.lastrowid)
+    # ---- 通道二: 记录(note) 直接记录本轮原始内容 → active + 每轮追加 + 超长压缩 ----
+    note_text = (text or "").strip()
+    if note_text:
+        note_level = "note"
+        if project_id is None:
+            existing = conn.execute(
+                "SELECT id, content FROM memories"
+                " WHERE level='note' AND status='active' AND source_ref=?"
+                " AND project_id IS NULL ORDER BY id LIMIT 1",
+                (ref,),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT id, content FROM memories"
+                " WHERE level='note' AND status='active' AND source_ref=?"
+                " AND project_id=? ORDER BY id LIMIT 1",
+                (ref, project_id),
+            ).fetchone()
+        if existing:
+            new_content = (existing["content"] + "\n" + note_text).strip()
+            if len(new_content) > note_compact_threshold:
+                new_content = llm.summarize(new_content)
+            new_emb = llm.embed_one(new_content)
+            conn.execute(
+                "UPDATE memories SET content=?, embedding=? WHERE id=?",
+                (new_content, pack_vec(new_emb), existing["id"]),
+            )
+            _store_links(conn, existing["id"], new_content)
+            ids.append(existing["id"])
+        else:
+            # 记录(record) 无模块: 记录都在 project 层 (偶尔全局), 不挂 module
+            note_emb = llm.embed_one(note_text)
             cur = conn.execute(
                 "INSERT INTO memories(project_id, level, module, content, reason,"
-                " status, source_type, source_ref, embedding)"
-                " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
-                (project_id, level, mod, content, reason, ref, pack_vec(emb)),
+                " status, source_type, source_ref, embedding, confirmed_at)"
+                " VALUES (?, ?, '', ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
+                (project_id, note_level, note_text, reason, ref, pack_vec(note_emb)),
             )
-            _store_links(conn, cur.lastrowid, content)
+            _store_links(conn, cur.lastrowid, note_text)
             ids.append(cur.lastrowid)
-        else:
-            # 记录直接生效 (免确认); 同一 session + 同一归属 只一条 note, 每轮追加
-            if project_id is None:
-                existing = conn.execute(
-                    "SELECT id, content FROM memories"
-                    " WHERE level='note' AND status='active' AND source_ref=?"
-                    " AND project_id IS NULL ORDER BY id LIMIT 1",
-                    (ref,),
-                ).fetchone()
-            else:
-                existing = conn.execute(
-                    "SELECT id, content FROM memories"
-                    " WHERE level='note' AND status='active' AND source_ref=?"
-                    " AND project_id=? ORDER BY id LIMIT 1",
-                    (ref, project_id),
-                ).fetchone()
-            if existing:
-                new_content = (existing["content"] + "\n" + content).strip()
-                if len(new_content) > note_compact_threshold:
-                    new_content = llm.summarize(new_content)
-                new_emb = llm.embed_one(new_content)
-                conn.execute(
-                    "UPDATE memories SET content=?, embedding=? WHERE id=?",
-                    (new_content, pack_vec(new_emb), existing["id"]),
-                )
-                _store_links(conn, existing["id"], new_content)
-                ids.append(existing["id"])
-            else:
-                # 记录(record) 无模块: 记录都在 project 层 (偶尔全局), 不挂 module
-                mod = ""
-                cur = conn.execute(
-                    "INSERT INTO memories(project_id, level, module, content, reason,"
-                    " status, source_type, source_ref, embedding, confirmed_at)"
-                    " VALUES (?, ?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
-                    (project_id, level, mod, content, reason, ref, pack_vec(emb)),
-                )
-                _store_links(conn, cur.lastrowid, content)
-                ids.append(cur.lastrowid)
     conn.commit()
     return ids
 
