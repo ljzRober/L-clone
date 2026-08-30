@@ -148,6 +148,30 @@ def add_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
         raise ValueError(f"模块已存在: {name}")
 
 
+def remove_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
+    """删除项目下的一个模块, 并连带删除挂在该模块下的 decision 记忆。
+
+    返回受影响(删除)的记忆条数。模块不存在时报错; 删除操作原子提交。
+    记忆按 level='decision' + module=name 精确匹配连带删除 (note 无模块, 不受影响)。
+    """
+    if get_project(conn, project_id) is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("模块名不能为空")
+    row = conn.execute("SELECT id FROM modules WHERE project_id=? AND name=?",
+                       (project_id, name)).fetchone()
+    if row is None:
+        raise ValueError(f"模块不存在: {name}")
+    # 连带删除该模块下的决策记忆 (decision 挂模块; note 无模块不受影响)
+    cur = conn.execute("DELETE FROM memories WHERE project_id=? AND module=?",
+                       (project_id, name))
+    conn.execute("DELETE FROM modules WHERE project_id=? AND name=?",
+                 (project_id, name))
+    conn.commit()
+    return cur.rowcount
+
+
 def _git_toplevel(cwd: Optional[str] = None) -> Optional[Path]:
     """取目录所在 git 仓库根 (确定性); 不在 git 仓库内返回 None。"""
     import subprocess
