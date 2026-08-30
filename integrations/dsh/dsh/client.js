@@ -23,7 +23,8 @@ window.__ModuleLoader__.load({
     const OTHER_ACTIVE_ATTR = "data-dsh-ssh-active";
     const ACTIVATE_EVENT = "dsh-panel-activate";
     const HEALTH_ENDPOINT = "/api/lclone-health";
-    const DASHBOARD_URL = "http://127.0.0.1:8000"; // lclone web 面板 (与 host health 探测同源端口)
+    let DASHBOARD_URL = "http://127.0.0.1:8000"; // 后端基址; 会从 /api/lclone-health 的 webUrl 更新(支持服务器部署)
+    let DOCS_URL = "https://github.com/ljzRober/L-clone"; // 文档链接; 会从 health 的 docsUrl 更新
     // 决策确认 (本变更): 客户端轮询 host 代理路由, 弹窗 + 角标呈现待确认决策, 不进主 agent。
     const DECISIONS_ENDPOINT = "/api/lclone-decisions";
     const REVIEW_ENDPOINT = "/api/lclone-review";
@@ -230,6 +231,8 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
       let iframe;
       let statusDot;
       let offlineHint;
+      let skillHint;
+      let docsLinkEl;
       const ensure = () => {
         if (container !== void 0) return;
         const column = document.querySelector(CONVERSATION_COLUMN_SELECTOR);
@@ -286,15 +289,44 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
         offlineHint = document.createElement("div");
         offlineHint.className = "lclone-board-offline";
         offlineHint.style.display = "none";
-        const hintText = document.createElement("span");
-        hintText.textContent = "L-clone Web 服务未启动，看板暂时无法显示。请先运行：";
+        const hintTitle = document.createElement("div");
+        hintTitle.style.fontWeight = "600";
+        hintTitle.textContent = "L-clone 后台服务未启动，记忆工作台无法显示。";
+        const hintCmd = document.createElement("div");
+        hintCmd.style.marginTop = "6px";
+        hintCmd.textContent = "请先启动后台服务：";
         const hintCode = document.createElement("code");
-        hintCode.textContent = "python -m lclone web";
-        offlineHint.appendChild(hintText);
+        hintCode.textContent = "python -m lclone web（或 lclone serve start 后台常驻）";
+        const hintRemote = document.createElement("div");
+        hintRemote.style.marginTop = "6px";
+        hintRemote.textContent = "部署在服务器上时，用 LCLONE_WEB_URL 指向后台地址。";
+        docsLinkEl = document.createElement("a");
+        docsLinkEl.href = DOCS_URL;
+        docsLinkEl.target = "_blank";
+        docsLinkEl.rel = "noopener noreferrer";
+        docsLinkEl.textContent = "查看使用文档 →";
+        docsLinkEl.style.display = "inline-block";
+        docsLinkEl.style.marginTop = "8px";
+        docsLinkEl.style.color = "var(--dsw-alias-state-business-primary,#4f8cff)";
+        offlineHint.appendChild(hintTitle);
+        offlineHint.appendChild(hintCmd);
         offlineHint.appendChild(hintCode);
+        offlineHint.appendChild(hintRemote);
+        offlineHint.appendChild(docsLinkEl);
+
+        skillHint = document.createElement("div");
+        skillHint.className = "lclone-board-offline";
+        skillHint.style.display = "none";
+        const skillText = document.createElement("span");
+        skillText.textContent = "记忆 skill 未安装，自动记忆(读侧 bootstrap)不生效。请运行：";
+        const skillCode = document.createElement("code");
+        skillCode.textContent = "lclone integrate --target skill";
+        skillHint.appendChild(skillText);
+        skillHint.appendChild(skillCode);
 
         container.appendChild(bar);
         container.appendChild(offlineHint);
+        container.appendChild(skillHint);
         container.appendChild(iframe);
         column.appendChild(container);
       };
@@ -331,9 +363,17 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
           })
           .then((body) => {
             const online = body && body.ok === true;
+            const skillOk = body && body.skill !== false;
+            if (body && typeof body.webUrl === "string" && body.webUrl) DASHBOARD_URL = body.webUrl.replace(/\/+$/, "");
+            if (body && typeof body.docsUrl === "string" && body.docsUrl) DOCS_URL = body.docsUrl;
             statusDot.dataset.state = online ? "online" : "offline";
             if (offlineHint !== void 0) offlineHint.style.display = online ? "none" : "flex";
-            if (iframe !== void 0) iframe.style.display = online ? "block" : "none";
+            if (skillHint !== void 0) skillHint.style.display = skillOk ? "none" : "flex";
+            if (iframe !== void 0) {
+              iframe.style.display = online ? "block" : "none";
+              if (online && iframe.getAttribute("src") !== DASHBOARD_URL) iframe.src = DASHBOARD_URL;
+            }
+            if (docsLinkEl !== void 0) docsLinkEl.href = DOCS_URL;
           })
           .catch(() => {
             statusDot.dataset.state = "offline";
@@ -366,6 +406,8 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
         iframe = void 0;
         statusDot = void 0;
         offlineHint = void 0;
+        skillHint = void 0;
+        docsLinkEl = void 0;
       };
     }
 

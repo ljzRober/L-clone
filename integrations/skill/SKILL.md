@@ -46,6 +46,6 @@ description: |
 
 ## 数据库
 
-- 路径：`/Users/didi/github/L-clone/lclone.db`（BRAIN_DB_PATH，已在 mcporter 配置中固定）
-- 配置：`/Users/didi/github/L-clone/.env`（OPENAI_API_KEY / BRAIN_BASE_URL / BRAIN_CHAT_MODEL / BRAIN_EMBED_MODEL）
-- 项目源码：`/Users/didi/github/L-clone`（CLI 也可直接用 `python3 -m lclone <命令>`）
+- 路径：`<仓库根目录>/lclone.db`（BRAIN_DB_PATH，已在 mcporter 配置中固定；仓库迁移后改成实际绝对路径）
+- 配置：`<仓库根目录>/.env`（OPENAI_API_KEY / BRAIN_BASE_URL / BRAIN_CHAT_MODEL / BRAIN_EMBED_MODEL / BRAIN_EMBED_BACKEND）
+- 项目源码：`<仓库根目录>`（CLI 也可直接用 `python3 -m lclone <命令>`）

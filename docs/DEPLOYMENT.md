@@ -14,6 +14,16 @@
 
 ## Docker 部署
 
+**一键脚本(推荐)**:
+
+```bash
+# 服务器上:
+git clone <你的仓库> && cd L-clone
+./scripts/deploy_server.sh   # 交互生成 .env → docker compose up -d --build → 健康检查
+```
+
+**手动**:
+
 ```bash
 # 服务器上:
 git clone <你的仓库> && cd L-clone
@@ -33,7 +43,7 @@ Web 服务同时暴露 MCP 端点, Claude Code / Codex / DSH 等可远程读写�
 ```
 端点:   POST /mcp          (JSON-RPC over HTTP)
 鉴权:   Authorization: Bearer <LCLONE_API_KEY>   或   X-API-Key: <key>
-工具:   bootstrap / capture / recall / remember / promote / demote / suggest / projects / review / ask
+工具:   bootstrap / capture / recall / remember / promote / demote / suggest / organize / projects / review / ask
 ```
 
 配置示例(Claude Code 的 MCP server, 走 streamable-http):
@@ -71,4 +81,5 @@ lclone.yourdomain.com {
 
 - 浏览器: 任何设备打开 `https://你的域名` 即用(Web 面板)
 - 命令行: `ssh 服务器` 后执行 `lclone ask "..."` 等
-- AI 工具: 通过 MCP over HTTP(`POST /mcp`)让 Claude Code / Codex / DSH 直接读写大脑
+- AI 工具: 通过 MCP over HTTP(`POST /mcp`)让 Claude Code / Codex / DSH 直接读写大脑;
+  DSH 另有本地插件(`integrations/dsh`)在 Web GUI 注入「大脑看板」按钮

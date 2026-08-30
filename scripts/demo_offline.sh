@@ -17,15 +17,15 @@ python3 -m lclone proj add demo examples/demo_project --charter "示例项目"
 python3 -m lclone proj sync demo
 
 echo ""
-echo "=== 3. 主动记忆 (C: 你说算, 直接生效) ==="
+echo "=== 3. 主动记忆 (C: 决策默认进待确认) ==="
 python3 -m lclone remember "后端用 FastAPI, 边界: 单用户" --project demo
 
 echo ""
-echo "=== 4. 自动捕获 (B: 进草稿, 待确认) ==="
+echo "=== 4. 自动捕获 (dummy 后端: 记录直接生效) ==="
 python3 -m lclone capture "讨论后确定: 6月1日上线; 部署用 Docker Compose" --project demo
 
 echo ""
-echo "=== 5. 批量确认草稿 ==="
+echo "=== 5. 批量确认待确认决策 ==="
 python3 -m lclone review --all keep
 
 echo ""

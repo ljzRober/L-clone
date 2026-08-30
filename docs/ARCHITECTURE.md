@@ -8,21 +8,22 @@
 
 ```mermaid
 flowchart TB
-    subgraph 访问层["访问层 (任何设备 / 浏览器)"]
-        CLI["CLI 命令行<br/>lclone init / proj / remember / capture / ask / supervise"]
-        WEB["Web 面板<br/>FastAPI + 单页 HTML<br/>浏览器打开 http://服务器:8000"]
-        API["REST API<br/>/api/ask /api/capture /api/supervise ..."]
+    subgraph 访问层["访问层 (任何设备 / 浏览器 / AI 工具)"]
+        CLI["CLI 命令行<br/>init / proj / remember / capture / review / organize / ask / supervise"]
+        WEB["Web 面板<br/>记忆工作台(层级树+架构图) + 问答页<br/>FastAPI + 单页 HTML"]
+        API["REST API<br/>/api/ask /api/capture /api/organize /api/supervise ..."]
+        MCP["MCP 接口<br/>stdio + HTTP(/mcp)<br/>Claude Code / Codex / DSH 插件接入"]
     end
 
     subgraph 核心逻辑["核心逻辑 (纯函数, 与访问层解耦)"]
-        MEM["记忆模块<br/>remember(C) / capture(B) / review / recall"]
-        PROJ["项目模块<br/>proj add / sync / spec 格式无关索引"]
+        MEM["记忆模块<br/>remember(C) / capture(B) / review / recall / organize"]
+        PROJ["项目模块<br/>proj add / sync / 模块管理 / spec 格式无关索引"]
         CHAT["问答模块<br/>ask (回顾环)"]
         SUPE["监督模块<br/>supervise (规范环)"]
     end
 
     subgraph 存储层["存储层"]
-        DB[("SQLite lclone.db<br/>projects / sessions / memories<br/>specs_index / threads / messages<br/>memories_fts (全文索引)")]
+        DB[("SQLite lclone.db<br/>projects / sessions / memories / modules<br/>specs_index / threads / messages<br/>memory_links / recall_log / project_removals<br/>memories_fts (全文索引)")]
     end
 
     subgraph 模型层["模型层 (云端 API, 不本地部署)"]
@@ -42,6 +43,10 @@ flowchart TB
     API --> PROJ
     API --> CHAT
     API --> SUPE
+    MCP --> MEM
+    MCP --> PROJ
+    MCP --> CHAT
+    MCP --> SUPE
     MEM --> DB
     PROJ --> DB
     CHAT --> DB
@@ -63,8 +68,12 @@ erDiagram
     PROJECTS ||--o{ MEMORIES : "归档于"
     PROJECTS ||--o{ SPECS_INDEX : "索引于"
     PROJECTS ||--o{ THREADS : "对话关联"
+    PROJECTS ||--o{ MODULES : "声明模块"
+    PROJECTS ||--o{ PROJECT_REMOVALS : "墓碑登记"
     THREADS ||--o{ MESSAGES : "包含"
     MEMORIES ||--o| MEMORIES_FTS : "全文索引"
+    MEMORIES ||--o{ MEMORY_LINKS : "发出链接"
+    MEMORIES ||--o{ RECALL_LOG : "召回日志"
 
     PROJECTS {
         int id PK "项目命名空间"
@@ -80,6 +89,7 @@ erDiagram
         int project_id FK "NULL=个人区"
         text title
         text summary "一句话摘要"
+        text session_key "外部会话 id (note 逐轮聚合)"
         text started_at
         text ended_at
     }
@@ -88,6 +98,7 @@ erDiagram
         int id PK "L1 核心记忆"
         int project_id FK "NULL=个人区"
         text level "decision/note"
+        text module "项目内模块名 (仅决策; 空=项目层)"
         text content "记忆正文"
         text reason "为什么记"
         text status "pending草稿/active正式/archived归档"
@@ -95,7 +106,15 @@ erDiagram
         text source_ref "来源: 会话或 ADR 文件"
         blob embedding "向量"
         text created_at
-        text confirmed_at "B 确认制生效时间"
+        text confirmed_at "确认制生效时间"
+    }
+
+    MODULES {
+        int id PK "项目内模块词表"
+        int project_id FK
+        text name "归一化模块名"
+        blob centroid "模块质心向量 (增量聚类)"
+        text created_at
     }
 
     SPECS_INDEX {
@@ -123,6 +142,25 @@ erDiagram
         text created_at
     }
 
+    MEMORY_LINKS {
+        int id PK
+        int source_id FK "发出 [[m:N]] 链接的记忆"
+        int target_id FK "被链接的记忆"
+        text created_at
+    }
+
+    RECALL_LOG {
+        int id PK
+        int memory_id FK "被召回的记忆"
+        text recalled_at
+    }
+
+    PROJECT_REMOVALS {
+        int project_id PK "已移除(墓碑)项目"
+        text name
+        text removed_at
+    }
+
     MEMORIES_FTS {
         int rowid "= memories.id"
         text content
@@ -130,24 +168,28 @@ erDiagram
     }
 ```
 
-## 3. 记忆写入流程 (B 确认制 + C 主动触发)
+## 3. 记忆写入流程 (决策强确认: B/C 统一待确认)
 
 ```mermaid
 flowchart LR
     subgraph C["C 主动触发 (你说算)"]
-        C1["lclone remember 内容"] --> C2[("正式记忆 active<br/>立即生效")]
+        C1["lclone remember 内容"] --> C2{"level?"}
+        C2 -- "note" --> C3[("正式记忆 active<br/>立即生效")]
+        C2 -- "decision" --> C4[("草稿区 pending<br/>--confirmed 则直接 active")]
     end
-    subgraph B["B 自动捕获 (AI 提炼, 你确认)"]
-        B1["lclone capture 对话内容"] --> B2["LLM 提炼决策"]
-        B2 --> B3[("草稿区 pending")]
-        B3 --> B4{"你 review 每条草稿"}
-        B4 -- "保留" --> B5[("正式记忆 active")]
-        B4 -- "编辑" --> B6["修改内容"] --> B5
-        B4 -- "删除" --> B7["丢弃"]
+    subgraph B["B 自动捕获 (AI 提炼 + 代码准入过滤)"]
+        B1["lclone capture 对话内容"] --> B2["LLM 提炼决策/记录"]
+        B2 -- "note" --> B3[("正式记忆 active")]
+        B2 -- "decision" --> B4[("草稿区 pending")]
     end
-    B5 --> R["参与后续<br/>recall 回顾 / supervise 监督"]
-    C2 --> R
-    B5 -. 带来源引用 source_ref 可回溯 .-> B1
+    C4 --> R2{"你 review 每条草稿"}
+    B4 --> R2
+    R2 -- "保留/编辑" --> R3[("正式记忆 active")]
+    R2 -- "删除" --> R4["丢弃"]
+    C3 --> R["参与后续<br/>recall 回顾 / supervise 监督"]
+    B3 --> R
+    R3 --> R
+    B4 -. 带来源引用 source_ref 可回溯 .-> B1
 ```
 
 ## 4. 回顾环 (新会话想起过去)
@@ -199,7 +241,7 @@ flowchart LR
     end
     subgraph BRAIN["大脑 L-clone (记忆与监督)"]
         IDX["specs_index 格式无关索引"]
-        DEC["决策记忆 / 记录"]
+        DEC["决策记忆(挂模块) / 记录"]
         SES["会话流水"]
         CH["charter 大方向"]
     end

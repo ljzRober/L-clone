@@ -20,13 +20,19 @@
 
 import { spawn } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
 import { existsSync, appendFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 
 // 仓库根 (插件经 symlink 链入仓库, import.meta.url 是真实路径)
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const LOG_PATH = join(REPO, 'lclone-plugin.log')
+// 后端基址 + 文档链接 (可配置: LCLONE_WEB_URL / LCLONE_DOCS_URL, 默认本地 + GitHub)
+const WEB_URL = (process.env.LCLONE_WEB_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
+const DOCS_URL = process.env.LCLONE_DOCS_URL || 'https://github.com/ljzRober/L-clone'
+const WEB = new URL(WEB_URL)
 
 function log(msg) {
   try {
@@ -34,11 +40,16 @@ function log(msg) {
   } catch {}
 }
 
-// 解析 lclone 命令: LCLONE_CMD 优先; 否则定位仓库 .venv/bin/python -m lclone。
+// 解析 lclone 命令: LCLONE_CMD 优先; 否则定位仓库 .venv 里的 python -m lclone。
 function resolveLclone() {
   if (process.env.LCLONE_CMD) return process.env.LCLONE_CMD.trim().split(/\s+/)
-  const py = join(REPO, '.venv/bin/python')
-  if (existsSync(py)) return [py, '-m', 'lclone']
+  // Windows 用 Scripts/python.exe, 否则 bin/python; 都试一遍再退回 PATH 上的 lclone
+  const pys = process.platform === 'win32'
+    ? [join(REPO, '.venv', 'Scripts', 'python.exe'), join(REPO, '.venv', 'bin', 'python')]
+    : [join(REPO, '.venv', 'bin', 'python'), join(REPO, '.venv', 'Scripts', 'python.exe')]
+  for (const py of pys) {
+    if (existsSync(py)) return [py, '-m', 'lclone']
+  }
   return ['lclone']
 }
 
@@ -98,48 +109,24 @@ function runCapture(text, sessionKey, cwd, onDone) {
   child.unref()
 }
 
-// 健康检查: 探测 lclone Web 服务 (:8000) 存活, 供 client 端「大脑看板」按钮显示在线状态。
-// 若设置了 LCLONE_API_KEY 则带上凭证 (server-api spec: /api/* 需 Bearer 或 X-API-Key)。
-function probeLcloneHealth(onDone) {
+// 统一请求后端 (可配置 LCLONE_WEB_URL, 支持 http/https + LCLONE_API_KEY 鉴权)。
+function lcloneRequester(method, path, body, onDone) {
+  const mod = WEB.protocol === 'https:' ? httpsRequest : httpRequest
   const apiKey = process.env.LCLONE_API_KEY
-  const req = httpRequest(
-    { host: '127.0.0.1', port: 8000, path: '/api/health', method: 'GET', timeout: 2000,
-      headers: apiKey ? { 'X-API-Key': apiKey } : {} },
-    (res) => {
-      let body = ''
-      res.on('data', (d) => { body += d.toString() })
-      res.on('end', () => {
-        let ok = false
-        try { ok = JSON.parse(body).ok === true } catch (e) {}
-        onDone(ok)
-      })
-    },
-  )
-  req.on('timeout', () => { req.destroy(); onDone(false) })
-  req.on('error', () => onDone(false))
-  req.end()
-}
-
-// 读 HTTP 请求体 (POST body), 供 /api/lclone-review 用。
-function readBody(request, cb) {
-  let data = ''
-  request.on('data', (d) => { data += d.toString() })
-  request.on('end', () => cb(data))
-  request.on('error', () => cb(''))
-}
-
-// 代理到 lclone Web (:8000)。带 LCLONE_API_KEY 鉴权; 与健康探测同源, 避免客户端跨域。
-function lcloneFetch(method, path, body, onDone) {
-  const apiKey = process.env.LCLONE_API_KEY
-  const payload = body ? JSON.stringify(body) : null
   const headers = {}
   if (apiKey) headers['X-API-Key'] = apiKey
-  if (payload) {
+  let payload = null
+  if (body !== null && body !== undefined) {
+    payload = JSON.stringify(body)
     headers['Content-Type'] = 'application/json'
     headers['Content-Length'] = Buffer.byteLength(payload)
   }
-  const req = httpRequest(
-    { host: '127.0.0.1', port: 8000, path, method, timeout: 3000, headers },
+  const req = mod(
+    {
+      hostname: WEB.hostname,
+      port: WEB.port ? Number(WEB.port) : (WEB.protocol === 'https:' ? 443 : 80),
+      path, method, timeout: 3000, headers,
+    },
     (res) => {
       let data = ''
       res.on('data', (d) => { data += d.toString() })
@@ -154,6 +141,30 @@ function lcloneFetch(method, path, body, onDone) {
   req.on('error', () => onDone(false, null))
   if (payload) req.write(payload)
   req.end()
+}
+
+// 健康检查: 探测后端存活, 供 client 端「大脑看板」按钮显示在线状态。
+function probeLcloneHealth(onDone) {
+  lcloneRequester('GET', '/api/health', null, (ok, json) => onDone(ok && json && json.ok === true))
+}
+
+// 读 HTTP 请求体 (POST body), 供 /api/lclone-review 用。
+function readBody(request, cb) {
+  let data = ''
+  request.on('data', (d) => { data += d.toString() })
+  request.on('end', () => cb(data))
+  request.on('error', () => cb(''))
+}
+
+// 代理到后端。带 LCLONE_API_KEY 鉴权; 与健康探测同源, 避免客户端跨域。
+function lcloneFetch(method, path, body, onDone) {
+  lcloneRequester(method, path, body, onDone)
+}
+
+// skill 安装路径 (与 lclone integrate 一致: ~/.agents/skills/lclone-memory/SKILL.md)
+function skillPath() {
+  const home = process.env.LCLONE_HOME || homedir()
+  return join(home, '.agents', 'skills', 'lclone-memory', 'SKILL.md')
 }
 
 export const name = 'lclone-memory'
@@ -183,7 +194,7 @@ export function apply(ctx) {
             }
             probeLcloneHealth((ok) => {
               response.writeHead(200, { 'content-type': 'application/json' })
-              response.end(JSON.stringify({ ok }))
+              response.end(JSON.stringify({ ok, skill: existsSync(skillPath()), webUrl: WEB_URL, docsUrl: DOCS_URL }))
             })
           },
         })
