@@ -72,7 +72,7 @@ def _unattributed_msg() -> str:
 TOOLS = [
     {
         "name": "remember",
-        "description": "主动记忆: 写入一条已确认的洞察/边界/事实。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册(名=仓库basename); 无 git 仓库时返回「⚠️未归属」信号, 需先问用户(新建项目 or project=global)。level=insight 时默认进待确认(pending), 除非用户当场已确认该洞察(此时传 confirmed=true); level=note 恒直接生效。",
+        "description": "主动记忆: 写入一条已确认的洞察/边界/事实。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册(名=仓库basename); 无 git 仓库时返回「⚠️未归属」信号, 需先问用户(新建项目 or project=global)。level 恒为 insight, 默认进待确认(pending), 除非用户当场已确认该洞察(此时传 confirmed=true)。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -81,8 +81,8 @@ TOOLS = [
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
-                "level": {"type": "string", "enum": ["insight", "note"],
-                          "description": "默认 insight"},
+                "level": {"type": "string", "enum": ["insight"],
+                          "description": "恒为 insight"},
                 "confirmed": {"type": "boolean",
                               "description": "insight 是否已当场经用户确认 (true=直接生效, false/缺省=进待确认)"},
             },
@@ -91,7 +91,7 @@ TOOLS = [
     },
     {
         "name": "capture",
-        "description": "自动捕获: 把一段对话/工作内容提炼成洞察/记录。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册; 无 git 仓库时返回「⚠️未归属」信号, 需先问用户。洞察(insight)进待确认, 记录(note)直接生效; 返回结构化结果(区分洞察/记录), 洞察需立刻向用户逐条确认。",
+        "description": "自动捕获: 把一段对话/工作内容提炼成洞察。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册; 无 git 仓库时返回「⚠️未归属」信号, 需先问用户。洞察(insight)进待确认, 需立刻向用户逐条确认。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -101,7 +101,7 @@ TOOLS = [
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
-                "session_key": {"type": "string", "description": "外部会话 id; 缺省自动取 DSH_SESSION_ID, 同一会话只建一条 note 并逐轮追加"},
+                "session_key": {"type": "string", "description": "外部会话 id (记录聚合会话流水用)"},
             },
             "required": ["text"],
         },
@@ -189,8 +189,53 @@ TOOLS = [
     },
     {
         "name": "organize",
-        "description": "整理: LLM 把语义相近的记忆合并成一条综合描述 (不能跨项目/等级/模块), 一键执行",
+        "description": "整理: LLM 把语义相近的记忆合并成一条综合描述 (不能跨项目/等级), 一键执行",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "evolution_add",
+        "description": "沉淀一个进化资产 (可复用脚本/工具, 实践中生成, 改脚本时用 evolution_update 同步)。content=项目无关的脚本/工具内容(存记忆库); ref=项目内脚本路径(内容留仓库, 只留引用)。可传 insight 列表建立 insight→evolution 链接。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "脚本/工具名"},
+                "kind": {"type": "string", "enum": ["script", "tool", "command", "other"],
+                         "description": "默认 script"},
+                "content": {"type": "string", "description": "项目无关的脚本/工具内容 (存记忆库本体)"},
+                "ref": {"type": "string", "description": "项目内脚本路径 (内容留仓库, 只留引用)"},
+                "reason": {"type": "string", "description": "为什么沉淀"},
+                "insight": {"type": "array", "items": {"type": "integer"},
+                            "description": "支撑此资产的 insight id 列表 (可多个)"},
+                "project": {"type": "string", "description": "项目名/id/global; 不传按 cwd git 自动判定"},
+                "cwd": {"type": "string", "description": "工作目录 (git 归属判定用)"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "evolution_list",
+        "description": "列出进化资产 (可复用脚本/工具), 支持按项目/状态过滤",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "项目名/id/global"},
+                "status": {"type": "string", "description": "active | stable"},
+            },
+        },
+    },
+    {
+        "name": "evolution_update",
+        "description": "同步一个进化资产到最新版本 (脚本被改时调用, 只更新给到的字段)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "evolution id"},
+                "content": {"type": "string", "description": "最新脚本/工具内容"},
+                "ref": {"type": "string", "description": "最新路径"},
+                "status": {"type": "string", "description": "active(在用) | stable(暂不再修改)"},
+            },
+            "required": ["id"],
+        },
     },
 ]
 
@@ -241,10 +286,7 @@ def call_tool(name: str, args: dict) -> str:
                 % ",".join("?" * len(ids)), ids
             ).fetchall()
             decisions = [r for r in rows if r["level"] == "insight"]
-            notes = [r for r in rows if r["level"] == "note"]
             lines = [f"已捕获 {len(ids)} 条记忆 [{where}]:"]
-            if notes:
-                lines.append("记录(已生效): " + ", ".join(f"#{r['id']}" for r in notes))
             if decisions:
                 lines.append("洞察(待确认): " + ", ".join(
                     f"#{r['id']} {r['content'][:40]}" for r in decisions))
@@ -266,6 +308,37 @@ def call_tool(name: str, args: dict) -> str:
             res = mem_mod.organize(conn)
             return (f"整理完成: 合并 {res['merged']} 组, "
                     f"删除 {res['removed']} 条冗余记忆")
+        if name == "evolution_add":
+            pid = _resolve_project(conn, args.get("project"))
+            if pid is None and not args.get("project"):
+                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
+                if status == "no_git":
+                    return _unattributed_msg()
+            if not (args.get("content") or args.get("ref")):
+                return "错误: evolution 需要有 --content (项目无关内容) 或 --ref (项目内路径)"
+            eid = mem_mod.create_evolution(
+                conn, name=args.get("name", ""), kind=args.get("kind", "script"),
+                content=args.get("content", ""), ref=args.get("ref", ""),
+                reason=args.get("reason", ""), project_id=pid)
+            for iid in (args.get("insight") or []):
+                mem_mod.link_insight_to_evolution(conn, int(iid), eid)
+            return f"已沉淀进化资产 #{eid} [{'全局层' if pid is None else f'项目 #{pid}'}] {args.get('name')}"
+        if name == "evolution_list":
+            pid = _resolve_project(conn, args.get("project"))
+            items = mem_mod.list_evolutions(conn, project_id=pid, status=args.get("status"))
+            if not items:
+                return "(暂无进化资产)"
+            return "\n".join(
+                f"#{e['id']} [{e.get('project_name') or '全局层'}] [{e['kind']}{('/'+e['status']) if e['status']!='active' else ''}] "
+                f"{e['name']}  {((e['content'] or e['ref']) or '')[:60]}"
+                for e in items
+            )
+        if name == "evolution_update":
+            eid = int(args["id"])
+            mem_mod.update_evolution(
+                conn, eid, content=args.get("content"), ref=args.get("ref"),
+                status=args.get("status"))
+            return f"进化资产 #{eid} 已同步"
         if name == "promote":
             mem_mod.promote(conn, int(args["id"]))
             return f"记忆 #{args['id']} 已上升至全局层 (生命周期无限, 多项目共读)"

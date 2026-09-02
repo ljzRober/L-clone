@@ -63,11 +63,12 @@ row = conn.execute(
 ).fetchone()
 check("6 主动记忆 confirmed 直接生效", row["status"] == "active" and row["source_type"] == "manual")
 
-# ---- B 自动捕获: 记录直接生效, 洞察进草稿待确认 ----
-ids_note = mem_mod.capture(conn, "一条过程性记录, 无需确认", project_id=pid)
-row = conn.execute("SELECT status FROM memories WHERE id=?",
-                   (ids_note[0],)).fetchone()
-check("7 capture note 直接 active", row["status"] == "active", str(row["status"]))
+# ---- B 自动捕获: 只产出 insight, 进草稿待确认 (note 通道已废弃) ----
+ids_cap = mem_mod.capture(conn, "一条过程性记录, 无需确认", project_id=pid)
+row = conn.execute("SELECT level, status FROM memories WHERE id=?",
+                   (ids_cap[0],)).fetchone()
+check("7 capture 只产出 insight(待确认)",
+      row["level"] == "insight" and row["status"] == "pending", str(dict(row)))
 
 # 模拟分类器返回 decision → 应进 pending 待确认
 import lclone.llm as llm_mod
@@ -103,7 +104,7 @@ check("14 问答有回复", len(res["answer"]) > 0)
 check("15 线程 id", len(res["thread_id"]) == 32)
 
 # ---- 个人区 (project_id=NULL) ----
-mem_mod.remember(conn, "我的原则: 先跑通再优化", level="note")
+mem_mod.remember(conn, "我的原则: 先跑通再优化", level="insight", confirmed=True)
 items_p = mem_mod.recall(conn, "跑通")
 check("16 个人区召回", len(items_p) >= 1,
       str([i["content"][:10] for i in items_p]))
@@ -171,9 +172,9 @@ except ValueError:
     check("30 demote 目标项目不存在报错", True)
 
 # ---- 记忆链接 [[m:N]] ----
-m_global = mem_mod.remember(conn, "健身打卡: 每周三晚跑步", level="note")
+m_global = mem_mod.remember(conn, "健身打卡: 每周三晚跑步", level="insight", confirmed=True)
 m_link = mem_mod.remember(conn, f"链接测试内容 见 [[m:{m_global}]]",
-                          level="note", project_id=pid)
+                          level="insight", confirmed=True, project_id=pid)
 links = conn.execute(
     "SELECT target_id FROM memory_links WHERE source_id=?", (m_link,)
 ).fetchall()
@@ -191,8 +192,8 @@ check("33 --no-follow 不跟随链接",
       str([i["id"] for i in items_nf]))
 
 # ---- 删除提示 suggest ----
-dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
-dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
+dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="insight", confirmed=True)
+dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="insight", confirmed=True)
 # note 现在直接 active, 造一条 pending 洞察草稿来测"长期未确认"
 _orig_extract2 = llm_mod.extract_memories
 llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "insight",
@@ -204,7 +205,7 @@ stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
 conn.execute("UPDATE memories SET created_at=datetime('now','-30 days')"
              " WHERE id=?", (stale,))
 conn.commit()
-unused = mem_mod.remember(conn, "从未被召回过的新记忆", level="note")
+unused = mem_mod.remember(conn, "从未被召回过的新记忆", level="insight", confirmed=True)
 sug = mem_mod.suggest(conn, stale_days=7, unused_days=30)
 sug_ids = {s["id"] for s in sug}
 check("34 suggest 发现重复", dup_a in sug_ids and dup_b in sug_ids,
@@ -260,7 +261,7 @@ with contextlib.redirect_stdout(buf):
 check("47 CLI proj restore", "复活" in buf.getvalue())
 
 # ---- 删除回归: FTS 触发器修复 (删除记忆不报 SQL logic error) ----
-del_target = mem_mod.remember(conn, "待删除的回归测试记忆", level="note")
+del_target = mem_mod.remember(conn, "待删除的回归测试记忆", level="insight", confirmed=True)
 mem_mod.review(conn, del_target, "delete")
 check("48 删除记忆成功 (FTS 触发器修复)",
       conn.execute("SELECT COUNT(*) c FROM memories WHERE id=?",
@@ -269,22 +270,23 @@ check("49 删除后 FTS 同步清理",
       conn.execute("SELECT COUNT(*) c FROM memories_fts WHERE rowid=?",
                    (del_target,)).fetchone()["c"] == 0)
 
-# ---- 等级收窄: 只留 decision/note + 分类器补 note 写路径 ----
+# ---- 等级收窄: 只留 insight; 分类器只产出 insight (note 通道废弃) ----
 from lclone import llm as llm_mod
 check("50 LEVELS 不含 milestone",
       "milestone" not in mem_mod.LEVELS, str(mem_mod.LEVELS))
-check("51 LEVELS 只含 decision/note",
-      set(mem_mod.LEVELS) == {"note", "insight"}, str(mem_mod.LEVELS))
+check("51 LEVELS 只含 insight",
+      set(mem_mod.LEVELS) == {"insight"}, str(mem_mod.LEVELS))
 mem_items = llm_mod.extract_memories("确定用 SQLite; 顺带记下: 明天补测试")
 check("52 extract_memories 返回结构化条目",
       isinstance(mem_items, list) and mem_items
       and all("level" in m and "content" in m for m in mem_items), str(mem_items))
-check("53 dummy 后端分类为 note",
-      mem_items and mem_items[0]["level"] == "note", str(mem_items))
+check("53 dummy 后端分类为 insight",
+      mem_items and mem_items[0]["level"] == "insight", str(mem_items))
 cap_ids = mem_mod.capture(conn, "一条值得记的过程性事实", project_id=pid)
 cap_levels = [conn.execute("SELECT level FROM memories WHERE id=?",
                            (i,)).fetchone()["level"] for i in cap_ids]
-check("54 capture 产出 note 草稿", "note" in cap_levels, str(cap_levels))
+check("54 capture 只产出 insight", "insight" in cap_levels and "note" not in cap_levels,
+      str(cap_levels))
 
 # ---- bootstrap 会话引导 (CLI + 共享函数) ----
 bs = mem_mod.bootstrap(conn, query="数据库", project_id=pid, k=3)
@@ -355,29 +357,28 @@ check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
 bpath = db_mod.backup(db_path=dbp, dest_dir=os.path.join(tmp, "bak"))
 check("75 backup 生成快照", os.path.exists(bpath) and bpath.endswith(".db"))
 
-# ---- 记录聚合: 同一 session_key 只一条 note, 逐轮追加 ----
-c1 = mem_mod.capture(conn, "聚合测试事实A", project_id=pid, session_key="agg1")
-c2 = mem_mod.capture(conn, "聚合测试事实B", project_id=pid, session_key="agg1")
-check("76 同 session 追加到同一 note", bool(c1) and bool(c2) and c1[0] == c2[0],
-      f"{c1} vs {c2}")
-note = conn.execute("SELECT content FROM memories WHERE id=?", (c1[0],)).fetchone()
-check("77 note 内容累计", "事实A" in note["content"] and "事实B" in note["content"],
-      note["content"][:60])
-c3 = mem_mod.capture(conn, "聚合测试事实C", project_id=pid, session_key="agg2")
-check("78 新 session_key 新 note", bool(c3) and c3[0] != c1[0], f"{c3} vs {c1}")
-
-# ---- note 滚动压缩: 超长时摘要 ----
-summ = llm_mod.summarize("长" * 500, max_chars=100)
-check("79 summarize 截断到上限", len(summ) == 100, str(len(summ)))
-_orig_sum = llm_mod.summarize
-llm_mod.summarize = lambda t, max_chars=400: "压缩摘要"
-c4 = mem_mod.capture(conn, "压缩事实D", project_id=pid, session_key="agg3",
-                     note_compact_threshold=5)
-c5 = mem_mod.capture(conn, "压缩事实E", project_id=pid, session_key="agg3",
-                     note_compact_threshold=5)
-llm_mod.summarize = _orig_sum
-note3 = conn.execute("SELECT content FROM memories WHERE id=?", (c4[0],)).fetchone()
-check("80 超长 note 触发压缩", note3["content"] == "压缩摘要", note3["content"])
+# ---- evolution 进化资产: 沉淀脚本/工具 + insight→evolution 链接 ----
+ev = mem_mod.create_evolution(
+    conn, name="build-spec-map", kind="script",
+    content="bash <sp-spec>/scripts/build-spec-map.sh --repo-root \"$PWD\"",
+    reason="构建 L1 spec 地图, 常驻会话作索引", project_id=pid)
+check("76 create_evolution 落库", ev > 0 and mem_mod.list_evolutions(conn, project_id=pid))
+_ins = mem_mod.remember(conn, "L1 地图用脚本构建, 避免全量读 spec 撑爆上下文",
+                        level="insight", project_id=pid, confirmed=True)
+mem_mod.link_insight_to_evolution(conn, _ins, ev)
+evos = mem_mod.evolutions_for_insight(conn, _ins)
+check("77 insight→evolution 链接", any(e["id"] == ev for e in evos),
+      str([e["id"] for e in evos]))
+ins = mem_mod.insights_for_evolution(conn, ev)
+check("78 evolution 反向取 insight", any(i["id"] == _ins for i in ins),
+      str([i["id"] for i in ins]))
+mem_mod.update_evolution(conn, ev, status="stable", ref="scripts/build-spec-map.sh")
+ev_row = conn.execute("SELECT status, ref FROM evolutions WHERE id=?", (ev,)).fetchone()
+check("79 update_evolution 同步(改脚本)", ev_row["status"] == "stable"
+      and "build-spec-map" in ev_row["ref"], str(dict(ev_row)))
+ev2 = mem_mod.create_evolution(conn, name="gen-tool", kind="tool", content="通用小工具",
+                               project_id=None)
+check("79b 项目无关 evolution content 存库", ev2 > 0)
 
 # ---- 归属判定代码强制 (git 自动注册 / fail-closed) ----
 st, pid_l = proj_mod.resolve_project(conn, cwd=str(ROOT))
@@ -410,19 +411,18 @@ llm_mod.extract_memories = _orig3
 rows_mod = {r["level"] for r in conn.execute(
     "SELECT level FROM memories WHERE id IN (%s)"
     % ",".join("?" * len(ids_mod)), ids_mod)}
-check("86 capture 分类 note/decision (无 module)", rows_mod == {"note", "insight"},
-      f"{rows_mod}")
+check("86 capture 只产出 insight (note 被过滤)", rows_mod == {"insight"}, f"{rows_mod}")
 conn.commit()
 
 # ---- 记忆准入条件 (代码强制过滤) ----
 _f = mem_mod._filter_item
 check("88 做了什么(修复)被排除",
       _f({"level": "insight", "content": "修复了分页 bug"}) is None)
-check("89 洞察无信号降级为 note",
-      _f({"level": "insight", "content": "Web 面板分页每行三个"})["level"] == "note")
+check("89 洞察无信号仍保留为 insight",
+      _f({"level": "insight", "content": "Web 面板分页每行三个"})["level"] == "insight")
 check("90 洞察含信号保留",
       _f({"level": "insight", "content": "决定了 Web 面板分页每行三个"})["level"] == "insight")
-check("91 琐碎 note 丢弃", _f({"level": "note", "content": "嗯"}) is None)
+check("91 琐碎内容丢弃", _f({"level": "insight", "content": "嗯"}) is None)
 conn.commit()
 
 # ---- Web 冒烟 (fastapi 可选) ----
@@ -435,42 +435,25 @@ try:
 except ImportError:
     print("SKIP 24 Web (fastapi 未安装, 装依赖后自动启用)")
 
-# ---- 记录严格按会话聚合: 同一会话项目归属变化仍只一条 note (不拆全局/项目) ----
-cn1 = mem_mod.capture(conn, "归属段A", project_id=None, session_key="split1")
-_sr = conn.execute("SELECT source_ref FROM memories WHERE id=?",
-                   (cn1[0],)).fetchone()["source_ref"]
-cn2 = mem_mod.capture(conn, "归属段B", project_id=pid, session_key="split1")
-_cnt = conn.execute(
-    "SELECT COUNT(*) c FROM memories WHERE level='note' AND status='active'"
-    " AND source_ref=?", (_sr,)).fetchone()["c"]
-_note = conn.execute("SELECT project_id, content FROM memories WHERE id=?",
-                     (cn1[0],)).fetchone()
-check("94 同会话项目变化仍一条 note",
-      cn1[0] == cn2[0] and _cnt == 1, f"cn1={cn1} cn2={cn2} cnt={_cnt}")
-check("95 note 跟随当前归属落到项目", _note["project_id"] == pid,
-      f"project_id={_note['project_id']}")
-check("96 note 内容累计两段", "归属段A" in _note["content"] and "归属段B" in _note["content"],
-      _note["content"][:40])
-
-# ---- organize 通道一(确定性): 同一会话多条 note(不同归属) -> 合并成一条 ----
-a1 = mem_mod.remember(conn, "同会话A", level="note", project_id=None,
-                      source_ref="session:9901")
-a2 = mem_mod.remember(conn, "同会话B", level="note", project_id=pid,
-                      source_ref="session:9901")
-_res = mem_mod.organize(conn)
-_cnt = conn.execute(
-    "SELECT COUNT(*) c FROM memories WHERE level='note' AND status='active'"
-    " AND source_ref='session:9901'").fetchone()["c"]
-_keep = conn.execute(
-    "SELECT id, project_id, content FROM memories"
-    " WHERE level='note' AND status='active' AND source_ref='session:9901'"
-).fetchone()
-check("97 organize 合并同会话 note", _cnt == 1 and a1 == _keep["id"],
-      f"cnt={_cnt} a1={a1} a2={a2}")
-check("98 合并后归属落到项目", _keep["project_id"] == pid,
-      f"pid={_keep['project_id']}")
-check("99 合并后内容累计", "同会话A" in _keep["content"] and "同会话B" in _keep["content"],
-      _keep["content"][:40])
+# ---- recall 跟随 insight→evolution 边 (命中洞察带出进化资产) ----
+_ev_recall = mem_mod.remember(conn, "实践中沉淀的 build-spec-map 工具用于构建 spec 地图索引",
+                              level="insight", project_id=pid, confirmed=True)
+_li = mem_mod.recall(conn, "构建 spec 地图", project_id=pid, k=5, follow_links=True)
+check("94 recall 命中相关洞察", any(i["id"] == _ev_recall for i in _li),
+      str([i["id"] for i in _li]))
+_check_evo = any(i.get("via_evolution") for i in _li)
+check("95 recall 顺边带出 evolution", _check_evo,
+      str([(i["id"], i.get("via_evolution")) for i in _li]))
+cli_buf = io.StringIO()
+with contextlib.redirect_stdout(cli_buf):
+    cli.main(["evolution", "list", "--db", dbp])
+check("96 CLI evolution list", "build-spec-map" in cli_buf.getvalue(),
+      cli_buf.getvalue()[:80])
+cli_buf = io.StringIO()
+with contextlib.redirect_stdout(cli_buf):
+    cli.main(["evolution", "add", "gen-tool2", "--content", "通用小工具B", "--db", dbp])
+check("97 CLI evolution add", "已沉淀进化资产" in cli_buf.getvalue(),
+      cli_buf.getvalue()[:80])
 
 print()
 if fails:

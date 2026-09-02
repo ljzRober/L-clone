@@ -114,13 +114,12 @@ def chat_json(prompt: str, temperature: float = 0.2):
 
 
 def extract_memories(text: str) -> List[dict]:
-    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 insight / note。
+    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 只产出 insight。
 
-    返回 [{"level": "insight"|"note", "content": str, "confidence": float}]。
+    返回 [{"level": "insight", "content": str, "confidence": float}]。
 
     insight = 一条原子化、自包含、内容丰富的知识/见解/教训——一个决定 / 一条经验 /
-    一个观察 / 一条复盘, 每条自带精简背景/推理/后果 (约 2-4 句), 不是逐字记录, 也不是一行;
-    note = 值得记的过程性事实/观察/灵感 (轻量, 免确认)。
+    一个观察 / 一条复盘, 每条自带精简背景/推理/后果 (约 2-4 句), 不是逐字记录, 也不是一行。
 
     自筛: 代码层级的改变/特定逻辑行为变化/需求场景边界变化/重构/修 bug/接口变化 一律不输出
     (归 sp-spec 和 git); 能改写成带 WHEN/THEN requirement 的「系统必须满足的契约」也归 spec。
@@ -129,22 +128,21 @@ def extract_memories(text: str) -> List[dict]:
     归属: 若某 insight 明确对应仓库内某具体 spec/文件, 项目级记忆可标注 [[spec:id]]/[[src:path]];
     全局级记忆无仓库上下文, 一律不标注此类链接 (只有 [[m:N]] 跨记忆链接)。
 
-    dummy 后端: 整段视为一条 note, 保证离线流程可跑通。
+    dummy 后端: 整段视为一条 insight, 保证离线流程可跑通。
     """
     if backend() == "dummy":
         t = text.strip()
-        return [{"level": "note", "content": t[:300],
+        return [{"level": "insight", "content": t[:300],
                  "confidence": 1.0}] if t else []
     prompt = (
         "你是一个记忆提炼器。把输入里的「洞察/知识」提炼成一条条 insight 卡片, 而不是流水账。\n"
         "insight = 一条原子化、自包含的知识/见解/教训: 每一个条目是一件事\n"
         "(一个决定 / 一条经验 / 一个观察 / 一条复盘), 每条约 2-4 句, 自带「背景/是什么/影响」\n"
         "(为什么这么定、影响是什么、以后注意什么), 让人能独立读懂。\n"
-        "不要逐字转录对话/代码 (那是 note 或 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
+        "不要逐字转录对话/代码 (那是 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
         "只提炼真正值得跨会话记住的; 宁可少提甚至不提; 没有就输出空。\n"
-        "输出格式: 每条一行 `insight: <内容>`, 或 `note: <轻量过程事实>`。\n"
+        "输出格式: 每条一行 `insight: <内容>`。\n"
         "示例: insight: 无 git 仓库时不静默落全局, 要先问用户归属, 因为这会影响后续召回范围\n"
-        "示例: note: 六月初上线\n"
         "边界: 描述「做了什么」(代码改动/接口变化/重构/修 bug/新增端点) 一律不提炼 (归 git/spec);\n"
         "能写成带 WHEN/THEN 的 requirement 的契约也不提炼 (那是 spec)。\n"
         "若某条 insight 明确对应仓库内某具体 spec/文件, 可在末尾标 [[spec:名字]] 或 [[src:路径]];\n"
@@ -158,17 +156,14 @@ def extract_memories(text: str) -> List[dict]:
         line = line.strip().strip("-•*").strip()
         if not line or len(line) <= 3:
             continue
-        level = "note"
         body = line
         m = re.match(r"^(insight|note)\s*[:：]\s*(.+)$",
                      line, re.IGNORECASE)
         if m:
-            level = m.group(1).lower()
             body = m.group(2).strip()
         else:
             m2 = re.match(r"^(insight|note)\b\s*(.*)$", line, re.IGNORECASE)
             if m2:
-                level = m2.group(1).lower()
                 body = m2.group(2).strip(" :：").strip()
         if body:
             # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
@@ -176,7 +171,7 @@ def extract_memories(text: str) -> List[dict]:
                    ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
                     "没有可提炼", "无内容", "无相关", "暂无")):
                 continue
-            out.append({"level": level, "content": body, "confidence": 0.9})
+            out.append({"level": "insight", "content": body, "confidence": 0.9})
     return out
 
 

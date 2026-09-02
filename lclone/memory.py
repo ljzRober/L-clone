@@ -22,25 +22,14 @@ from . import db as db_mod
 from . import llm
 from .db import pack_vec, unpack_vec
 
-LEVELS = ("note", "insight")
-
-# note 超长时的滚动压缩阈值: 超过这个长度, 把整条 note 摘要一次
-NOTE_COMPACT_THRESHOLD = 3000
+LEVELS = ("insight",)
 
 # ---- 记忆准入条件 (代码强制, 不依赖模型意图) ----
-# 1. 排除「做了什么」: 代码改动/接口/重构/bug 归 git & spec, 不进 lclone 记忆
+# 排除「做了什么」: 代码改动/接口/重构/bug 归 git & spec, 不进 lclone 记忆
 DID_MARKERS = (
     "修复", "重构", "迁移", "回滚", "commit", "fix", "bug", "hotfix",
     "refactor", "新增端点", "改接口", "实现了一个",
 )
-# 2. 洞察信号: level=decision 的内容必须含其一, 否则降级为 note (不是真洞察)
-INSIGHT_SIGNALS = (
-    "决定", "确定", "定为", "采用", "选择", "方案", "边界", "规则", "约定", "改为",
-    "统一", "规范", "策略", "命名", "职责", "归属", "分层", "架构", "选型",
-    "原则", "约束", "标准", "阈值", "默认", "必须", "只允许", "不再", "定义",
-)
-# 3. note 过短视为琐碎, 不记忆 (仅拦空壳/单字噪音)
-NOTE_MIN_LEN = 4
 
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
@@ -162,41 +151,28 @@ def _has_marker(text: str, markers) -> bool:
 def _filter_item(item: dict) -> Optional[dict]:
     """记忆准入条件 (代码强制): 在 LLM 提炼之后、落库之前做确定性过滤。
 
-    返回过滤后的 item (可能改 level); None 表示不记忆。
+    返回过滤后的 item (固定 level=insight); None 表示不记忆。
     1. 排除「做了什么」: 命中 DID_MARKERS (代码改动/接口/重构/bug) → 归 git & spec。
-    2. 洞察信号: level=decision 但内容不含 INSIGHT_SIGNALS → 降级为 note。
-    3. 琐碎: note 过短 (< NOTE_MIN_LEN) → 丢弃。
+    2. 内容过短(< 4 字)视为琐碎 → 丢弃 (仅拦空壳/单字噪音)。
     """
     content = (item.get("content") or "").strip()
     if not content:
         return None
     if _has_marker(content, DID_MARKERS):
         return None
-    level = item.get("level") if item.get("level") in LEVELS else "note"
-    item = dict(item, level=level)
-    if level == "insight" and not _has_marker(content, INSIGHT_SIGNALS):
-        item["level"] = "note"
-    if item["level"] == "note" and len(content) < NOTE_MIN_LEN:
+    if len(content) < 4:
         return None
-    return item
+    return dict(item, level="insight")
 
 
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
-            session_key: str = "",
-            note_compact_threshold: int = NOTE_COMPACT_THRESHOLD) -> List[int]:
-    """自动捕获: LLM 提炼洞察/记录。
+            session_key: str = "") -> List[int]:
+    """自动捕获: LLM 提炼洞察 (insight)。note 通道已废弃, 由 evolution 承接。
 
-    洞察(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
-    记录(note) → active 直接生效 (低风险过程性事实, 免确认)。
-
-    聚合: session_key 默认从环境变量 DSH_SESSION_ID 取 (代码确定性, 不靠调用方传);
-    同一个 session_key 只建一条 note, 每轮往这条 note 追加内容
-    (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入洞察前去重。
-    记录严格按「会话」聚合: 即使会话中途项目归属变化, 也只往同一条 note 追加,
-    不按 project_id 拆成多条 (避免同一会话被拆成全局+项目两条 note)。
-    note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
-    准入: 每条内容先过 _filter_item (排除「做了什么」/ 洞察需含信号 / note 不过短)。
+    洞察(insight) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效)。
+    准入: 每条内容先过 _filter_item (排除「做了什么」/ 过短琐碎)。
+    不再每轮无条件记录原始文本 (note-append 已废弃); 提炼为空则本条不落库。
     """
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
@@ -204,7 +180,6 @@ def capture(conn: sqlite3.Connection, text: str,
     reason = f"来自会话 #{session_id}"
     ref = f"session:{session_id}"
     ids = []
-    # ---- 通道一: 洞察(decision) 由 LLM 提炼 → 进草稿待确认 ----
     for raw in items or []:
         if (raw.get("level") or "").lower() != "insight":
             continue
@@ -226,43 +201,6 @@ def capture(conn: sqlite3.Connection, text: str,
         )
         _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
-    # ---- 通道二: 记录(note) 直接记录本轮原始内容 → active + 每轮追加 + 超长压缩 ----
-    # 记录严格按「会话」聚合: 同一 session 只建一条 note, 按 source_ref 找已有 note,
-    # 不看 project_id —— 避免同一会话因项目归属中途变化被拆成全局+项目两条 note。
-    note_text = (text or "").strip()
-    if note_text:
-        note_level = "note"
-        existing = conn.execute(
-            "SELECT id, content, project_id FROM memories"
-            " WHERE level='note' AND status='active' AND source_ref=?"
-            " ORDER BY id LIMIT 1",
-            (ref,),
-        ).fetchone()
-        if existing:
-            new_content = (existing["content"] + "\n" + note_text).strip()
-            if len(new_content) > note_compact_threshold:
-                new_content = llm.summarize(new_content)
-            new_emb = llm.embed_one(new_content)
-            # note 跟随会话当前归属: 一旦解析出项目就落到该项目, 否则保持原归属
-            conn.execute(
-                "UPDATE memories SET content=?, embedding=?,"
-                " project_id=CASE WHEN ? IS NOT NULL THEN ? ELSE project_id END"
-                " WHERE id=?",
-                (new_content, pack_vec(new_emb), project_id, project_id, existing["id"]),
-            )
-            _store_links(conn, existing["id"], new_content)
-            ids.append(existing["id"])
-        else:
-            # 记录(record) 落在 project 层 (偶尔全局)
-            note_emb = llm.embed_one(note_text)
-            cur = conn.execute(
-                "INSERT INTO memories(project_id, level, content, reason,"
-                " status, source_type, source_ref, embedding, confirmed_at)"
-                " VALUES (?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
-                (project_id, note_level, note_text, reason, ref, pack_vec(note_emb)),
-            )
-            _store_links(conn, cur.lastrowid, note_text)
-            ids.append(cur.lastrowid)
     conn.commit()
     return ids
 
@@ -354,6 +292,105 @@ def set_status(conn: sqlite3.Connection, memory_id: int, status: str) -> None:
     conn.commit()
 
 
+# ---------------------------------------------------------------- 进化资产 (evolution)
+def create_evolution(conn: sqlite3.Connection, name: str, kind: str = "script",
+                     content: str = "", ref: str = "", reason: str = "",
+                     project_id: Optional[int] = None, source_ref: str = "",
+                     status: str = "active") -> int:
+    """沉淀一个可复用脚本/工具 (evolution)。
+
+    存储: content = 项目无关的通用脚本/工具内容 (存记忆库本体);
+          ref = 项目内脚本路径 (内容留仓库, 只留引用, 如 scripts/x.py)。
+    `status`: active(实践中/在用) | stable(暂不再修改)。改脚本时用 update_evolution 同步。
+    """
+    cur = conn.execute(
+        "INSERT INTO evolutions(project_id, kind, name, content, ref, reason,"
+        " status, source_ref) VALUES (?,?,?,?,?,?,?,?)",
+        (project_id, kind, name, content, ref, reason, status, source_ref),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_evolution(conn: sqlite3.Connection, evolution_id: int,
+                     content: Optional[str] = None, ref: Optional[str] = None,
+                     status: Optional[str] = None, name: Optional[str] = None,
+                     reason: Optional[str] = None) -> None:
+    """同步一个 evolution 到最新版本 (脚本被改时调用)。
+
+    只更新给到的字段; content/ref/status 同步为最新的当前版本。
+    """
+    sets, params = [], []
+    for col, v in (("content", content), ("ref", ref), ("status", status),
+                   ("name", name), ("reason", reason)):
+        if v is not None:
+            sets.append(f"{col}=?")
+            params.append(v)
+    if sets:
+        sets.append("updated_at=datetime('now')")
+        params.append(evolution_id)
+        conn.execute(
+            f"UPDATE evolutions SET {', '.join(sets)} WHERE id=?", params)
+    conn.commit()
+
+
+def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
+                              evolution_id: int) -> None:
+    """建立 insight → evolution 链接 (一个进化资产可被 1..N 个 insight 支撑)。"""
+    conn.execute(
+        "INSERT OR IGNORE INTO evolution_links(insight_id, evolution_id)"
+        " VALUES (?,?)",
+        (insight_id, evolution_id),
+    )
+    conn.commit()
+
+
+def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[dict]:
+    """取某个 insight 指向的 evolution 资产 (召回 follow 用)。"""
+    rows = conn.execute(
+        "SELECT e.id, e.project_id, e.kind, e.name, e.content, e.ref,"
+        " e.reason, e.status, e.created_at, p.name AS project_name"
+        " FROM evolution_links l JOIN evolutions e ON e.id = l.evolution_id"
+        " LEFT JOIN projects p ON p.id = e.project_id"
+        " WHERE l.insight_id=? ORDER BY e.id",
+        (insight_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def insights_for_evolution(conn: sqlite3.Connection, evolution_id: int) -> List[dict]:
+    """取支撑某个 evolution 的 insight 列表。"""
+    rows = conn.execute(
+        "SELECT m.id, m.project_id, m.content, m.reason, p.name AS project_name"
+        " FROM evolution_links l JOIN memories m ON m.id = l.insight_id"
+        " LEFT JOIN projects p ON p.id = m.project_id"
+        " WHERE l.evolution_id=? ORDER BY m.id",
+        (evolution_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_evolutions(conn: sqlite3.Connection, project_id: Optional[int] = None,
+                    status: Optional[str] = None, limit: int = 50) -> List[dict]:
+    """列出进化资产 (按时间倒序), 支持按项目/状态过滤。"""
+    q = (
+        "SELECT e.id, e.project_id, e.kind, e.name, e.content, e.ref, e.reason,"
+        " e.status, e.created_at, e.updated_at, p.name AS project_name"
+        " FROM evolutions e LEFT JOIN projects p ON p.id = e.project_id"
+        " WHERE 1=1"
+    )
+    params: list = []
+    if project_id is not None:
+        q += " AND e.project_id=?"
+        params.append(project_id)
+    if status:
+        q += " AND e.status=?"
+        params.append(status)
+    q += " ORDER BY e.id DESC LIMIT ?"
+    params.append(limit)
+    return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
 # ---------------------------------------------------------------- 上升 / 下降 (生命周期)
 def promote(conn: sqlite3.Connection, memory_id: int) -> None:
     """上升: 项目记忆 -> 全局层 (project_id=NULL, 永不过期, 多项目共读)。"""
@@ -437,7 +474,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
         "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.source_ref,"
         " m.created_at, m.embedding, p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
-        " WHERE m.status=? AND m.embedding IS NOT NULL"
+        " WHERE m.status=? AND m.level='insight' AND m.embedding IS NOT NULL"
         + _alive_filter()
         + (" AND m.project_id=?" if project_id is not None else ""),
         (status, project_id) if project_id is not None else (status,),
@@ -501,7 +538,24 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
                     "level": r["level"], "content": r["content"],
                     "reason": r["reason"], "source_ref": r["source_ref"],
                     "created_at": r["created_at"], "score": None,
-                    "via_link": True,
+                    "via_link": True, "via_evolution": False,
+                })
+
+    # 进化资产 follow: 命中 insight 后, 把它指向的 evolution 一起带出 (实践沉淀的工具/脚本)
+    if base:
+        evo_by_insight: dict = {}
+        for x in base:
+            evo_by_insight[x["id"]] = evolutions_for_insight(conn, x["id"])
+        for x in base:
+            for evo in evo_by_insight.get(x["id"], []):
+                base.append({
+                    "kind": "evolution",
+                    "id": evo["id"], "project_id": evo["project_id"],
+                    "project": evo.get("project_name") or "个人区",
+                    "level": "evolution", "content": evo["content"] or evo["ref"],
+                    "reason": evo["reason"], "source_ref": f"evolution:{evo['id']}",
+                    "created_at": evo["created_at"], "score": None,
+                    "via_evolution": True, "evo_name": evo["name"], "evo_kind": evo["kind"],
                 })
 
     # 召回日志 (供 suggest 的"长期未用"信号)
@@ -538,15 +592,13 @@ def bootstrap(conn: sqlite3.Connection, query: str = "",
         (global_limit,),
     ).fetchall()
     if g:
-        # 全局层按等级分组 (洞察/记录) —— 分类加载
+        # 全局层只呈现洞察 (note 已废弃); 按等级分组逻辑保留以便将来扩展
         dec = [r for r in g if r["level"] == "insight"]
-        note = [r for r in g if r["level"] == "note"]
         glines = []
         if dec:
             glines.append("[洞察]\n" + "\n".join(f"- {r['content']}" for r in dec))
-        if note:
-            glines.append("[记录]\n" + "\n".join(f"- {r['content']}" for r in note))
-        parts.append("【全局记忆】\n" + "\n".join(glines))
+        if glines:
+            parts.append("【全局记忆】\n" + "\n".join(glines))
     # 项目记忆: 会话落进已知项目 → 额外加载该项目的近 project_limit 条洞察 (有界, 避免爆上下文)。
     if project_id is not None:
         pj = conn.execute(
@@ -679,62 +731,34 @@ def _format_grouped(items: List[dict], show_id: bool = False) -> str:
                 out.append(f"  [{lvl}]")
                 ind = "    "
             for m in mems:
-                tag = " 🔗" if m.get("via_link") else ""
-                nid = f"#{m['id']} " if show_id else ""
-                out.append(f"{ind}- {nid}[{m['level']}] {m['content']}{tag}")
+                if m.get("via_evolution"):
+                    name = m.get("evo_name") or ""
+                    body = m.get("content") or ""
+                    out.append(f"{ind}- ✳ [{m.get('evo_kind','script')}] {name} : {body}")
+                else:
+                    tag = " 🔗" if m.get("via_link") else ""
+                    nid = f"#{m['id']} " if show_id else ""
+                    out.append(f"{ind}- {nid}[{m['level']}] {m['content']}{tag}")
     return "\n".join(out)
 
 
 # ---------------------------------------------------------------- 整理合并 (LLM 语义合并)
 def organize(conn: sqlite3.Connection) -> dict:
-    """整理:
-    通道一(确定性, 不依赖 LLM): 记录按「一个会话一条 note」修正 —— 同一 source_ref 的多条
-        note 合并成一条 (修复历史上因项目归属变化被拆成全局+项目两条的 note, 如 #3/#10)。
-    通道二(LLM 语义): 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。
-    硬约束 (通道二): 只能合并 同项目 + 同等级(decision/note) 的记忆;
+    """整理: LLM 把「语义相近、说的是同一件事」的洞察合并成一条综合描述。
+
+    硬约束: 只能合并 同项目 + 同等级(insight) 的记忆;
         跨项目/跨等级的合并由代码强制校验拒绝 (LLM 输出后)。
+    note 通道已废弃 (由 evolution 承接), note 合并逻辑已移除。
     """
     merged = removed = 0
     applied = []
 
-    # ---- 通道一: 同会话多条 note -> 合并成一条 (确定性修正, 不跨会话/不依赖 LLM) ----
-    notes = conn.execute(
-        "SELECT id, project_id, source_ref, content FROM memories"
-        " WHERE level='note' AND status='active' AND source_ref LIKE 'session:%'"
-        " ORDER BY source_ref, id"
-    ).fetchall()
-    by_sess: dict = {}
-    for n in notes:
-        by_sess.setdefault(n["source_ref"], []).append(n)
-    for sess, group in by_sess.items():
-        if len(group) < 2:
-            continue
-        keep = group[0]
-        # 合并完整保留原文, 不做压缩 (用户要求不丢细节);
-        # 超长时由后续 capture 的 note 追加压缩兜底, 而非在这里丢内容。
-        new_content = "\n".join(n["content"] for n in group)
-        # 归属: 取非空的 project_id (优先项目层, 避免停在全局层)
-        pid = next((n["project_id"] for n in group if n["project_id"] is not None), None)
-        emb = llm.embed_one(new_content)
-        conn.execute(
-            "UPDATE memories SET content=?, embedding=?, project_id=?,"
-            " confirmed_at=datetime('now') WHERE id=?",
-            (new_content, pack_vec(emb), pid, keep["id"]),
-        )
-        _store_links(conn, keep["id"], new_content)
-        extra = [n["id"] for n in group[1:]]
-        conn.execute("DELETE FROM memories WHERE id IN (%s)"
-                     % ",".join("?" * len(extra)), extra)
-        merged += 1
-        removed += len(extra)
-        applied.append({"id": keep["id"], "content": new_content, "merged": [n["id"] for n in group]})
-    conn.commit()
-
-    # ---- 通道二: LLM 语义合并 (区域硬约束) ----
+    # ---- LLM 语义合并 (区域硬约束) ----
     rows = conn.execute(
         "SELECT m.id, m.project_id, m.level, m.content, p.name AS proj"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
-        " WHERE m.status='active' ORDER BY m.project_id, m.level, m.id"
+        " WHERE m.status='active' AND m.level='insight'"
+        " ORDER BY m.project_id, m.level, m.id"
     ).fetchall()
     if not rows:
         return {"merged": merged, "removed": removed, "groups": applied}
@@ -746,7 +770,7 @@ def organize(conn: sqlite3.Connection) -> dict:
     )
     prompt = (
         "下面是一批记忆。请把「语义相近、说的是同一件事」的记忆合并成一条综合描述。\n"
-        "硬规则: 只能合并「项目、等级(decision/note)」都相同的记忆; "
+        "硬规则: 只能合并「项目、等级(insight)」都相同的记忆; "
         "跨项目/跨等级一律不合并。\n"
         "合并内容覆盖各条所有要点, 不遗漏, 中文。只有真正相近(同一主题/同一规则)才合并;\n"
         "不相关的保持不动, 不要出现在输出里。\n"

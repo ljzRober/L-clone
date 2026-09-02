@@ -319,7 +319,6 @@ WORK_BODY = r"""
     <div class="row">
       <select id="m-level" style="width:150px">
         <option value="insight">洞察</option>
-        <option value="note">记录</option>
       </select>
       <select id="m-owner" style="flex:1"><option value="">全局层</option></select>
       <span class="muted" id="m-owner-hint"></span>
@@ -369,7 +368,7 @@ function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
   alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
 });
-const LN = { decision:'洞察', note:'记录' };
+const LN = { insight:'洞察' };
 
 async function loadAll() {
   const [p, m, l, pend] = await Promise.all([
@@ -469,7 +468,7 @@ function renderGraph() {
   const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
   const boxLeft = padX, boxW = W - padX * 2;
   const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
-  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'], ['note','记录','#67707f','#f0f2f5'] ];
+  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'] ];
   function head(x, y, w, tint, col, title, sub) {
     return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
       `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
@@ -603,7 +602,7 @@ function openMem(mid) {
   CUR_MID = mid;
   $('m-title').textContent = '记忆详情';
   $('m-content').value = m.content;
-  $('m-level').value = m.level || 'note';
+  $('m-level').value = m.level || 'insight';
   $('m-owner').value = m.project_id || '';
   $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
   $('m-owner-hint').textContent = m.project_id ? '（改为全局层 = 上升）' : '（选择项目 = 下降）';

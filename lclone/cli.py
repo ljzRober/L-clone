@@ -137,7 +137,34 @@ def cmd_capture(args) -> None:
         decisions = [r["id"] for r in rows if r["level"] == "insight"]
         print(f"已捕获 {len(ids)} 条记忆 [{where}]: {ids}")
         if decisions:
-            print(f"(洞察进待确认 #{decisions}, 运行 lclone review 确认; 记录已直接生效)")
+            print(f"(洞察进待确认 #{decisions}, 运行 lclone review 确认)")
+
+
+def cmd_evolution_add(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    if pid is None and args.project is None:
+        status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
+    if not args.content and not args.ref:
+        raise SystemExit("evolution 需要有内容: --content (项目无关脚本/工具内容) 或 --ref (项目内路径)")
+    eid = mem_mod.create_evolution(
+        conn, name=args.name, kind=args.kind, content=args.content,
+        ref=args.ref, reason=args.reason, project_id=pid)
+    for iid in args.insight or []:
+        mem_mod.link_insight_to_evolution(conn, iid, eid)
+    proj = "全局层" if pid is None else f"项目 #{pid}"
+    print(f"已沉淀进化资产 #{eid} [{proj}] {args.name} (kind={args.kind})")
+    if args.insight:
+        print(f"  已链接 insight: {args.insight}")
+
+
+def cmd_evolution_list(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    for e in mem_mod.list_evolutions(conn, project_id=pid, status=args.status):
+        body = e["content"] or e["ref"] or ""
+        print(f"#{e['id']} [{e.get('project_name') or '全局层'}] [{e['kind']}{('/'+e['status']) if e['status']!='active' else ''}] "
+              f"{e['name'] : <20} {body[:80]}")
 
 
 def cmd_review(args) -> None:
@@ -387,21 +414,37 @@ def build_parser() -> argparse.ArgumentParser:
     sr = sub.add_parser("remember", parents=[parent], help="主动记忆 (insight 默认待确认)")
     sr.add_argument("content")
     sr.add_argument("--level", default="insight",
-                    choices=["insight", "note"])
+                    choices=["insight"])
     sr.add_argument("--reason", default="")
     sr.add_argument("--confirmed", action="store_true",
                     help="insight 当场已确认, 直接生效 (否则进待确认)")
     sr.add_argument("--project", default=None)
     sr.set_defaults(func=cmd_remember)
 
-    sc = sub.add_parser("capture", parents=[parent], help="自动捕获洞察/记录 (B, 进草稿待确认)")
+    sc = sub.add_parser("capture", parents=[parent], help="自动捕获洞察 (B, 进草稿待确认)")
     sc.add_argument("text", help="本次工作/讨论内容")
     sc.add_argument("--title", default="")
     sc.add_argument("--project", default=None)
-    sc.add_argument("--session-key", default="", help="外部会话 id, 同一会话只建一条 note 并逐轮追加")
+    sc.add_argument("--session-key", default="", help="外部会话 id (聚合会话流水用)")
     sc.add_argument("--global-fallback", action="store_true",
                     help="后台静默捕获: 无 git 时落全局层而非报错 (DSH 插件用)")
     sc.set_defaults(func=cmd_capture)
+
+    sev = sub.add_parser("evolution", parents=[parent], help="进化资产 (可复用脚本/工具)")
+    sev_sub = sev.add_subparsers(dest="evolution_cmd", required=True)
+    sev_add = sev_sub.add_parser("add", parents=[parent], help="沉淀一个脚本/工具 (内容存库 或 引用仓库路径)")
+    sev_add.add_argument("name", help="脚本/工具名")
+    sev_add.add_argument("--kind", default="script", choices=["script", "tool", "command", "other"])
+    sev_add.add_argument("--content", default="", help="项目无关的脚本/工具内容 (存记忆库本体)")
+    sev_add.add_argument("--ref", default="", help="项目内脚本路径 (内容留仓库, 只留引用, 如 scripts/x.py)")
+    sev_add.add_argument("--reason", default="", help="为什么沉淀")
+    sev_add.add_argument("--insight", type=int, action="append", default=[], help="支撑此资产的 insight id (可多次)")
+    sev_add.add_argument("--project", default=None)
+    sev_add.set_defaults(func=cmd_evolution_add)
+    sev_list = sev_sub.add_parser("list", parents=[parent], help="列出进化资产")
+    sev_list.add_argument("--project", default=None)
+    sev_list.add_argument("--status", default=None)
+    sev_list.set_defaults(func=cmd_evolution_list)
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")
     sv.add_argument("--id", type=int, default=None)

@@ -32,13 +32,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at   TEXT
 );
 
--- L1 层: 洞察 / 记录
+-- L1 层: 洞察 (insight = 原子化、自包含的富知识卡/教训/规则)
 -- status: pending(草稿, 待确认) | active(正式) | archived(归档)
 -- source_type: auto(自动捕获) | manual(主动触发)
 CREATE TABLE IF NOT EXISTS memories (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-  level        TEXT NOT NULL DEFAULT 'note',   -- insight | note
+  level        TEXT NOT NULL DEFAULT 'insight',  -- insight (note 通道已废弃 -> 由 evolution 承接)
   content      TEXT NOT NULL,
   reason       TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT 'active',
@@ -47,6 +47,31 @@ CREATE TABLE IF NOT EXISTS memories (
   embedding    BLOB,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   confirmed_at TEXT
+);
+
+-- L1.5 层: 进化资产 (可复用脚本/工具, 实践中沉淀, 稳定=暂时不再修改)
+-- 存储: content = 项目无关的通用脚本内容(存记忆库本体); ref = 项目内脚本路径(内容留仓库, 只留引用)
+CREATE TABLE IF NOT EXISTS evolutions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  kind       TEXT NOT NULL DEFAULT 'script',  -- script | tool | command | other
+  name       TEXT NOT NULL DEFAULT '',
+  content    TEXT NOT NULL DEFAULT '',
+  ref        TEXT NOT NULL DEFAULT '',
+  reason     TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'active',  -- active(实践中/在用) | stable(暂不再修改)
+  source_ref TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- insight → evolution 链接 (一个进化资产可被 1..N 个 insight 支撑)
+CREATE TABLE IF NOT EXISTS evolution_links (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  insight_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  evolution_id INTEGER NOT NULL REFERENCES evolutions(id) ON DELETE CASCADE,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(insight_id, evolution_id)
 );
 
 -- L2 层: 项目内 spec 文件的索引 (格式无关: openspec / adr / markdown / other)
@@ -109,6 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_specs_proj ON specs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
 CREATE INDEX IF NOT EXISTS idx_recall_log_mem ON recall_log(memory_id);
+CREATE INDEX IF NOT EXISTS idx_evos_proj ON evolutions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_evolinks_insight ON evolution_links(insight_id);
+CREATE INDEX IF NOT EXISTS idx_evolinks_evo ON evolution_links(evolution_id);
 """
 
 

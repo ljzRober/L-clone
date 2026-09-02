@@ -5,16 +5,16 @@ TBD - created by archiving change memory-capture-model. Update Purpose after arc
 ## Requirements
 ### Requirement: 记忆分类与确认
 
-lclone 的自动捕获 SHALL 把内容分类为记录(note)与洞察(insight)：note 免确认直接 active；insight 进 pending 待人工确认。**insight SHALL 是原子化、自包含、内容丰富的知识/见解/教训**——每条是一件事（一个决定 / 一条经验 / 一个观察 / 一条复盘），自带精简背景/推理/后果（约 2-4 句），不是逐字记录（那是 note / git / spec），也不是一行干巴巴结论。LLM 提炼前 SHALL 自筛，落库前 SHALL 过 `_filter_item`（排除「做了什么」、给缺乏洞察信号的 insight 降级为 note、丢弃琐碎 note）。
+lclone 的自动捕获 SHALL 把内容提炼为**洞察(insight)**，不再分级为记录(note)。**insight SHALL 是原子化、自包含、内容丰富的知识/见解/教训**——每条是一件事（一个决定 / 一条经验 / 一个观察 / 一条复盘），自带精简背景/推理/后果（约 2-4 句），不是逐字记录（那是 git / spec），也不是一行干巴巴结论。LLM 提炼前 SHALL 自筛，落库前 SHALL 过 `_filter_item`（排除「做了什么」、过短琐碎丢弃）。insight 进 pending 待人工确认。
 
 #### Scenario: 捕获记录
 
-WHEN 分类器提炼出过程性事实/观察
-THEN 写入 note 且 status=active，无需确认
+WHEN 分类器提炼出原子化的知识/见解/教训（决定/经验/观察/复盘）
+THEN 写入 insight 且 status=pending，待用户确认
 
 #### Scenario: 捕获决策
 
-WHEN 分类器提炼出原子化的知识/见解/教训（决定/经验/观察/复盘）
+WHEN 分类器提炼出可跨会话复用的决策/规则/经验
 THEN 写入 insight 且 status=pending，待用户确认
 
 #### Scenario: 自筛低价值
@@ -29,12 +29,12 @@ THEN 不记忆，归 git 或 spec
 
 #### Scenario: 决策信号降级
 
-WHEN 内容被判为 insight 但不含洞察信号（决定/采用/方案/边界/规则/约定/经验/教训/因为/所以 等）
-THEN 降级为 note，不进待确认
+WHEN 内容被判为 insight 但过短/空壳（< 4 字）
+THEN 丢弃，不进待确认（note 降级通道已废弃）
 
 #### Scenario: 琐碎丢弃
 
-WHEN note 内容过短（< 4 字）
+WHEN 内容过短（< 4 字）或空壳
 THEN 不记忆
 
 #### Scenario: 原子且丰富
@@ -76,39 +76,6 @@ THEN 理由归记忆、契约归 spec，不整体塞进单一桶
 WHEN 一条记忆进一步被锁定为"系统必须满足 X"且能写成 WHEN/THEN requirement
 THEN 在 spec 建/改该 requirement；原记忆写入 `[[spec:id]]` 引用或删除，避免与 spec 双份漂移
 
-### Requirement: 记录按会话聚合
-
-同一外部会话（session_key 相同）SHALL 只建一条 note，**把每轮原始对话内容直接追加**进这条 note（不依赖 LLM 提炼）；新会话（新 session_key）SHALL 新建一条 note，并写入该轮原始内容。
-
-#### Scenario: 同会话追加
-
-WHEN 相同 session_key 连续捕获（无论该轮 LLM 是否提炼出内容）
-THEN 每轮原始对话文本追加到同一条 note，不新建
-
-#### Scenario: 新会话新 note
-
-WHEN 新 session_key 首次捕获
-THEN 新建一条 note 并写入该轮原始内容
-
-#### Scenario: 探索性轮次也记录
-
-WHEN 某轮内容为探索/纯实现（LLM 提炼为空）
-THEN 该轮原始内容仍追加到该会话 note（不因提炼为空而中断）
-
-### Requirement: note 滚动压缩
-
-note 追加原始内容后长度超过阈值（3000 字）时，SHALL 把整条 note 摘要压缩一次，保持有界。
-
-#### Scenario: 超长触发压缩
-
-WHEN 追加原始内容后 note 长度超过阈值
-THEN 整条 note 被 LLM 摘要成有界摘要
-
-#### Scenario: 压缩后继续追加
-
-WHEN 压缩后的 note 在后续轮次继续追加
-THEN 仍按「追加 → 超阈值再压缩」滚动处理
-
 ### Requirement: 归属判定
 
 自动捕获的项目归属 SHALL 优先按 git 检测；git 检测到仓库但未注册时 SHALL 自动注册项目；无 git 时 SHALL 问用户新建 project 或升到全局层，而非静默默认全局。
@@ -130,12 +97,12 @@ THEN 主动问用户新建 project（取名）还是升到全局层，不静默�
 
 ### Requirement: 记忆整理合并
 
-lclone SHALL 提供整理(organize)能力：LLM 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。合并 SHALL 不能跨区域——只能合并 同项目 + 同等级(insight/note) 的记忆；跨项目/跨等级的合并由代码强制校验拒绝。
+lclone SHALL 提供整理(organize)能力：LLM 把「语义相近、说的是同一件事」的洞察合并成一条综合描述。合并 SHALL 不能跨区域——只能合并 同项目 + 同等级(insight) 的洞察；跨项目/跨等级的合并由代码强制校验拒绝。
 
 #### Scenario: 语义合并
 
 WHEN 用户触发整理
-THEN LLM 找出语义相近的记忆并合成一条综合描述，覆盖各条要点不遗漏
+THEN LLM 找出语义相近的洞察并合成一条综合描述，覆盖各条要点不遗漏
 
 #### Scenario: 不跨区域
 
@@ -226,4 +193,23 @@ THEN bootstrap(--cwd) 注入 项目方向 + 项目记忆 + 全局记忆
 
 WHEN 会话不在已知项目（或无 cwd）
 THEN bootstrap(不带项目) 只注入全局记忆
+
+### Requirement: 进化资产与链接
+
+lclone SHALL 提供进化资产(evolution)——可复用脚本/工具，实践某个具体事物时沉淀、会话中反复修改、不再修改即稳定。存储 SHALL 分两种：项目无关的通用脚本/工具内容存记忆库本体(`content`)；项目内脚本只存路径引用(`ref`，内容留仓库、git 版本化)。每个 evolution SHALL 可被 1..N 个 insight 支撑（`insight→evolution` 链接）；脚本被改时 SHALL 用 `update_evolution` 同步最新版本。检索命中 insight 时 SHALL 顺 `insight→evolution` 边带出该资产。
+
+#### Scenario: 沉淀 evolution
+
+WHEN 实践中生成一个可复用脚本/工具（项目无关 或 项目内）
+THEN 写入 evolutions（项目无关存 content；项目内存 ref），status=active
+
+#### Scenario: insight 支撑 evolution
+
+WHEN 一个 evolution 有 1..N 个 insight 阐明"为什么/教训"
+THEN 建立 insight→evolution 链接，可被检索顺边带出
+
+#### Scenario: 同步最新版本
+
+WHEN 脚本后续被改（继续使用/迭代）
+THEN update_evolution 同步 content/ref 到最新版本，status 可置 stable
 
