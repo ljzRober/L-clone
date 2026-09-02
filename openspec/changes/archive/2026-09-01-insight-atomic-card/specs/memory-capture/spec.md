@@ -1,8 +1,5 @@
-# memory-capture Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change memory-capture-model. Update Purpose after archive.
-## Requirements
 ### Requirement: 记忆分类与确认
 
 lclone 的自动捕获 SHALL 把内容分类为记录(note)与洞察(insight)：note 免确认直接 active；insight 进 pending 待人工确认。**insight SHALL 是原子化、自包含、内容丰富的知识/见解/教训**——每条是一件事（一个决定 / 一条经验 / 一个观察 / 一条复盘），自带精简背景/推理/后果（约 2-4 句），不是逐字记录（那是 note / git / spec），也不是一行干巴巴结论。LLM 提炼前 SHALL 自筛，落库前 SHALL 过 `_filter_item`（排除「做了什么」、给缺乏洞察信号的 insight 降级为 note、丢弃琐碎 note）。
@@ -76,58 +73,6 @@ THEN 理由归记忆、契约归 spec，不整体塞进单一桶
 WHEN 一条记忆进一步被锁定为"系统必须满足 X"且能写成 WHEN/THEN requirement
 THEN 在 spec 建/改该 requirement；原记忆写入 `[[spec:id]]` 引用或删除，避免与 spec 双份漂移
 
-### Requirement: 记录按会话聚合
-
-同一外部会话（session_key 相同）SHALL 只建一条 note，**把每轮原始对话内容直接追加**进这条 note（不依赖 LLM 提炼）；新会话（新 session_key）SHALL 新建一条 note，并写入该轮原始内容。
-
-#### Scenario: 同会话追加
-
-WHEN 相同 session_key 连续捕获（无论该轮 LLM 是否提炼出内容）
-THEN 每轮原始对话文本追加到同一条 note，不新建
-
-#### Scenario: 新会话新 note
-
-WHEN 新 session_key 首次捕获
-THEN 新建一条 note 并写入该轮原始内容
-
-#### Scenario: 探索性轮次也记录
-
-WHEN 某轮内容为探索/纯实现（LLM 提炼为空）
-THEN 该轮原始内容仍追加到该会话 note（不因提炼为空而中断）
-
-### Requirement: note 滚动压缩
-
-note 追加原始内容后长度超过阈值（3000 字）时，SHALL 把整条 note 摘要压缩一次，保持有界。
-
-#### Scenario: 超长触发压缩
-
-WHEN 追加原始内容后 note 长度超过阈值
-THEN 整条 note 被 LLM 摘要成有界摘要
-
-#### Scenario: 压缩后继续追加
-
-WHEN 压缩后的 note 在后续轮次继续追加
-THEN 仍按「追加 → 超阈值再压缩」滚动处理
-
-### Requirement: 归属判定
-
-自动捕获的项目归属 SHALL 优先按 git 检测；git 检测到仓库但未注册时 SHALL 自动注册项目；无 git 时 SHALL 问用户新建 project 或升到全局层，而非静默默认全局。
-
-#### Scenario: git 优先
-
-WHEN 会话所在 git 仓库匹配到已注册项目
-THEN 记忆归该项目
-
-#### Scenario: git 自动注册
-
-WHEN git 检测到仓库但未匹配到已注册项目
-THEN 自动注册项目（name=仓库 basename、path=仓库根、charter 留空）并把记忆归该项目
-
-#### Scenario: 无 git 问用户
-
-WHEN git 检测不到仓库
-THEN 主动问用户新建 project（取名）还是升到全局层，不静默落全局
-
 ### Requirement: 记忆整理合并
 
 lclone SHALL 提供整理(organize)能力：LLM 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。合并 SHALL 不能跨区域——只能合并 同项目 + 同等级(insight/note) 的记忆；跨项目/跨等级的合并由代码强制校验拒绝。
@@ -142,42 +87,7 @@ THEN LLM 找出语义相近的记忆并合成一条综合描述，覆盖各条�
 WHEN LLM 返回的合并组跨项目或跨等级
 THEN 代码校验拒绝该组合并，不执行
 
-### Requirement: 分类加载
-
-bootstrap 与 recall 加载记忆时 SHALL 按「项目」分组展示（全局层按等级分组），而非扁平列表；bootstrap 依据会话环境（`cwd` 是否落进已知项目）在【全局记忆】基础上决定是否额外加载【项目方向】与【项目记忆】。
-
-#### Scenario: bootstrap 分类加载
-
-WHEN bootstrap 加载相关记忆
-THEN 按项目分组、项目内按等级列出；项目会话额外带【项目方向】+【项目记忆】
-
-#### Scenario: recall 分类加载
-
-WHEN recall 返回召回结果
-THEN 按项目 → 等级分组展示
-
-### Requirement: 删除项目
-
-lclone SHALL 支持删除项目：删除为墓碑式（登记 project_removals，不删行/记忆，可撤销，记忆读取时跳过）。
-
-#### Scenario: 删除项目
-
-WHEN 用户删除项目
-THEN 项目登记到 project_removals（墓碑式），从列表消失、记忆停止加载，数据保留可撤销
-
-### Requirement: 自动调度 sp-spec
-
-lclone-memory skill SHALL 在会话中检测 sp-spec 可用性（`~/.agents/skills/sp-spec` 存在）。检测到 sp-spec 时，出现构建性任务后 SHALL 默认自动加载 sp-spec 并运行 quick 模式（是否升级 full/debug 由 sp-spec 自决），无需用户手动 /sp-spec；未检测到 sp-spec 时，SHALL 仅在首次会话提醒用户安装 sp-spec（URL https://github.com/ljzRober/sp-spec），不重复提醒。
-
-#### Scenario: 有 sp-spec 自动 quick
-
-WHEN 会话中检测到 sp-spec 且进入构建性任务
-THEN lclone 自动加载 sp-spec 并运行 quick 模式；sp-spec 自身按需升级 full/debug，用户不手动 /sp-spec
-
-#### Scenario: 无 sp-spec 首次提醒
-
-WHEN 未检测到 sp-spec 且为首次检测
-THEN 提醒用户安装 sp-spec（https://github.com/ljzRober/sp-spec），且仅提醒一次，不重复
+## ADDED Requirements
 
 ### Requirement: 洞察强确认
 
@@ -208,22 +118,8 @@ THEN 该批不再重复弹窗；仅未见过的新 id 触发渲染，避免刷�
 WHEN turn/end 提交「用户 + 助手」整段交换
 THEN 分类器判断用户提出的选择/规则是否被助手确认、落地或持续推进，仅提炼为 insight；未获回应/未落地的一律不提炼
 
-### Requirement: 按环境加载记忆
+## REMOVED Requirements
 
-bootstrap SHALL 根据会话环境决定加载范围，且**每会话只注入一次**：会话 `cwd` 落进**已知项目** → 注入【项目方向】(charter) +【项目记忆】(该项目近 project_limit 条洞察) +【全局记忆】；否则（无 cwd / 不在已知项目 / 全局会话）→ 只注入【全局记忆】。DSH 宿主由插件在会话首轮注入一次（`bootstrap --cwd`），不因后续轮次重复注入。
-
-#### Scenario: 会话首轮注入一次
-
-WHEN 会话首轮注入记忆
-THEN DSH 插件运行 bootstrap --cwd 注入一次，同一会话不再重复注入
-
-#### Scenario: 项目会话加载
-
-WHEN 会话 cwd 落进已知项目（detect_project_by_git 命中）
-THEN bootstrap(--cwd) 注入 项目方向 + 项目记忆 + 全局记忆
-
-#### Scenario: 全局会话加载
-
-WHEN 会话不在已知项目（或无 cwd）
-THEN bootstrap(不带项目) 只注入全局记忆
-
+### Requirement: 决策强确认
+**Reason**: 类型由"决策(decision)"更名为"洞察(insight)"，确认收口为"洞察强确认"。
+**Migration**: 既有 `decision` 记忆在数据库迁移中改写为 `insight`；确认流程语义不变。

@@ -40,10 +40,10 @@ dsh plugin --profile web add /Users/didi/github/L-clone/integrations/dsh -w
 - **后台地址可配置**：`LCLONE_WEB_URL` 指定后端基址（默认 `http://127.0.0.1:8000`）。本地留空；部署到服务器时设为服务器地址 host 端健康探测/决策代理与 client 端看板 iframe 都指向它。
 - **文档链接可配置**：`LCLONE_DOCS_URL`（默认 `https://github.com/ljzRober/L-clone`）。
 - 若设置了 `LCLONE_API_KEY`，host 端请求后端自动带 `X-API-Key`。
-- **本插件只做前端展示与写侧捕获，不负责启动后台/装 skill**（后台与 skill 需你自行就绪）：
+- **本插件做前端展示 + 写侧捕获 + 会话开始注入，不负责启动后台/装 skill**（后台与 skill 需你自行就绪）：
   - 后台服务没起时，看板显示默认内容并提示「请先运行 `python -m lclone web`（或 `lclone serve start` 后台常驻）」+ 文档链接；
   - skill 缺失时，看板提示「请运行 `lclone integrate --target skill`」。
-- 读侧（bootstrap 注入 charter+全局记忆）由 skill 软触发兜底；本插件专管写侧（capture）的硬触发。
+- 读侧（bootstrap 注入 charter+全局记忆）由本插件在会话首轮经 `agent.steer` **硬触发**（每会话一次）；lclone-memory skill 作兜底（agent 调 `bootstrap`）。写侧（capture）由插件在 `turn/end` **硬触发**。
 - 看板依赖 lclone Web 服务（后端 `LCLONE_WEB_URL`）；未启动时看板显示默认提示而非白屏。
 
 ## 参考

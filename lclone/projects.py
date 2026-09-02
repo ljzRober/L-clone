@@ -73,7 +73,7 @@ def list_projects(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     """列出项目 (已移除的墓碑项目不显示)。
 
     mem_count 只数正式(active)记忆, 与 Web 架构图展示口径一致;
-    pending_count 单列待确认决策数, 供 UI 角标提示。
+    pending_count 单列待确认洞察数, 供 UI 角标提示。
     """
     return conn.execute(
         "SELECT p.*,"
@@ -123,53 +123,6 @@ def restore_project(conn: sqlite3.Connection, project_id: int) -> None:
         raise ValueError(f"项目不存在: {project_id}")
     conn.execute("DELETE FROM project_removals WHERE project_id=?", (project_id,))
     conn.commit()
-
-
-def list_modules(conn: sqlite3.Connection, project_id: int) -> List[str]:
-    """项目内声明的模块名列表 (modules 表)。"""
-    return [r["name"] for r in conn.execute(
-        "SELECT name FROM modules WHERE project_id=? ORDER BY name",
-        (project_id,)).fetchall()]
-
-
-def add_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
-    """给项目声明一个模块 (允许空模块)。"""
-    if get_project(conn, project_id) is None:
-        raise ValueError(f"项目不存在: {project_id}")
-    name = (name or "").strip()
-    if not name:
-        raise ValueError("模块名不能为空")
-    try:
-        cur = conn.execute("INSERT INTO modules(project_id, name) VALUES (?,?)",
-                           (project_id, name))
-        conn.commit()
-        return cur.lastrowid
-    except sqlite3.IntegrityError:
-        raise ValueError(f"模块已存在: {name}")
-
-
-def remove_module(conn: sqlite3.Connection, project_id: int, name: str) -> int:
-    """删除项目下的一个模块, 并连带删除挂在该模块下的 decision 记忆。
-
-    返回受影响(删除)的记忆条数。模块不存在时报错; 删除操作原子提交。
-    记忆按 level='decision' + module=name 精确匹配连带删除 (note 无模块, 不受影响)。
-    """
-    if get_project(conn, project_id) is None:
-        raise ValueError(f"项目不存在: {project_id}")
-    name = (name or "").strip()
-    if not name:
-        raise ValueError("模块名不能为空")
-    row = conn.execute("SELECT id FROM modules WHERE project_id=? AND name=?",
-                       (project_id, name)).fetchone()
-    if row is None:
-        raise ValueError(f"模块不存在: {name}")
-    # 连带删除该模块下的决策记忆 (decision 挂模块; note 无模块不受影响)
-    cur = conn.execute("DELETE FROM memories WHERE project_id=? AND module=?",
-                       (project_id, name))
-    conn.execute("DELETE FROM modules WHERE project_id=? AND name=?",
-                 (project_id, name))
-    conn.commit()
-    return cur.rowcount
 
 
 def _git_toplevel(cwd: Optional[str] = None) -> Optional[Path]:
@@ -256,7 +209,7 @@ def _walk_spec_files(root: Path) -> List[Path]:
                 continue
             p = Path(dirpath) / fn
             rel = p.relative_to(root).as_posix()
-            # 只索引看起来像 spec/决策/规划 的文件, 不索引普通 README 正文
+            # 只索引看起来像 spec/洞察/规划 的文件, 不索引普通 README 正文
             if detect_format(rel) != "markdown" or re.search(
                 r"(spec|adr|plan|design|roadmap|charter|boundar)",
                 rel, re.IGNORECASE,
@@ -314,7 +267,7 @@ def sync_project(conn: sqlite3.Connection, project_id: int) -> dict:
 
 def project_context(conn: sqlite3.Connection, project_id: int,
                     spec_budget: int = 6000) -> str:
-    """拼出监督环用的项目上下文: charter + 决策 + spec 摘要/原文片段。
+    """拼出监督环用的项目上下文: charter + 洞察 + spec 摘要/原文片段。
 
     spec 原文优先从 repo 读取 (权威), 读不到则退回索引摘要。
     """
@@ -328,13 +281,13 @@ def project_context(conn: sqlite3.Connection, project_id: int,
         parts.append(f"【项目方向】{proj['charter']}")
     decisions = conn.execute(
         "SELECT content, created_at FROM memories"
-        " WHERE project_id=? AND status='active' AND level='decision'"
+        " WHERE project_id=? AND status='active' AND level='insight'"
         " ORDER BY id DESC LIMIT 15",
         (project_id,),
     ).fetchall()
     if decisions:
         dlines = [f"- {d['content']} ({d['created_at'][:10]})" for d in decisions]
-        parts.append("【已确认决策】\n" + "\n".join(dlines))
+        parts.append("【已确认洞察】\n" + "\n".join(dlines))
 
     specs = conn.execute(
         "SELECT rel_path, format, title, summary, sha FROM specs_index"

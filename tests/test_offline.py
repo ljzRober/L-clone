@@ -56,14 +56,14 @@ check("5 普通 README 不入索引", readme_idx == 0, f"readme 索引数={readm
 mid = mem_mod.remember(
     conn,
     "后端使用 FastAPI, 数据库用 SQLite, 边界: 单用户部署",
-    level="decision", project_id=pid, confirmed=True,
+    level="insight", project_id=pid, confirmed=True,
 )
 row = conn.execute(
     "SELECT status, source_type FROM memories WHERE id=?", (mid,)
 ).fetchone()
 check("6 主动记忆 confirmed 直接生效", row["status"] == "active" and row["source_type"] == "manual")
 
-# ---- B 自动捕获: 记录直接生效, 决策进草稿待确认 ----
+# ---- B 自动捕获: 记录直接生效, 洞察进草稿待确认 ----
 ids_note = mem_mod.capture(conn, "一条过程性记录, 无需确认", project_id=pid)
 row = conn.execute("SELECT status FROM memories WHERE id=?",
                    (ids_note[0],)).fetchone()
@@ -72,7 +72,7 @@ check("7 capture note 直接 active", row["status"] == "active", str(row["status
 # 模拟分类器返回 decision → 应进 pending 待确认
 import lclone.llm as llm_mod
 _orig_extract = llm_mod.extract_memories
-llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "decision",
+llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "insight",
                                                                "content": "确定 6月1日上线", "confidence": 0.9}]
 ids_dec = mem_mod.capture(conn, "确定 6月1日上线", project_id=pid, title="方案讨论")
 llm_mod.extract_memories = _orig_extract
@@ -85,7 +85,7 @@ mem_mod.review(conn, ids_dec[0], "keep")
 row = conn.execute(
     "SELECT status, confirmed_at FROM memories WHERE id=?", (ids_dec[0],)
 ).fetchone()
-check("10 决策确认后生效", row["status"] == "active" and row["confirmed_at"] is not None)
+check("10 洞察确认后生效", row["status"] == "active" and row["confirmed_at"] is not None)
 
 # ---- 回顾环 ----
 items = mem_mod.recall(conn, "FastAPI 数据库", project_id=pid)
@@ -111,10 +111,10 @@ check("16 个人区召回", len(items_p) >= 1,
 # ---- 列出记忆 ----
 rows = mem_mod.list_memories(conn, status="active")
 check("17 列出正式记忆", len(rows) >= 3, f"{len(rows)} 条")
-rows_p = mem_mod.list_memories(conn, project_id=pid, level="decision",
+rows_p = mem_mod.list_memories(conn, project_id=pid, level="insight",
                                status="active")
 check("18 按项目/等级过滤",
-      len(rows_p) >= 1 and all(r["level"] == "decision" for r in rows_p))
+      len(rows_p) >= 1 and all(r["level"] == "insight" for r in rows_p))
 pend_rows = mem_mod.list_memories(conn, status="pending")
 check("19 草稿也能列出", all(r["status"] == "pending" for r in pend_rows))
 
@@ -142,7 +142,7 @@ with contextlib.redirect_stdout(buf):
 check("23 CLI memories", "FastAPI" in buf.getvalue())
 
 # ---- 上升 / 下降 (生命周期) ----
-m_up = mem_mod.remember(conn, "项目A独有的决策: 上线后立即灰度", level="decision",
+m_up = mem_mod.remember(conn, "项目A独有的洞察: 上线后立即灰度", level="insight",
                         project_id=pid, confirmed=True)
 mem_mod.promote(conn, m_up)
 row = conn.execute("SELECT project_id FROM memories WHERE id=?",
@@ -193,9 +193,9 @@ check("33 --no-follow 不跟随链接",
 # ---- 删除提示 suggest ----
 dup_a = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
 dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="note")
-# note 现在直接 active, 造一条 pending 决策草稿来测"长期未确认"
+# note 现在直接 active, 造一条 pending 洞察草稿来测"长期未确认"
 _orig_extract2 = llm_mod.extract_memories
-llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "decision",
+llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "insight",
                                                                "content": "决定：一个从未确认的旧草稿", "confidence": 0.9}]
 mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
 llm_mod.extract_memories = _orig_extract2
@@ -215,7 +215,7 @@ check("37 suggest 每条都带删除命令",
       all(s["hint"].startswith("lclone review --id") for s in sug))
 
 # ---- 项目墓碑: 移除后不再加载, 可 restore ----
-mem_mod.remember(conn, "projB 的独有记忆: B计划细节", level="decision",
+mem_mod.remember(conn, "projB 的独有记忆: B计划细节", level="insight",
                  project_id=pid2, confirmed=True)
 proj_mod.remove_project(conn, pid2)
 check("38 移除后项目从列表消失",
@@ -274,7 +274,7 @@ from lclone import llm as llm_mod
 check("50 LEVELS 不含 milestone",
       "milestone" not in mem_mod.LEVELS, str(mem_mod.LEVELS))
 check("51 LEVELS 只含 decision/note",
-      set(mem_mod.LEVELS) == {"note", "decision"}, str(mem_mod.LEVELS))
+      set(mem_mod.LEVELS) == {"note", "insight"}, str(mem_mod.LEVELS))
 mem_items = llm_mod.extract_memories("确定用 SQLite; 顺带记下: 明天补测试")
 check("52 extract_memories 返回结构化条目",
       isinstance(mem_items, list) and mem_items
@@ -389,47 +389,40 @@ os.makedirs(no_git_dir, exist_ok=True)
 st3, pid_none = proj_mod.resolve_project(conn, cwd=no_git_dir)
 check("83 无 git 返回 no_git 且不落库", st3 == "no_git" and pid_none is None)
 
-# ---- remember(decision) 默认 pending (决策强确认) ----
-_mid = mem_mod.remember(conn, "一个默认待确认的决策", level="decision", project_id=pid)
+# ---- remember(decision) 默认 pending (洞察强确认) ----
+_mid = mem_mod.remember(conn, "一个默认待确认的洞察", level="insight", project_id=pid)
 check("84 remember decision 默认 pending",
       conn.execute("SELECT status FROM memories WHERE id=?",
                    (_mid,)).fetchone()["status"] == "pending")
 
-# ---- 模块词表强制 (LLM 分类到代码维护词表) ----
-r1 = mem_mod._resolve_module(conn, pid, "Web")
-r2 = mem_mod._resolve_module(conn, pid, "web")
-r3 = mem_mod._resolve_module(conn, pid, "  Server-API  ")
-r4 = mem_mod._resolve_module(conn, pid, "core")
-check("85 模块名归一化+复用", r1 == "web" and r2 == "web" and r3 == "server-api",
-      f"{r1}/{r2}/{r3}")
-check("86 泛名模块挂项目层", r4 == "", f"{r4}")
-check("87 同名模块不重复建",
-      mem_mod._list_module_names(conn, pid).count("web") == 1)
+# ---- module 轴已移除: 无 modules 表, capture 不写 module 列 ----
+_tbl = conn.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='modules'"
+).fetchone()
+check("85 module 轴已删除 (无 modules 表)", _tbl is None)
+_orig3 = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t: [
+    {"level": "note", "content": "一条过程性记录内容"},
+    {"level": "insight", "content": "决定了归属方案"},
+]
+ids_mod = mem_mod.capture(conn, "x", project_id=pid, session_key="modtest")
+llm_mod.extract_memories = _orig3
+rows_mod = {r["level"] for r in conn.execute(
+    "SELECT level FROM memories WHERE id IN (%s)"
+    % ",".join("?" * len(ids_mod)), ids_mod)}
+check("86 capture 分类 note/decision (无 module)", rows_mod == {"note", "insight"},
+      f"{rows_mod}")
 conn.commit()
 
 # ---- 记忆准入条件 (代码强制过滤) ----
 _f = mem_mod._filter_item
 check("88 做了什么(修复)被排除",
-      _f({"level": "decision", "content": "修复了分页 bug"}) is None)
-check("89 决策无信号降级为 note",
-      _f({"level": "decision", "content": "Web 面板分页每行三个"})["level"] == "note")
-check("90 决策含信号保留",
-      _f({"level": "decision", "content": "决定了 Web 面板分页每行三个"})["level"] == "decision")
+      _f({"level": "insight", "content": "修复了分页 bug"}) is None)
+check("89 洞察无信号降级为 note",
+      _f({"level": "insight", "content": "Web 面板分页每行三个"})["level"] == "note")
+check("90 洞察含信号保留",
+      _f({"level": "insight", "content": "决定了 Web 面板分页每行三个"})["level"] == "insight")
 check("91 琐碎 note 丢弃", _f({"level": "note", "content": "嗯"}) is None)
-
-# ---- 记录无模块 / 决策有模块 ----
-_orig3 = llm_mod.extract_memories
-llm_mod.extract_memories = lambda t, existing_modules=None: [
-    {"level": "note", "module": "web", "content": "一条过程性记录内容"},
-    {"level": "decision", "module": "web", "content": "决定了 web 模块归属"},
-]
-ids_mod = mem_mod.capture(conn, "x", project_id=pid, session_key="modtest")
-llm_mod.extract_memories = _orig3
-rows_mod = {r["level"]: r["module"] for r in conn.execute(
-    "SELECT level, module FROM memories WHERE id IN (%s)"
-    % ",".join("?" * len(ids_mod)), ids_mod)}
-check("92 note 无模块 (project 层)", rows_mod.get("note") == "", f"{rows_mod}")
-check("93 decision 有模块", rows_mod.get("decision") == "web", f"{rows_mod}")
 conn.commit()
 
 # ---- Web 冒烟 (fastapi 可选) ----

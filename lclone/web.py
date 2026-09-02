@@ -39,24 +39,21 @@ class AskIn(BaseModel):
 
 class RememberIn(BaseModel):
     content: str
-    level: str = "decision"
+    level: str = "insight"
     project_id: Optional[int] = None
     reason: str = ""
-    module: str = ""
 
 
 class CaptureIn(BaseModel):
     text: str
     title: str = ""
     project_id: Optional[int] = None
-    module: str = ""
 
 
 class ReviewIn(BaseModel):
     id: int
     action: str = "keep"
     content: Optional[str] = None
-    module: Optional[str] = None
 
 
 class DemoteIn(BaseModel):
@@ -78,10 +75,6 @@ class ProjectIn(BaseModel):
     name: str
     path: str = ""
     charter: str = ""
-
-
-class AddModuleIn(BaseModel):
-    name: str
 
 
 # ================================================================ 共享样式
@@ -282,7 +275,7 @@ WORK_BODY = r"""
   <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
   <span class="sp"></span>
-  <button class="ghost" id="btn-pending" onclick="openPending()" title="查看并处理待确认决策">待确认 <b id="pending-n">0</b></button>
+  <button class="ghost" id="btn-pending" onclick="openPending()" title="查看并处理待确认洞察">待确认 <b id="pending-n">0</b></button>
   <a class="navbtn" href="/ask">问答 →</a>
 </header>
 <div class="shell">
@@ -324,16 +317,12 @@ WORK_BODY = r"""
     <div class="meta" id="m-meta"></div>
     <textarea id="m-content" placeholder="记忆内容…"></textarea>
     <div class="row">
-      <select id="m-level" style="width:150px" onchange="syncModuleUI()">
-        <option value="decision">决策</option>
+      <select id="m-level" style="width:150px">
+        <option value="insight">洞察</option>
         <option value="note">记录</option>
       </select>
-      <select id="m-owner" style="flex:1" onchange="syncModuleUI()"><option value="">全局层</option></select>
+      <select id="m-owner" style="flex:1"><option value="">全局层</option></select>
       <span class="muted" id="m-owner-hint"></span>
-    </div>
-    <div class="row">
-      <span class="muted" style="width:150px">模块（仅决策）</span>
-      <select id="m-module" style="flex:1" disabled><option value="">（记录无模块）</option></select>
     </div>
     <div class="links" id="m-links"></div>
     <div class="row" style="justify-content:flex-end">
@@ -347,7 +336,7 @@ WORK_BODY = r"""
 <div class="modal-bg" id="pending-modal">
   <div class="modal">
     <div class="modal-head">
-      <h3>待确认决策</h3>
+      <h3>待确认洞察</h3>
       <button class="modal-x" onclick="closePending()" title="关闭">✕</button>
     </div>
     <div id="pending-list"></div>
@@ -360,8 +349,6 @@ let PROJS = [], MEMS = [], LINKS = [];
 const EXPANDED = new Set();
 const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
 const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
-let FOCUS_MODULE = null;   // 当前 focus 的模块名 (叶子层)
-let MODULES = {};   // pid -> [声明的模块名]
 let CUR_MID = null;
 const API = {
   projects: async () => (await (await fetch('/api/projects')).json()).items,
@@ -373,8 +360,6 @@ const API = {
   review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
   sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
-  addModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
-  delModule: async (id, name) => (await fetch('/api/projects/'+id+'/modules/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json(),
   removeProject: async id => (await fetch('/api/projects/'+id+'/remove', {method:'POST'})).json(),
   restoreProject: async id => (await fetch('/api/projects/'+id+'/restore', {method:'POST'})).json(),
 };
@@ -384,7 +369,7 @@ function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
   alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
 });
-const LN = { decision:'决策', note:'记录' };
+const LN = { decision:'洞察', note:'记录' };
 
 async function loadAll() {
   const [p, m, l, pend] = await Promise.all([
@@ -395,8 +380,6 @@ async function loadAll() {
   const pn = (pend.items || []).length;
   $('pending-n').textContent = pn;
   $('btn-pending').classList.toggle('hot', pn > 0);
-  const mods = await Promise.all(p.map(async pr => [pr.id, (await (await fetch('/api/projects/'+pr.id+'/modules')).json()).items]));
-  MODULES = Object.fromEntries(mods);
   fillOwnerSelect();
   renderSidebar(); renderGraph();
 }
@@ -405,28 +388,6 @@ function fillOwnerSelect() {
   const cur = sel.value;
   sel.innerHTML = '<option value="">全局层</option>' + PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   if (cur) sel.value = cur;
-}
-function populateModuleSelect() {
-  const sel = $('m-module');
-  const pid = $('m-owner').value;
-  const cur = sel.value;
-  if (!pid) { sel.innerHTML = '<option value="">（全局层无模块）</option>'; sel.disabled = true; }
-  else {
-    const mods = [...new Set(MEMS.filter(m => m.project_id === Number(pid)).map(m => m.module || '').filter(Boolean))];
-    sel.innerHTML = '<option value="">无模块</option>' + mods.map(mod => `<option value="${esc(mod)}">${esc(mod)}</option>`).join('');
-    sel.disabled = !mods.length;
-  }
-  if (cur) sel.value = cur;
-}
-function syncModuleUI() {
-  // 记录(note) 无模块: 仅决策(decision) 可选模块
-  const sel = $('m-module');
-  if ($('m-level').value === 'note') {
-    sel.innerHTML = '<option value="">（记录无模块）</option>';
-    sel.disabled = true; sel.value = '';
-    return;
-  }
-  populateModuleSelect();
 }
 
 /* ---- 侧边栏 (快速选择) ---- */
@@ -462,29 +423,6 @@ function _projectNode(p, cntHtml) {
   return b;
 }
 
-// 模块树节点: 名字靠左, 垃圾桶 + 数量靠右
-function _moduleNode(p, mod, cnt) {
-  const b = document.createElement('button');
-  b.className = 'layer sub'; b.id = 'lg-m-' + p.id + '-' + mod;
-  const rail = document.createElement('span');
-  rail.className = 'rail'; rail.style.cssText = 'width:3px;height:10px;background:#3c82f6';
-  const nm = document.createElement('span');
-  nm.className = 'nm'; nm.textContent = mod;
-  const right = document.createElement('span');
-  right.className = 'right';
-  const trash = document.createElement('span');
-  trash.className = 'icon-inline'; trash.title = '删除模块 ' + mod;
-  trash.setAttribute('role', 'button');
-  trash.innerHTML = TRASH_ICON;
-  trash.onclick = (ev) => { ev.stopPropagation(); delModule(p.id, mod); };
-  const cntEl = document.createElement('span');
-  cntEl.className = 'cnt'; cntEl.textContent = cnt;
-  right.appendChild(trash); right.appendChild(cntEl);
-  b.appendChild(rail); b.appendChild(nm); b.appendChild(right);
-  b.onclick = () => openModule(p.id, mod);
-  return b;
-}
-
 async function delProject(p) {
   if (!confirm(`确定删除项目「${p.name}」吗？\n\n墓碑式删除: 项目从列表消失、记忆停止加载，但数据保留，可撤销。`)) return;
   try { await API.removeProject(p.id); }
@@ -494,14 +432,6 @@ async function delProject(p) {
   alert(`已删除项目「${p.name}」(数据保留, 可撤销)`);
 }
 
-async function delModule(pid, mod) {
-  if (!confirm(`确定删除模块「${mod}」吗？\n\n将连带删除该模块下的所有决策记忆，不可恢复。`)) return;
-  try { await API.delModule(pid, mod); }
-  catch (e) { alert('删除失败: ' + ((e && e.message) || e)); return; }
-  if (FOCUS_MODULE === mod) FOCUS_MODULE = null;
-  await loadAll();
-  alert(`已删除模块「${mod}」`);
-}
 function renderSidebar() {
   const box = $('tree'); box.innerHTML = '';
   box.appendChild(treeBtn('global', null, '全局层', 'global', '∞', 'lg-global'));
@@ -509,28 +439,12 @@ function renderSidebar() {
     const pendTag = p.pending_count ? ` 待确认 <b>${p.pending_count}</b>` : '';
     // 项目节点: 名字 + 行内垃圾桶 (删除项目), 点击节点本身仍为选中
     box.appendChild(_projectNode(p, `记忆 <b>${p.mem_count}</b>${pendTag}`));
-    // 展开项目时显示其模块子节点 (树状)
-    if (EXPANDED.has(p.id)) {
-      const mods = [...new Set([...(MODULES[p.id] || []), ...MEMS.filter(m => m.project_id === p.id).map(m => m.module || '').filter(Boolean)])];
-      mods.forEach(mod => {
-        const cnt = MEMS.filter(m => m.project_id === p.id && (m.module || '') === mod).length;
-        // 模块节点: 名字 + 行内垃圾桶 (删除模块)
-        box.appendChild(_moduleNode(p, mod, cnt));
-      });
-      // 末尾: 添加模块
-      const ab = document.createElement('button');
-      ab.className = 'layer sub'; ab.id = 'lg-addm-' + p.id;
-      ab.innerHTML = `<span class="rail" style="background:transparent"></span><span class="nm" style="color:var(--acc)">＋ 添加模块</span>`;
-      ab.onclick = () => addModule(p.id);
-      box.appendChild(ab);
-    }
   });
   if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
   document.querySelectorAll('.layer').forEach(x => x.classList.remove('on'));
-  // 高亮: 模块 > 项目 > 全局层
+  // 高亮: 项目 > 全局层
   let sel = 'lg-global';
-  if (FOCUS_MODULE && EXPANDED.size === 1) sel = 'lg-m-' + [...EXPANDED][0] + '-' + FOCUS_MODULE;
-  else if (EXPANDED.size === 1) sel = 'lg-p' + [...EXPANDED][0];
+  if (EXPANDED.size === 1) sel = 'lg-p' + [...EXPANDED][0];
   const el = $(sel); if (el) el.classList.add('on');
 }
 function selectSidebar(kind, pid) {
@@ -538,28 +452,24 @@ function selectSidebar(kind, pid) {
     // 点击谁显示谁: 点其他项目直接切换; 点当前已展开的项目则收起回全局
     if (EXPANDED.size === 1 && EXPANDED.has(pid)) EXPANDED.clear();
     else { EXPANDED.clear(); EXPANDED.add(pid); }
-    FOCUS_MODULE = null;
   } else {
-    EXPANDED.clear(); FOCUS_MODULE = null;
+    EXPANDED.clear();
   }
   renderGraph(); renderSidebar();
   $('graph').scrollTop = 0;
 }
 
-/* ---- 架构图: 全局/项目/模块 三层, 每层两横向划分; 默认=全局大框(两列+嵌套项目框); 项目=大框(两列+模块框); 模块=大框(两列, 叶子) ---- */
+/* ---- 架构图: 全局/项目 两层, 每层两横向划分; 默认=全局大框(两列+嵌套项目框); 项目=大框(两列) ---- */
 function renderGraph() {
   const globals = MEMS.filter(m => !m.project_id);
   const selProj = EXPANDED.size ? PROJS.find(p => EXPANDED.has(p.id)) : null;
   const selProjMems = selProj ? MEMS.filter(m => m.project_id === selProj.id) : [];
-  const selMod = FOCUS_MODULE;
-  // 模块视图只显示决策(decision); 记录(note)无模块, 不进入模块视图
-  const selModMems = selProj ? selProjMems.filter(m => (m.module || '') === selMod && m.level === 'decision') : [];
   const cont = document.getElementById('graph');
   const W = Math.max(cont.clientWidth || 1200, 900);
   const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
   const boxLeft = padX, boxW = W - padX * 2;
   const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
-  const levels = [ ['decision','决策','#2b6cb0','#e8f1fb'], ['note','记录','#67707f','#f0f2f5'] ];
+  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'], ['note','记录','#67707f','#f0f2f5'] ];
   function head(x, y, w, tint, col, title, sub) {
     return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
       `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
@@ -574,7 +484,7 @@ function renderGraph() {
     return `<g class="box" onclick="openMem(${m.id})"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
       `<text x="${x + 12}" y="${y + 20}" class="bt" style="font-size:12px">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt" style="font-size:12px">${esc(b)}</text>` : '') +
-      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">#${m.id} · ${(m.created_at || '').slice(0, 10)}${m.module ? ' · ' + esc(m.module) : ''}</text></g>`;
+      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">#${m.id} · ${(m.created_at || '').slice(0, 10)}</text></g>`;
   }
   function levelColumns(ms, ox, oy, lvls) {
     const cols_src = lvls || levels;
@@ -621,51 +531,13 @@ function renderGraph() {
 
   let bg = '';
   let contentBottom = 0;
-  if (selMod && selProj) {
-    // ---- 模块视图 (叶子): 只显示决策列 (记录无模块, 不在此显示) ----
-    const { s, gh } = levelColumns(selModMems, innerLeft, HEAD + G_H + 18,
-                                   [['decision','决策','#2b6cb0','#e8f1fb']]);
-    const pvH = G_H + 18 + gh + 30;
-    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
-    bg += head(boxLeft, HEAD, boxW, '#e8f5ee', '#2f7d4f', '模块「' + esc(selMod) + '」', selModMems.length + ' 条记忆');
-    bg += s;
-    bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 点击项目「${esc(selProj.name)}」/ 侧边栏返回 · 记忆卡片点开编辑</text>`;
-    contentBottom = HEAD + pvH + 18;
-  } else if (selProj) {
-    // ---- 项目视图: 两横向划分 + 嵌套模块框(有模块) ----
+  if (selProj) {
+    // ---- 项目视图: 两横向划分 ----
     const { s, gh } = levelColumns(selProjMems, innerLeft, HEAD + G_H + 18);
-    const modTint = ['#e8f1fb','#f1eafa','#e8f5ee','#fbeede','#f0f2f5'];
-    const mods = [...new Set([...(MODULES[selProj.id] || []), ...selProjMems.map(m => m.module || '').filter(Boolean)])];
-    let modFrameH = 0;
-    if (mods.length) {
-      const rowN = 3, gap = 16;
-      const cardH = 62;   // 模块卡紧凑固定高
-      modFrameH = G_H + 14 + Math.ceil(mods.length / rowN) * cardH + (Math.ceil(mods.length / rowN) - 1) * gap + 14;
-    }
-    const pvH = G_H + 18 + gh + (mods.length ? XGAP + modFrameH : 0) + 30;
+    const pvH = G_H + 18 + gh + 30;
     bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
     bg += head(boxLeft, HEAD, boxW, '#f1eafa', '#7a4fb0', '项目「' + esc(selProj.name) + '」', selProjMems.length + ' 条记忆');
     bg += s;
-    if (mods.length) {
-      const mTop = HEAD + G_H + 18 + gh + XGAP;
-      bg += `<rect x="${innerLeft}" y="${mTop}" width="${innerW}" height="${modFrameH}" rx="14" class="bandbox"/>`;
-      bg += head(innerLeft, mTop, innerW, '#e8f1fb', '#2b6cb0', '模块（次级竖向划分）', mods.length + ' 个');
-      bg += `<text x="${innerLeft + innerW - 80}" y="${mTop + G_H / 2 + 6}" class="bs" style="fill:#2b6cb0;cursor:pointer" onclick="addModule(${selProj.id})">＋ 模块</text>`;
-      const rowN = 3, gap = 16, pw = (innerW - 2 * IN - (rowN - 1) * gap) / rowN, cardH = 62;
-      let mx = innerLeft + IN, my = mTop + G_H + 20;
-      mods.forEach((mod, i) => {
-        if (i > 0 && i % rowN === 0) { mx = innerLeft + IN; my += cardH + gap; }
-        const ms = selProjMems.filter(m => (m.module || '') === mod);
-        const tint = modTint[i % modTint.length];
-        bg += `<g class="box" onclick="openModule(${selProj.id}, '${mod.replace(/'/g, "\\'")}')">` +
-          `<rect x="${mx}" y="${my}" width="${pw}" height="${cardH}" rx="12" class="bandbox"/>` +
-          `<rect x="${mx}" y="${my}" width="${pw}" height="34" rx="12" fill="${tint}"/>` +
-          `<text x="${mx + 10}" y="${my + 23}" class="bt" style="fill:#3c82f6;font-weight:bold">${esc(mod)}</text>` +
-          `<text x="${mx + pw - 10}" y="${my + 23}" class="bs" text-anchor="end">${ms.length} 条</text>` +
-          `<text x="${mx + 10}" y="${my + cardH - 6}" class="bs" style="fill:#8b95a9">点击进入其结构 →</text></g>`;
-        mx += pw + gap;
-      });
-    }
     bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 侧边栏「全局层」返回总览 · 记忆卡片点开编辑</text>`;
     contentBottom = HEAD + pvH + 18;
   } else {
@@ -701,7 +573,7 @@ function renderGraph() {
   const svg = `<svg id="graph-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="${W}" height="${H}" fill="#f6f8fb"/>` + bg + '</svg>';
   $('graph').innerHTML = svg;
   $('graph-svg').style.transform = 'scale(1)';
-  $('graph-sum').textContent = `记忆 ${MEMS.length} · 全局 ${globals.length} · 项目 ${PROJS.length}` + (selMod ? ' · 模块：' + selMod : selProj ? ' · 项目：' + selProj.name : '');
+  $('graph-sum').textContent = `记忆 ${MEMS.length} · 全局 ${globals.length} · 项目 ${PROJS.length}` + (selProj ? ' · 项目：' + selProj.name : '');
 }
 
 function prevPage(lv) {
@@ -715,18 +587,7 @@ function nextPage(lv) {
 
 function toggleProj(pid) {
   if (EXPANDED.has(pid)) EXPANDED.delete(pid); else EXPANDED.add(pid);
-  FOCUS_MODULE = null;
   renderGraph(); renderSidebar();
-}
-function openModule(pid, mod) {
-  EXPANDED.add(pid); FOCUS_MODULE = mod;
-  renderGraph(); renderSidebar();
-}
-async function addModule(pid) {
-  const name = prompt('新模块名');
-  if (!name) return;
-  try { await API.addModule(pid, name); } catch (e) { alert('添加失败: ' + ((e && e.message) || e)); }
-  await loadAll();
 }
 function zoom(f) {
   const svg = $('graph-svg'); if (!svg) return;
@@ -744,8 +605,6 @@ function openMem(mid) {
   $('m-content').value = m.content;
   $('m-level').value = m.level || 'note';
   $('m-owner').value = m.project_id || '';
-  syncModuleUI();
-  $('m-module').value = m.module || '';
   $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
   $('m-owner-hint').textContent = m.project_id ? '（改为全局层 = 上升）' : '（选择项目 = 下降）';
   const outs = LINKS.filter(l => l.source_id === mid).map(l => l.target_id);
@@ -761,7 +620,7 @@ function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
 async function saveEdit() {
   if (CUR_MID == null) return saveAdd();
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
-  await API.review({ id: CUR_MID, action: 'edit', content, module: $('m-module').value });
+  await API.review({ id: CUR_MID, action: 'edit', content });
   await loadAll(); closeModal(); alert('已保存 #' + CUR_MID);
 }
 async function applyMove() {
@@ -777,12 +636,12 @@ async function delMem() {
   await loadAll(); closeModal(); alert('已删除 #' + CUR_MID);
 }
 
-/* ---- 待确认决策 (B 类确认关卡) ---- */
+/* ---- 待确认洞察 (B 类确认关卡) ---- */
 async function openPending() {
   const r = await (await fetch('/api/pending')).json();
   const items = r.items || [];
   const box = $('pending-list');
-  if (!items.length) box.innerHTML = '<div class="empty">暂无待确认决策</div>';
+  if (!items.length) box.innerHTML = '<div class="empty">暂无待确认洞察</div>';
   else box.innerHTML = items.map(m => `
     <div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">
       <div style="font-size:13px;color:var(--fg);margin-bottom:6px">${esc(m.content)}</div>
@@ -802,10 +661,8 @@ async function confirmPending(id, action) {
 
 /* ---- 添加记忆 / 注册项目 ---- */
 function openAdd() {
-  $('m-content').value = ''; $('m-level').value = 'decision';
+  $('m-content').value = ''; $('m-level').value = 'insight';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
-  syncModuleUI();
-  $('m-module').value = '';
   $('m-meta').textContent = '新建记忆'; $('m-links').textContent = '';
   $('m-title').textContent = '新建记忆';
   $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').textContent = '记住';
@@ -814,23 +671,20 @@ function openAdd() {
 }
 function openAddLevel(level) {
   openAdd();
-  $('m-level').value = level || 'decision';
+  $('m-level').value = level || 'insight';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
-  syncModuleUI();
-  $('m-module').value = FOCUS_MODULE || '';
 }
 async function saveAdd() {
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
   const level = $('m-level').value;
   const body = { content, level };
-  if (level !== 'note' && $('m-module').value) body.module = $('m-module').value;
   if ($('m-owner').value) body.project_id = Number($('m-owner').value);
   const r = await API.remember(body);
   await loadAll(); closeModal(); alert('已记住 #' + r.id);
 }
 function toggleReg() { $('reg-form').classList.toggle('on'); }
 async function organize() {
-  if (!confirm('整理会把语义相近的记忆合并成一条（不跨项目/等级/模块）。确定执行？')) return;
+  if (!confirm('整理会把语义相近的记忆合并成一条（不跨项目/等级）。确定执行？')) return;
   const btn = event && event.target;
   try {
     const r = await (await fetch('/api/organize', {method:'POST'})).json();
@@ -1052,29 +906,6 @@ def create_app(db_path: Optional[str] = None):
         except ValueError as e:
             raise HTTPException(400, str(e))
 
-    @app.get("/api/projects/{pid}/modules")
-    def project_modules(pid: int, conn: sqlite3.Connection = Depends(get_db)):
-        return {"items": proj_mod.list_modules(conn, pid)}
-
-    @app.post("/api/projects/{pid}/modules")
-    def add_project_module(pid: int, body: AddModuleIn,
-                           conn: sqlite3.Connection = Depends(get_db)):
-        try:
-            proj_mod.add_module(conn, pid, body.name)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        return {"ok": True}
-
-    @app.post("/api/projects/{pid}/modules/delete")
-    def delete_project_module(pid: int, body: AddModuleIn,
-                              conn: sqlite3.Connection = Depends(get_db)):
-        """删除模块并连带删除该模块下的决策记忆。"""
-        try:
-            removed = proj_mod.remove_module(conn, pid, body.name)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        return {"ok": True, "removed": removed}
-
     @app.post("/api/projects/{pid}/remove")
     def remove_project(pid: int, conn: sqlite3.Connection = Depends(get_db)):
         """墓碑式移除项目: 项目从列表消失、记忆停止加载, 可恢复。"""
@@ -1098,14 +929,14 @@ def create_app(db_path: Optional[str] = None):
         pid = body.project_id
         # Web 手动添加 = 用户当场显式确认 → decision 直接生效
         mid = mem_mod.remember(conn, body.content, level=body.level,
-                               project_id=pid, reason=body.reason, module=body.module,
+                               project_id=pid, reason=body.reason,
                                confirmed=True)
         return {"id": mid}
 
     @app.post("/api/capture")
     def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_db)):
         ids = mem_mod.capture(conn, body.text, project_id=body.project_id,
-                              title=body.title, module=body.module)
+                              title=body.title)
         return {"ids": ids}
 
     @app.get("/api/pending")
@@ -1132,8 +963,7 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/review")
     def review(body: ReviewIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
-            mem_mod.review(conn, body.id, body.action, new_content=body.content,
-                           new_module=body.module)
+            mem_mod.review(conn, body.id, body.action, new_content=body.content)
         except ValueError as e:
             raise HTTPException(400, str(e))
         return {"ok": True}

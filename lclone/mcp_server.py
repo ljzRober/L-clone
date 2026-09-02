@@ -2,7 +2,7 @@
 """L-clone MCP 服务器 (零第三方依赖)。
 
 把外置大脑的记忆能力暴露给任何 MCP 客户端 (Claude Desktop / Cursor /
-本 GUI 等), 实现"对话时自动记忆": 会话开始召回、对话中自动沉淀决策。
+本 GUI 等), 实现"对话时自动记忆": 会话开始召回、对话中自动沉淀洞察。
 
 协议: MCP (Model Context Protocol) over stdio, 纯 JSON-RPC 2.0 实现,
 不依赖 mcp SDK, 与 lclone 本身一样零第三方依赖。
@@ -72,7 +72,7 @@ def _unattributed_msg() -> str:
 TOOLS = [
     {
         "name": "remember",
-        "description": "主动记忆: 写入一条已确认的决策/边界/事实。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册(名=仓库basename); 无 git 仓库时返回「⚠️未归属」信号, 需先问用户(新建项目 or project=global)。level=decision 时默认进待确认(pending), 除非用户当场已确认该决策(此时传 confirmed=true); level=note 恒直接生效。",
+        "description": "主动记忆: 写入一条已确认的洞察/边界/事实。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册(名=仓库basename); 无 git 仓库时返回「⚠️未归属」信号, 需先问用户(新建项目 or project=global)。level=insight 时默认进待确认(pending), 除非用户当场已确认该洞察(此时传 confirmed=true); level=note 恒直接生效。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -81,18 +81,17 @@ TOOLS = [
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
-                "module": {"type": "string", "description": "项目内模块名 (可选, 不传由代码增量聚类自动归)"},
-                "level": {"type": "string", "enum": ["decision", "note"],
-                          "description": "默认 decision"},
+                "level": {"type": "string", "enum": ["insight", "note"],
+                          "description": "默认 insight"},
                 "confirmed": {"type": "boolean",
-                              "description": "decision 是否已当场经用户确认 (true=直接生效, false/缺省=进待确认)"},
+                              "description": "insight 是否已当场经用户确认 (true=直接生效, false/缺省=进待确认)"},
             },
             "required": ["content"],
         },
     },
     {
         "name": "capture",
-        "description": "自动捕获: 把一段对话/工作内容提炼成决策/记录。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册; 无 git 仓库时返回「⚠️未归属」信号, 需先问用户。决策(decision)进待确认, 记录(note)直接生效; 返回结构化结果(区分决策/记录), 决策需立刻向用户逐条确认。module 由代码增量聚类自动归, LLM 不起名。",
+        "description": "自动捕获: 把一段对话/工作内容提炼成洞察/记录。归属判定(代码强制): 优先按 cwd 的 git 仓库匹配已注册项目; 检测到仓库但未注册则自动注册; 无 git 仓库时返回「⚠️未归属」信号, 需先问用户。洞察(insight)进待确认, 记录(note)直接生效; 返回结构化结果(区分洞察/记录), 洞察需立刻向用户逐条确认。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -101,7 +100,6 @@ TOOLS = [
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
-                "module": {"type": "string", "description": "项目内模块名 (可选, 不传由代码增量聚类自动归)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
                 "session_key": {"type": "string", "description": "外部会话 id; 缺省自动取 DSH_SESSION_ID, 同一会话只建一条 note 并逐轮追加"},
             },
@@ -214,12 +212,12 @@ def call_tool(name: str, args: dict) -> str:
                 where = f"项目 #{pid}"
             confirmed = bool(args.get("confirmed", False))
             mid = mem_mod.remember(conn, args["content"],
-                                   level=args.get("level", "decision"),
-                                   project_id=pid, module=args.get("module", ""),
+                                   level=args.get("level", "insight"),
+                                   project_id=pid,
                                    confirmed=confirmed)
             tail = ""
-            if args.get("level", "decision") == "decision" and not confirmed:
-                tail = " (决策进待确认: 请向用户逐条确认保留/删除)"
+            if args.get("level", "insight") == "insight" and not confirmed:
+                tail = " (洞察进待确认: 请向用户逐条确认保留/删除)"
             return f"已主动记忆 #{mid} [{where}]{tail}"
         if name == "capture":
             pid = _resolve_project(conn, args.get("project"))
@@ -235,23 +233,22 @@ def call_tool(name: str, args: dict) -> str:
                 where = f"项目 #{pid}"
             ids = mem_mod.capture(conn, args["text"], project_id=pid,
                                   title=args.get("title", ""),
-                                  module=args.get("module", ""),
                                   session_key=args.get("session_key", ""))
             if not ids:
-                return "未提炼出可记忆的内容 (内容里可能没有决策或值得记的事实)"
+                return "未提炼出可记忆的内容 (内容里可能没有洞察或值得记的事实)"
             rows = conn.execute(
                 "SELECT id, level, content FROM memories WHERE id IN (%s)"
                 % ",".join("?" * len(ids)), ids
             ).fetchall()
-            decisions = [r for r in rows if r["level"] == "decision"]
+            decisions = [r for r in rows if r["level"] == "insight"]
             notes = [r for r in rows if r["level"] == "note"]
             lines = [f"已捕获 {len(ids)} 条记忆 [{where}]:"]
             if notes:
                 lines.append("记录(已生效): " + ", ".join(f"#{r['id']}" for r in notes))
             if decisions:
-                lines.append("决策(待确认): " + ", ".join(
+                lines.append("洞察(待确认): " + ", ".join(
                     f"#{r['id']} {r['content'][:40]}" for r in decisions))
-                lines.append("⚠️ 请立刻向用户逐条确认这些决策保留/删除 (ask_user_question)")
+                lines.append("⚠️ 请立刻向用户逐条确认这些洞察保留/删除 (ask_user_question)")
             return "\n".join(lines)
         if name == "recall":
             pid = _resolve_project(conn, args.get("project"))

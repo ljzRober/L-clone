@@ -109,25 +109,69 @@ THEN 重新探测健康状态并保持离线提示（不残留旧空白 iframe�
 
 ### Requirement: 决策确认 UI
 
-DSH 决策确认 SHALL 由客户端表达（不进主 agent）：`client.js` SHALL 轮询 host `/api/lclone-decisions` 获取待确认决策，检测到新增时以弹窗（决策内容 + 保留/删除/稍后按钮）与侧边栏角标呈现；用户点击保留/删除 SHALL 经 `/api/lclone-review` 提交（host 代理到 lclone `/api/review`），「稍后」SHALL 把该决策留作工作台 pending。
+DSH 洞察确认 SHALL 由客户端表达（不进主 agent）：`client.js` SHALL 轮询 host `/api/lclone-decisions` 获取待确认洞察，检测到新增时以弹窗（洞察内容 + 保留/删除/稍后按钮）与侧边栏角标呈现；**若为项目级待确认洞察，弹窗在按钮上方 SHALL 提供一个「提升至全局记忆」勾选框**（默认不勾选）。用户勾选后点「保留」→ 后端一步执行 `promote`（提升到全局层 project_id=NULL 并确认落地 status=active）；不勾选点「保留」→ 仅在项目级落地。用户点击保留/删除 SHALL 经 `/api/lclone-review` 提交（host 代理到 lclone `/api/review`），「稍后」SHALL 把该洞察留作工作台 pending。
 
 #### Scenario: 新增待确认弹窗
 
-WHEN 客户端轮询到 id 未见过（未入 seen）的待确认决策
-THEN 渲染弹窗（决策内容 + 保留/删除/稍后）+ 更新侧边栏角标计数，主 agent 不参与
+WHEN 客户端轮询到 id 未见过（未入 seen）的待确认洞察
+THEN 渲染弹窗（洞察内容 + 保留/删除/稍后）+ 更新侧边栏角标计数，主 agent 不参与
 
 #### Scenario: 保留/删除落地
 
 WHEN 用户点击弹窗「保留」或「删除」
 THEN 客户端 POST /api/lclone-review {id, action}，成功后弹窗移除该条并刷新角标
 
+#### Scenario: 提升到全局落地
+
+WHEN 项目级待确认洞察勾选了「提升至全局记忆」并点击「保留」
+THEN 客户端 POST /api/lclone-review {id, action:'promote'}，后端把该洞察提升到全局层(project_id=NULL)并确认落地(active)；弹窗移除该条并刷新角标
+
+#### Scenario: 不勾选保留于项目级
+
+WHEN 项目级待确认洞察未勾选「提升至全局记忆」并点击「保留」
+THEN 客户端 POST /api/lclone-review {id, action:'keep'}，该洞察在项目级落地(active)，不提升到全局
+
 #### Scenario: 稍后留pending
 
 WHEN 用户点击「稍后」
-THEN 该决策从弹窗消失、计入 seen，留在工作台 pending 待后续确认
+THEN 该洞察从弹窗消失、计入 seen，留在工作台 pending 待后续确认
 
 #### Scenario: 服务离线
 
 WHEN /api/lclone-decisions 拉取失败（lclone web 未启动）
 THEN 清空角标并隐藏弹窗，轮询继续，服务恢复后重新呈现
+
+### Requirement: 会话开始加载 skill
+
+lclone-memory-dsh SHALL 在插件加载时注册 lclone-memory 全量 skill（`ctx.skills.registerProvider`，读取已安装的 `~/.agents/skills/lclone-memory/SKILL.md`），并在**会话首轮**（第一个 user/message，`bootstrapped` Set 保证每会话一次）一次性运行 `lclone bootstrap --cwd <会话cwd>`，把【skill 全文】+【bootstrap 记忆】经 `agent.steer` 注入会话（完整 UserMessage 形状 + `source:{kind:'plugin'}`），**每会话仅注入一次**，不重复注入。注入内容按当前环境决定：`cwd` 落进已知项目 →【项目方向 + 项目记忆 + 全局记忆】；否则仅【全局记忆】。host 端 SHALL 声明 `inject=['skills','agents']`。skill 全文与记忆注入后主导整段会话。
+
+#### Scenario: 注册全量 skill
+
+WHEN 插件加载
+THEN 通过 ctx.skills.registerProvider 注册 lclone-memory skill（读已安装 SKILL.md），skill 完整在场可被 agent 全量加载
+
+#### Scenario: 不再注入记忆
+
+WHEN 会话首轮注入完成
+THEN 同一会话后续轮次不再重复注入记忆/重跑 bootstrap；每轮只 capture 记洞察
+
+#### Scenario: 注册失败静默
+
+WHEN 无法读取已安装 SKILL.md 或 registerProvider 抛错
+THEN 静默记日志，不中断插件其余功能（capture / web 路由）
+
+#### Scenario: 会话首轮注入一次
+
+WHEN 会话产生第一个 user/message 且该会话未注入过
+THEN 插件运行 bootstrap --cwd 并 steer 注入【skill 全文 + 记忆】；同一会话后续不再注入
+
+#### Scenario: 项目会话注入
+
+WHEN 会话 cwd 落进已知项目（detect_project_by_git 命中）
+THEN bootstrap --cwd 注入 项目方向 + 项目记忆 + 全局记忆
+
+#### Scenario: 全局会话注入
+
+WHEN 会话不在已知项目（或无 cwd）
+THEN bootstrap 只注入全局记忆
 

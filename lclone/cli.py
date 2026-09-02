@@ -100,11 +100,11 @@ def cmd_remember(args) -> None:
     else:
         where = f"项目 #{pid}" if pid is not None else "全局层"
     mid = mem_mod.remember(conn, args.content, level=args.level,
-                           project_id=pid, reason=args.reason, module=args.module,
+                           project_id=pid, reason=args.reason,
                            confirmed=args.confirmed)
     tail = ""
-    if args.level == "decision" and not args.confirmed:
-        tail = " (决策进待确认: lclone review 确认, 或加 --confirmed 直接生效)"
+    if args.level == "insight" and not args.confirmed:
+        tail = " (洞察进待确认: lclone review 确认, 或加 --confirmed 直接生效)"
     print(f"已主动记忆 #{mid} [{where}] (level={args.level}){tail}")
 
 
@@ -126,18 +126,18 @@ def cmd_capture(args) -> None:
     else:
         where = f"项目 #{pid}" if pid is not None else "全局层"
     ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
-                          module=args.module, session_key=args.session_key or "")
+                          session_key=args.session_key or "")
     if not ids:
-        print("没有提炼出可记忆的内容 (可能没有决策或值得记的事实, 或与已有记忆重复)")
+        print("没有提炼出可记忆的内容 (可能没有洞察或值得记的事实, 或与已有记忆重复)")
     else:
         rows = conn.execute(
             "SELECT id, level FROM memories WHERE id IN (%s)"
             % ",".join("?" * len(ids)), ids
         ).fetchall()
-        decisions = [r["id"] for r in rows if r["level"] == "decision"]
+        decisions = [r["id"] for r in rows if r["level"] == "insight"]
         print(f"已捕获 {len(ids)} 条记忆 [{where}]: {ids}")
         if decisions:
-            print(f"(决策进待确认 #{decisions}, 运行 lclone review 确认; 记录已直接生效)")
+            print(f"(洞察进待确认 #{decisions}, 运行 lclone review 确认; 记录已直接生效)")
 
 
 def cmd_review(args) -> None:
@@ -204,6 +204,9 @@ def cmd_organize(args) -> None:
 def cmd_bootstrap(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
+    # 环境判定: 未显式指定 project 时, 若 cwd 落进已知项目则加载该项目的记忆, 否则仅全局。
+    if pid is None and args.cwd:
+        pid = proj_mod.detect_project_by_git(conn, cwd=args.cwd)
     out = mem_mod.bootstrap(conn, query=args.query or "", project_id=pid,
                             k=args.k)
     print(out or "(暂无记忆)")
@@ -285,7 +288,7 @@ def cmd_suggest(args) -> None:
 
 
 def cmd_pending(args) -> None:
-    """打印待确认决策 (JSON 数组 [{id, content}], 供 DSH 插件把内容注入引导消息)。"""
+    """打印待确认洞察 (JSON 数组 [{id, content}], 供 DSH 插件把内容注入引导消息)。"""
     conn = _conn(args)
     rows = conn.execute(
         "SELECT id, content FROM memories WHERE status='pending' ORDER BY id"
@@ -381,21 +384,19 @@ def build_parser() -> argparse.ArgumentParser:
     sl.add_argument("--project", default=None)
     sl.set_defaults(func=cmd_log)
 
-    sr = sub.add_parser("remember", parents=[parent], help="主动记忆 (decision 默认待确认)")
+    sr = sub.add_parser("remember", parents=[parent], help="主动记忆 (insight 默认待确认)")
     sr.add_argument("content")
-    sr.add_argument("--level", default="decision",
-                    choices=["decision", "note"])
+    sr.add_argument("--level", default="insight",
+                    choices=["insight", "note"])
     sr.add_argument("--reason", default="")
-    sr.add_argument("--module", default="", help="项目内模块名(可选, 缺省代码增量聚类)")
     sr.add_argument("--confirmed", action="store_true",
-                    help="decision 当场已确认, 直接生效 (否则进待确认)")
+                    help="insight 当场已确认, 直接生效 (否则进待确认)")
     sr.add_argument("--project", default=None)
     sr.set_defaults(func=cmd_remember)
 
-    sc = sub.add_parser("capture", parents=[parent], help="自动捕获决策/记录 (B, 进草稿待确认)")
+    sc = sub.add_parser("capture", parents=[parent], help="自动捕获洞察/记录 (B, 进草稿待确认)")
     sc.add_argument("text", help="本次工作/讨论内容")
     sc.add_argument("--title", default="")
-    sc.add_argument("--module", default="", help="项目内模块名(可选)")
     sc.add_argument("--project", default=None)
     sc.add_argument("--session-key", default="", help="外部会话 id, 同一会话只建一条 note 并逐轮追加")
     sc.add_argument("--global-fallback", action="store_true",
@@ -404,7 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")
     sv.add_argument("--id", type=int, default=None)
-    sv.add_argument("--action", choices=["keep", "edit", "delete"], default="keep")
+    sv.add_argument("--action", choices=["keep", "edit", "delete", "promote"], default="keep")
     sv.add_argument("--edit-new", default=None)
     sv.add_argument("--all", choices=["keep", "delete"], default=None,
                     help="对全部草稿批量执行 keep/delete")
@@ -419,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr2.set_defaults(func=cmd_recall)
 
     sb = sub.add_parser("bootstrap", parents=[parent],
-                        help="会话启动引导 (charter+全局记忆+按话题召回)")
+                        help="会话启动引导 (charter+全局记忆+按话题召回+按环境的项目记忆)")
     sb.add_argument("query", nargs="?", default="", help="本次话题/首条消息 (可为空)")
     sb.add_argument("--project", default=None)
     sb.add_argument("--k", type=int, default=5)
@@ -488,7 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     sgg.set_defaults(func=cmd_suggest)
 
     spn = sub.add_parser("pending", parents=[parent],
-                          help="打印待确认决策数 (非交互, 供插件探测)")
+                          help="打印待确认洞察数 (非交互, 供插件探测)")
     spn.set_defaults(func=cmd_pending)
 
     so = sub.add_parser("organize", parents=[parent],
@@ -497,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sm = sub.add_parser("memories", parents=[parent], help="列出记忆")
     sm.add_argument("--project", default=None, help="只看某项目")
-    sm.add_argument("--level", choices=["decision", "note"],
+    sm.add_argument("--level", choices=["insight", "note"],
                     default=None, help="只看某等级")
     sm.add_argument("--status", choices=["active", "pending", "archived"],
                     default="active", help="默认只看正式记忆, 草稿用 pending")

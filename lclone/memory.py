@@ -22,14 +22,10 @@ from . import db as db_mod
 from . import llm
 from .db import pack_vec, unpack_vec
 
-LEVELS = ("note", "decision")
+LEVELS = ("note", "insight")
 
 # note 超长时的滚动压缩阈值: 超过这个长度, 把整条 note 摘要一次
 NOTE_COMPACT_THRESHOLD = 3000
-
-# 泛名模块黑名单: 命中则挂项目层, 不建模块 (防 core/misc/general 等无意义模块)
-GENERIC_MODULES = {"core", "misc", "general", "other", "todo", "notes", "memory",
-                   "project", "module", "none", "miscellaneous", "stuff", "etc"}
 
 # ---- 记忆准入条件 (代码强制, 不依赖模型意图) ----
 # 1. 排除「做了什么」: 代码改动/接口/重构/bug 归 git & spec, 不进 lclone 记忆
@@ -37,8 +33,8 @@ DID_MARKERS = (
     "修复", "重构", "迁移", "回滚", "commit", "fix", "bug", "hotfix",
     "refactor", "新增端点", "改接口", "实现了一个",
 )
-# 2. 决策信号: level=decision 的内容必须含其一, 否则降级为 note (不是真决策)
-DECISION_SIGNALS = (
+# 2. 洞察信号: level=decision 的内容必须含其一, 否则降级为 note (不是真洞察)
+INSIGHT_SIGNALS = (
     "决定", "确定", "定为", "采用", "选择", "方案", "边界", "规则", "约定", "改为",
     "统一", "规范", "策略", "命名", "职责", "归属", "分层", "架构", "选型",
     "原则", "约束", "标准", "阈值", "默认", "必须", "只允许", "不再", "定义",
@@ -107,29 +103,26 @@ def _ensure_session(conn: sqlite3.Connection, project_id: Optional[int],
 
 
 # ---------------------------------------------------------------- C 主动触发
-def remember(conn: sqlite3.Connection, content: str, level: str = "decision",
+def remember(conn: sqlite3.Connection, content: str, level: str = "insight",
              project_id: Optional[int] = None, reason: str = "",
-             source_ref: str = "", module: str = "",
-             confirmed: bool = False) -> int:
-    level = level if level in LEVELS else "decision"
+             source_ref: str = "", confirmed: bool = False) -> int:
+    level = level if level in LEVELS else "insight"
     emb = llm.embed_one(content)
-    # 记录(note) 无模块: 记录都在 project 层 (偶尔全局); 仅决策挂模块 (词表强制)
-    mod = "" if level == "note" else _resolve_module(conn, project_id, module)
-    # 决策强确认: decision 默认进 pending, 除非 confirmed=True (用户当场确认); note 恒 active
-    status = "active" if (level != "decision" or confirmed) else "pending"
+    # 洞察强确认: decision 默认进 pending, 除非 confirmed=True (用户当场确认); note 恒 active
+    status = "active" if (level != "insight" or confirmed) else "pending"
     if status == "active":
         cur = conn.execute(
-            "INSERT INTO memories(project_id, level, module, content, reason, status,"
+            "INSERT INTO memories(project_id, level, content, reason, status,"
             " source_type, source_ref, embedding, confirmed_at)"
-            " VALUES (?,?,?,?,?,'active','manual',?,?,datetime('now'))",
-            (project_id, level, mod, content, reason, source_ref, pack_vec(emb)),
+            " VALUES (?,?,?,?,'active','manual',?,?,datetime('now'))",
+            (project_id, level, content, reason, source_ref, pack_vec(emb)),
         )
     else:
         cur = conn.execute(
-            "INSERT INTO memories(project_id, level, module, content, reason, status,"
+            "INSERT INTO memories(project_id, level, content, reason, status,"
             " source_type, source_ref, embedding)"
-            " VALUES (?,?,?,?,?,'pending','manual',?,?)",
-            (project_id, level, mod, content, reason, source_ref, pack_vec(emb)),
+            " VALUES (?,?,?,?,'pending','manual',?,?)",
+            (project_id, level, content, reason, source_ref, pack_vec(emb)),
         )
     _store_links(conn, cur.lastrowid, content)
     conn.commit()
@@ -161,41 +154,6 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
     return False
 
 
-def _normalize_module(name: str) -> str:
-    """模块名归一化: 小写、非字母数字转连字符、去首尾连字符。"""
-    return re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
-
-
-def _list_module_names(conn: sqlite3.Connection, project_id: Optional[int]) -> List[str]:
-    """项目内已有模块名列表 (词表, 供 LLM 复用)。"""
-    if project_id is None:
-        return []
-    return [r["name"] for r in conn.execute(
-        "SELECT name FROM modules WHERE project_id=? ORDER BY name", (project_id,))]
-
-
-def _resolve_module(conn: sqlite3.Connection, project_id: Optional[int],
-                    name: str) -> str:
-    """把 LLM 给的模块名归一化并落到代码维护的词表。
-
-    返回最终模块名 (空 = 挂项目层不建模块)。project_id=None 时全局层无模块。
-    命中已有模块 → 复用; 新名非泛名 → 入表; 泛名/空 → 挂项目层。
-    语义分类由 LLM 完成 (见 llm.extract_memories 的 module 字段), 这里只做词表强制。
-    """
-    if project_id is None:
-        return ""
-    mod = _normalize_module(name)
-    if not mod or mod in GENERIC_MODULES:
-        return ""
-    row = conn.execute(
-        "SELECT id FROM modules WHERE project_id=? AND name=?", (project_id, mod)
-    ).fetchone()
-    if row is None:
-        conn.execute("INSERT INTO modules(project_id, name) VALUES (?,?)",
-                     (project_id, mod))
-    return mod
-
-
 def _has_marker(text: str, markers) -> bool:
     t = (text or "").lower()
     return any(m.lower() in t for m in markers)
@@ -206,7 +164,7 @@ def _filter_item(item: dict) -> Optional[dict]:
 
     返回过滤后的 item (可能改 level); None 表示不记忆。
     1. 排除「做了什么」: 命中 DID_MARKERS (代码改动/接口/重构/bug) → 归 git & spec。
-    2. 决策信号: level=decision 但内容不含 DECISION_SIGNALS → 降级为 note。
+    2. 洞察信号: level=decision 但内容不含 INSIGHT_SIGNALS → 降级为 note。
     3. 琐碎: note 过短 (< NOTE_MIN_LEN) → 丢弃。
     """
     content = (item.get("content") or "").strip()
@@ -216,7 +174,7 @@ def _filter_item(item: dict) -> Optional[dict]:
         return None
     level = item.get("level") if item.get("level") in LEVELS else "note"
     item = dict(item, level=level)
-    if level == "decision" and not _has_marker(content, DECISION_SIGNALS):
+    if level == "insight" and not _has_marker(content, INSIGHT_SIGNALS):
         item["level"] = "note"
     if item["level"] == "note" and len(content) < NOTE_MIN_LEN:
         return None
@@ -225,33 +183,30 @@ def _filter_item(item: dict) -> Optional[dict]:
 
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
-            module: str = "", session_key: str = "",
+            session_key: str = "",
             note_compact_threshold: int = NOTE_COMPACT_THRESHOLD) -> List[int]:
-    """自动捕获: LLM 提炼决策/记录。
+    """自动捕获: LLM 提炼洞察/记录。
 
-    决策(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
+    洞察(decision) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效);
     记录(note) → active 直接生效 (低风险过程性事实, 免确认)。
 
     聚合: session_key 默认从环境变量 DSH_SESSION_ID 取 (代码确定性, 不靠调用方传);
     同一个 session_key 只建一条 note, 每轮往这条 note 追加内容
-    (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入决策前去重。
+    (新对话 = 新 session_key = 新 note); decision 仍逐条独立新建。写入洞察前去重。
     记录严格按「会话」聚合: 即使会话中途项目归属变化, 也只往同一条 note 追加,
     不按 project_id 拆成多条 (避免同一会话被拆成全局+项目两条 note)。
     note 超长时滚动压缩: 追加后长度超过 note_compact_threshold, 就摘要整条 note。
-    准入: 每条内容先过 _filter_item (排除「做了什么」/ 决策需含信号 / note 不过短)。
-    模块: 仅决策(decision)挂模块 (LLM 分类 + _resolve_module 词表强制);
-    记录(note) 无模块, 落在 project 层 (偶尔全局)。
+    准入: 每条内容先过 _filter_item (排除「做了什么」/ 洞察需含信号 / note 不过短)。
     """
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
-    existing_modules = _list_module_names(conn, project_id)
-    items = llm.extract_memories(text, existing_modules=existing_modules)
+    items = llm.extract_memories(text)
     reason = f"来自会话 #{session_id}"
     ref = f"session:{session_id}"
     ids = []
-    # ---- 通道一: 决策(decision) 由 LLM 提炼 → 进草稿待确认 + LLM 判断归属(module/project) ----
+    # ---- 通道一: 洞察(decision) 由 LLM 提炼 → 进草稿待确认 ----
     for raw in items or []:
-        if (raw.get("level") or "").lower() != "decision":
+        if (raw.get("level") or "").lower() != "insight":
             continue
         it = _filter_item(raw)
         if it is None:
@@ -260,16 +215,14 @@ def capture(conn: sqlite3.Connection, text: str,
         if not content:
             continue
         emb = llm.embed_one(content)
-        # 显式 module 优先, 否则用 LLM 给的 module; 词表强制 (仅决策挂模块)
-        mod = _resolve_module(conn, project_id, module or it.get("module") or "")
-        # 决策进草稿待确认 (B 类); 写入前去重
+        # 洞察进草稿待确认 (B 类); 写入前去重
         if _is_duplicate(conn, emb, project_id=project_id):
             continue
         cur = conn.execute(
-            "INSERT INTO memories(project_id, level, module, content, reason,"
+            "INSERT INTO memories(project_id, level, content, reason,"
             " status, source_type, source_ref, embedding)"
-            " VALUES (?, ?, ?, ?, ?, 'pending', 'auto', ?, ?)",
-            (project_id, "decision", mod, content, reason, ref, pack_vec(emb)),
+            " VALUES (?, ?, ?, ?, 'pending', 'auto', ?, ?)",
+            (project_id, "insight", content, reason, ref, pack_vec(emb)),
         )
         _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
@@ -300,12 +253,12 @@ def capture(conn: sqlite3.Connection, text: str,
             _store_links(conn, existing["id"], new_content)
             ids.append(existing["id"])
         else:
-            # 记录(record) 无模块: 记录都在 project 层 (偶尔全局), 不挂 module
+            # 记录(record) 落在 project 层 (偶尔全局)
             note_emb = llm.embed_one(note_text)
             cur = conn.execute(
-                "INSERT INTO memories(project_id, level, module, content, reason,"
+                "INSERT INTO memories(project_id, level, content, reason,"
                 " status, source_type, source_ref, embedding, confirmed_at)"
-                " VALUES (?, ?, '', ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
+                " VALUES (?, ?, ?, ?, 'active', 'auto', ?, ?, datetime('now'))",
                 (project_id, note_level, note_text, reason, ref, pack_vec(note_emb)),
             )
             _store_links(conn, cur.lastrowid, note_text)
@@ -316,7 +269,7 @@ def capture(conn: sqlite3.Connection, text: str,
 
 def pending_memories(conn: sqlite3.Connection) -> List[sqlite3.Row]:
     return conn.execute(
-        "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason,"
+        "SELECT m.id, m.project_id, m.level, m.content, m.reason,"
         " m.status, m.source_type, m.source_ref, m.created_at,"
         " p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
@@ -335,7 +288,7 @@ def list_memories(conn: sqlite3.Connection,
     layer="global" 时只看全局层 (project_id IS NULL) 的记忆。
     """
     q = (
-        "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason, m.status,"
+        "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.status,"
         " m.source_type, m.source_ref, m.created_at,"
         " p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
@@ -359,14 +312,23 @@ def list_memories(conn: sqlite3.Connection,
 
 
 def review(conn: sqlite3.Connection, memory_id: int, action: str,
-           new_content: Optional[str] = None,
-           new_module: Optional[str] = None) -> None:
-    """B 确认关卡: keep | edit | delete。"""
+           new_content: Optional[str] = None) -> None:
+    """B 确认关卡: keep | edit | delete | promote。
+
+    promote: 项目级记忆 提升到全局级 (project_id=NULL) 并确认落地 (status=active)——
+    用于"确认弹窗里把项目级洞察升到全局层再落地"的一步操作。
+    """
     action = action.lower()
     if action == "keep":
         conn.execute(
             "UPDATE memories SET status='active', confirmed_at=datetime('now')"
             " WHERE id=?",
+            (memory_id,),
+        )
+    elif action == "promote":
+        conn.execute(
+            "UPDATE memories SET project_id=NULL, status='active',"
+            " confirmed_at=datetime('now') WHERE id=?",
             (memory_id,),
         )
     elif action == "edit":
@@ -379,14 +341,11 @@ def review(conn: sqlite3.Connection, memory_id: int, action: str,
             " confirmed_at=datetime('now') WHERE id=?",
             (content, pack_vec(emb), memory_id),
         )
-        if new_module is not None:
-            conn.execute("UPDATE memories SET module=? WHERE id=?",
-                         (new_module.strip(), memory_id))
         _store_links(conn, memory_id, content)
     elif action == "delete":
         conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
     else:
-        raise ValueError("action 必须是 keep/edit/delete")
+        raise ValueError("action 必须是 keep/edit/delete/promote")
     conn.commit()
 
 
@@ -475,7 +434,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
     """
     qv = llm.embed_one(query)
     rows = conn.execute(
-        "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason, m.source_ref,"
+        "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.source_ref,"
         " m.created_at, m.embedding, p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
         " WHERE m.status=? AND m.embedding IS NOT NULL"
@@ -509,7 +468,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
         items.append({
             "id": r["id"], "project_id": r["project_id"],
             "project": r["project_name"] or "个人区",
-            "level": r["level"], "module": r["module"] or "", "content": r["content"],
+            "level": r["level"], "content": r["content"],
             "reason": r["reason"], "source_ref": r["source_ref"],
             "created_at": r["created_at"], "score": round(combo, 4),
         })
@@ -527,7 +486,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
         wanted = [t for t in target_ids if t not in have][:link_extra]
         if wanted:
             rows2 = conn.execute(
-                "SELECT m.id, m.project_id, m.level, m.module, m.content, m.reason,"
+                "SELECT m.id, m.project_id, m.level, m.content, m.reason,"
                 " m.source_ref, m.created_at, p.name AS project_name"
                 " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
                 " WHERE m.status=? AND m.id IN (%s)"
@@ -539,8 +498,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
                 base.append({
                     "id": r["id"], "project_id": r["project_id"],
                     "project": r["project_name"] or "个人区",
-                    "level": r["level"], "module": r["module"] or "",
-                    "content": r["content"],
+                    "level": r["level"], "content": r["content"],
                     "reason": r["reason"], "source_ref": r["source_ref"],
                     "created_at": r["created_at"], "score": None,
                     "via_link": True,
@@ -559,10 +517,11 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
 # ---------------------------------------------------------------- 会话启动引导
 def bootstrap(conn: sqlite3.Connection, query: str = "",
               project_id: Optional[int] = None, k: int = 5,
-              global_limit: int = 20) -> str:
-    """会话启动引导: charter + 全局层记忆(无条件注入) + 按 query 召回的相关记忆。
+              global_limit: int = 20, project_limit: int = 20) -> str:
+    """会话启动引导: charter + 全局层记忆(无条件注入) + 项目记忆(若落进已知项目) + 按 query 召回的相关记忆。
 
-    返回一段可直接注入上下文的文本; 无内容时返回空字符串。
+    按环境决定加载范围: 传了 project_id (会话落进已知项目) → 额外加载该项目的近 project_limit 条洞察;
+    否则只加载全局层。返回一段可直接注入上下文的文本; 无内容时返回空字符串。
     CLI 与 MCP 共用此实现。
     """
     parts: List[str] = []
@@ -579,29 +538,39 @@ def bootstrap(conn: sqlite3.Connection, query: str = "",
         (global_limit,),
     ).fetchall()
     if g:
-        # 全局层按等级分组 (决策/记录) —— 分类加载
-        dec = [r for r in g if r["level"] == "decision"]
+        # 全局层按等级分组 (洞察/记录) —— 分类加载
+        dec = [r for r in g if r["level"] == "insight"]
         note = [r for r in g if r["level"] == "note"]
         glines = []
         if dec:
-            glines.append("[决策]\n" + "\n".join(f"- {r['content']}" for r in dec))
+            glines.append("[洞察]\n" + "\n".join(f"- {r['content']}" for r in dec))
         if note:
             glines.append("[记录]\n" + "\n".join(f"- {r['content']}" for r in note))
         parts.append("【全局记忆】\n" + "\n".join(glines))
+    # 项目记忆: 会话落进已知项目 → 额外加载该项目的近 project_limit 条洞察 (有界, 避免爆上下文)。
+    if project_id is not None:
+        pj = conn.execute(
+            "SELECT content FROM memories"
+            " WHERE status='active' AND project_id=? AND level='insight'"
+            " ORDER BY id DESC LIMIT ?",
+            (project_id, project_limit),
+        ).fetchall()
+        if pj:
+            parts.append("【项目记忆】\n" + "\n".join(f"- {r['content']}" for r in pj))
     q = (query or "").strip()
     if q:
         items = recall(conn, q, k=k, project_id=project_id)
         if items:
-            # 相关记忆按 项目 → 模块 分组 —— 分类加载
+            # 相关记忆按 项目 分组 (全局层按等级) —— 分类加载
             parts.append("【相关记忆】\n" + _format_grouped(items))
-    # 待确认决策: 每轮 bootstrap 都带上, 供"强确认"——有决策草稿就主动找用户确认
+    # 待确认洞察: 每轮 bootstrap 都带上, 供"强确认"——有洞察草稿就主动找用户确认
     pend = conn.execute(
         "SELECT id, content FROM memories"
-        " WHERE level='decision' AND status='pending'"
+        " WHERE level='insight' AND status='pending'"
         " ORDER BY id DESC LIMIT 20"
     ).fetchall()
     if pend:
-        parts.append("【待确认决策】\n" + "\n".join(
+        parts.append("【待确认洞察】\n" + "\n".join(
             f"- #{r['id']} {r['content']}" for r in pend))
     return "\n\n".join(parts)
 
@@ -694,20 +663,20 @@ def suggest(conn: sqlite3.Connection, dup_threshold: float = 0.92,
     return out
 
 
-# ---------------------------------------------------------------- 分类加载 (按 项目→模块 分组)
+# ---------------------------------------------------------------- 分类加载 (按 项目 分组)
 def _format_grouped(items: List[dict], show_id: bool = False) -> str:
-    """把召回/加载结果按「项目 → 模块」分组渲染 (分类加载)。"""
+    """把召回/加载结果按「项目」分组、项目内按等级分组渲染 (分类加载)。"""
     by_proj: dict = {}
     for i in items:
         by_proj.setdefault(i.get("project") or "个人区", {}).setdefault(
-            i.get("module") or "", []).append(i)
+            i.get("level") or "", []).append(i)
     out = []
-    for proj, mods in by_proj.items():
+    for proj, levels in by_proj.items():
         out.append(f"[{proj}]")
-        for mod, mems in mods.items():
+        for lvl, mems in levels.items():
             ind = "  "
-            if mod:
-                out.append(f"  [{mod}]")
+            if lvl:
+                out.append(f"  [{lvl}]")
                 ind = "    "
             for m in mems:
                 tag = " 🔗" if m.get("via_link") else ""
@@ -722,8 +691,8 @@ def organize(conn: sqlite3.Connection) -> dict:
     通道一(确定性, 不依赖 LLM): 记录按「一个会话一条 note」修正 —— 同一 source_ref 的多条
         note 合并成一条 (修复历史上因项目归属变化被拆成全局+项目两条的 note, 如 #3/#10)。
     通道二(LLM 语义): 把「语义相近、说的是同一件事」的记忆合并成一条综合描述。
-    硬约束 (通道二): 只能合并 同项目 + 同等级(decision/note) + 同模块 的记忆;
-        跨项目/跨等级/跨模块的合并由代码强制校验拒绝 (LLM 输出后)。
+    硬约束 (通道二): 只能合并 同项目 + 同等级(decision/note) 的记忆;
+        跨项目/跨等级的合并由代码强制校验拒绝 (LLM 输出后)。
     """
     merged = removed = 0
     applied = []
@@ -763,22 +732,22 @@ def organize(conn: sqlite3.Connection) -> dict:
 
     # ---- 通道二: LLM 语义合并 (区域硬约束) ----
     rows = conn.execute(
-        "SELECT m.id, m.project_id, m.level, m.module, m.content, p.name AS proj"
+        "SELECT m.id, m.project_id, m.level, m.content, p.name AS proj"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
-        " WHERE m.status='active' ORDER BY m.project_id, m.level, m.module, m.id"
+        " WHERE m.status='active' ORDER BY m.project_id, m.level, m.id"
     ).fetchall()
     if not rows:
         return {"merged": merged, "removed": removed, "groups": applied}
     idx = {r["id"]: r for r in rows}
     body = "\n".join(
         f"#{r['id']} [({('全局' if r['project_id'] is None else r['proj'])})/"
-        f"{r['level']}/{r['module'] or '-'}] {r['content'][:120]}"
+        f"{r['level']}] {r['content'][:120]}"
         for r in rows
     )
     prompt = (
         "下面是一批记忆。请把「语义相近、说的是同一件事」的记忆合并成一条综合描述。\n"
-        "硬规则: 只能合并「项目、等级(decision/note)、模块」三者都相同的记忆; "
-        "跨项目/跨等级/跨模块一律不合并。\n"
+        "硬规则: 只能合并「项目、等级(decision/note)」都相同的记忆; "
+        "跨项目/跨等级一律不合并。\n"
         "合并内容覆盖各条所有要点, 不遗漏, 中文。只有真正相近(同一主题/同一规则)才合并;\n"
         "不相关的保持不动, 不要出现在输出里。\n"
         "只输出 JSON 数组: [{\"content\": \"合并后描述\", \"ids\": [原id...]}], "
@@ -796,16 +765,16 @@ def organize(conn: sqlite3.Connection) -> dict:
         members = [idx[i] for i in ids if i in idx]
         if len(members) < 2:
             continue
-        key = (members[0]["project_id"], members[0]["level"], members[0]["module"])
-        # 不能跨区域: 所有成员必须 项目/等级/模块 完全一致
-        if any((m["project_id"], m["level"], m["module"]) != key for m in members):
+        key = (members[0]["project_id"], members[0]["level"])
+        # 不能跨区域: 所有成员必须 项目/等级 完全一致
+        if any((m["project_id"], m["level"]) != key for m in members):
             continue
         emb = llm.embed_one(content)
         cur = conn.execute(
-            "INSERT INTO memories(project_id, level, module, content, reason, status,"
+            "INSERT INTO memories(project_id, level, content, reason, status,"
             " source_type, source_ref, embedding, confirmed_at)"
-            " VALUES (?,?,?,?,?,'active','manual','',?,datetime('now'))",
-            (key[0], key[1], key[2], content, "整理合并", pack_vec(emb)),
+            " VALUES (?,?,?,?,'active','manual','',?,datetime('now'))",
+            (key[0], key[1], content, "整理合并", pack_vec(emb)),
         )
         # 删除原记忆 (memory_links/recall_log 外键级联清理, FTS 由触发器清理)
         conn.execute("DELETE FROM memories WHERE id IN (%s)"

@@ -1,6 +1,6 @@
 """SQLite 存储层: 分层记忆 schema + FTS + 向量编解码。
 
-横向分层: sessions(L0 流水) / memories(L1 决策与记忆) / specs_index(L2 项目规划索引)
+横向分层: sessions(L0 流水) / memories(L1 洞察与记忆) / specs_index(L2 项目规划索引)
 竖向分层: 所有记录通过 project_id 归档; project_id 为 NULL 表示个人/通用区。
 """
 
@@ -32,14 +32,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at   TEXT
 );
 
--- L1 层: 决策 / 记录
+-- L1 层: 洞察 / 记录
 -- status: pending(草稿, 待确认) | active(正式) | archived(归档)
 -- source_type: auto(自动捕获) | manual(主动触发)
 CREATE TABLE IF NOT EXISTS memories (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id   INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-  level        TEXT NOT NULL DEFAULT 'note',   -- decision | note
-  module       TEXT NOT NULL DEFAULT '',       -- 项目内可选模块 (次级竖向划分), 空=直接挂项目
+  level        TEXT NOT NULL DEFAULT 'note',   -- insight | note
   content      TEXT NOT NULL,
   reason       TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT 'active',
@@ -63,18 +62,6 @@ CREATE TABLE IF NOT EXISTS specs_index (
   last_indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(project_id, rel_path)
 );
-
--- 项目内声明的模块 (modules): 让"添加模块"能创建空模块并显示; 记忆的 module 字段引用模块名
--- centroid: 该模块的记忆质心向量 (代码增量聚类用), 空 = 用户手动声明的空模块
-CREATE TABLE IF NOT EXISTS modules (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name       TEXT NOT NULL DEFAULT '',
-  centroid   BLOB,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(project_id, name)
-);
-CREATE INDEX IF NOT EXISTS idx_modules_proj ON modules(project_id);
 
 CREATE TABLE IF NOT EXISTS threads (
   id         TEXT PRIMARY KEY,
@@ -146,18 +133,17 @@ def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
 def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn = connect(db_path)
     conn.executescript(SCHEMA)
-    # 迁移: 旧库给 memories 补 module 列 (项目内模块维度, 可选)
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(memories)")]
-    if "module" not in cols:
-        conn.execute("ALTER TABLE memories ADD COLUMN module TEXT NOT NULL DEFAULT ''")
+    # 迁移: 移除 module 轴 (memories.module 列 + modules 表)
+    conn.execute("DROP TABLE IF EXISTS modules")
+    mcols = [r["name"] for r in conn.execute("PRAGMA table_info(memories)")]
+    if "module" in mcols:
+        conn.execute("ALTER TABLE memories DROP COLUMN module")
+    # 迁移: level 值 decision → insight (类型更名, 原决策改为"洞察"富知识卡)
+    conn.execute("UPDATE memories SET level='insight' WHERE level='decision'")
     # 迁移: sessions 补 session_key 列 (对应外部会话 id, 用于「一个会话一条 note」聚合)
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "session_key" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
-    # 迁移: modules 补 centroid 列 (代码增量聚类的模块质心向量)
-    mcols = [r["name"] for r in conn.execute("PRAGMA table_info(modules)")]
-    if "centroid" not in mcols:
-        conn.execute("ALTER TABLE modules ADD COLUMN centroid BLOB")
     tok = _fts_tokenizer(conn)
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "

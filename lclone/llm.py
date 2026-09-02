@@ -13,7 +13,7 @@ import hashlib
 import json
 import math
 import re
-from typing import Iterable, List, Optional
+from typing import Iterable, List
 
 from . import config
 
@@ -113,50 +113,43 @@ def chat_json(prompt: str, temperature: float = 0.2):
         return None
 
 
-def extract_memories(text: str,
-                     existing_modules: Optional[List[str]] = None) -> List[dict]:
-    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 decision / note,
-    并给出模块 (关注点)。
+def extract_memories(text: str) -> List[dict]:
+    """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 分类为 insight / note。
 
-    返回 [{"level": "decision"|"note", "module": str, "content": str, "confidence": float}]。
-    module 由 LLM 从 existing_modules 里复用, 或给出一个粗粒度新关注点;
-    词表强制 (归一化/去重/防泛名) 由 memory._resolve_module 在代码侧完成。
+    返回 [{"level": "insight"|"note", "content": str, "confidence": float}]。
 
-    decision = 选了什么方案 / 定了什么规则 / 约定什么边界 (只提炼"选择/约定", 不提炼"做了什么");
-    note = 值得记的过程性事实、观察、TODO、灵感。
+    insight = 一条原子化、自包含、内容丰富的知识/见解/教训——一个决定 / 一条经验 /
+    一个观察 / 一条复盘, 每条自带精简背景/推理/后果 (约 2-4 句), 不是逐字记录, 也不是一行;
+    note = 值得记的过程性事实/观察/灵感 (轻量, 免确认)。
 
-    自筛: 提示词要求 LLM 先判断内容归「项目 spec/代码」还是「决策/事实」——
-    代码层级的改变/特定逻辑行为变化/需求场景边界变化/重构/修 bug/接口变化 一律不输出
-    (归 sp-spec 和 git), 只提炼 decision(选型/约定/边界) 与 note(值得记的过程事实),
-    宁可少提甚至不提, 减少对用户的打扰。
+    自筛: 代码层级的改变/特定逻辑行为变化/需求场景边界变化/重构/修 bug/接口变化 一律不输出
+    (归 sp-spec 和 git); 能改写成带 WHEN/THEN requirement 的「系统必须满足的契约」也归 spec。
+    只提炼无法写成契约的「为什么这么选 / 观察到什么 / 个人经验与推理」。
 
-    落地判定 (decision-confirm-dsh-ui): 输入以「用户：」/「助手：」标注双方。只有当用户
-    提出的选择/规则被助手确认、落地或持续推进时才算 decision; 仅用户随口一提、
-    助手未确认/未回应的, 不要提炼 (减少把「未落地的一句想法」当决策入库)。
+    归属: 若某 insight 明确对应仓库内某具体 spec/文件, 项目级记忆可标注 [[spec:id]]/[[src:path]];
+    全局级记忆无仓库上下文, 一律不标注此类链接 (只有 [[m:N]] 跨记忆链接)。
 
-    dummy 后端: 整段视为一条 note, module 为空, 保证离线流程可跑通。
+    dummy 后端: 整段视为一条 note, 保证离线流程可跑通。
     """
     if backend() == "dummy":
         t = text.strip()
-        return [{"level": "note", "module": "", "content": t[:300],
+        return [{"level": "note", "content": t[:300],
                  "confidence": 1.0}] if t else []
-    mod_hint = (", ".join(existing_modules) if existing_modules
-                else "(暂无, 请给一个粗粒度关注点)")
     prompt = (
-        "你是一个记忆筛选器。核心判断: 这段内容是在「定下选择/规则」, 还是在「描述做了什么改变」?\n"
-        "只提炼「定下选择/规则」的内容:\n"
-        "- decision: 决定/采用/选择/约定/定为 X (如「决定用网格布局」「约定: 无 git 时问用户」)\n"
-        "- note: 值得跨会话保留的过程性事实/观察\n"
-        "输入以「用户：」/「助手：」标注双方。只有当用户提出的选择/规则被助手确认、落地或持续推进时,\n"
-        "才提炼为 decision; 仅用户随口一提、助手未确认/未回应的, 不要提炼。\n"
-        "凡是「描述做了什么改变」的, 一律不要提炼——包括: 代码层级的改变、特定逻辑/行为的变化\n"
-        "(如「把 X 从 A 改成 B」)、重构/实现/修复/新增端点/接口变化。\n"
-        "这些归 git 和 sp-spec, 即使某句话里隐含了某个参数值(如「每行改成 4 个」),\n"
-        "只要它是在描述「改变了什么」而非「定下了什么规则」, 就不要提炼。\n"
-        "过程性琐碎/一次性/显而易见/临时性也不要输出。宁可少提甚至不提; 没有值得记的就输出空。\n"
-        "每条一行, 格式: 类型[模块]: 内容\n"
-        f"- 模块: 英文短名, 优先复用已有模块 ({mod_hint}); 新关注点才起粗粒度名。\n"
-        "示例: decision[web]: Web 记忆图用网格布局分页\n"
+        "你是一个记忆提炼器。把输入里的「洞察/知识」提炼成一条条 insight 卡片, 而不是流水账。\n"
+        "insight = 一条原子化、自包含的知识/见解/教训: 每一个条目是一件事\n"
+        "(一个决定 / 一条经验 / 一个观察 / 一条复盘), 每条约 2-4 句, 自带「背景/是什么/影响」\n"
+        "(为什么这么定、影响是什么、以后注意什么), 让人能独立读懂。\n"
+        "不要逐字转录对话/代码 (那是 note 或 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
+        "只提炼真正值得跨会话记住的; 宁可少提甚至不提; 没有就输出空。\n"
+        "输出格式: 每条一行 `insight: <内容>`, 或 `note: <轻量过程事实>`。\n"
+        "示例: insight: 无 git 仓库时不静默落全局, 要先问用户归属, 因为这会影响后续召回范围\n"
+        "示例: note: 六月初上线\n"
+        "边界: 描述「做了什么」(代码改动/接口变化/重构/修 bug/新增端点) 一律不提炼 (归 git/spec);\n"
+        "能写成带 WHEN/THEN 的 requirement 的契约也不提炼 (那是 spec)。\n"
+        "若某条 insight 明确对应仓库内某具体 spec/文件, 可在末尾标 [[spec:名字]] 或 [[src:路径]];\n"
+        "全局/跨项目无关仓库的内容不要标这类链接。\n"
+        "输入以「用户：」/「助手：」标注; 仅用户提出、助手确认/落地/持续推进的选择才提炼为 insight。\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
@@ -166,44 +159,36 @@ def extract_memories(text: str,
         if not line or len(line) <= 3:
             continue
         level = "note"
-        module = ""
         body = line
-        m = re.match(r"^(decision|note)\s*\[([^\]]*)\]\s*[:：]\s*(.+)$",
+        m = re.match(r"^(insight|note)\s*[:：]\s*(.+)$",
                      line, re.IGNORECASE)
         if m:
             level = m.group(1).lower()
-            module = (m.group(2) or "").strip().lower()
-            body = m.group(3).strip()
+            body = m.group(2).strip()
         else:
-            m2 = re.match(r"^(decision|note)\s*[:：]\s*(.+)$", line, re.IGNORECASE)
+            m2 = re.match(r"^(insight|note)\b\s*(.*)$", line, re.IGNORECASE)
             if m2:
                 level = m2.group(1).lower()
-                body = m2.group(2).strip()
-            else:
-                m3 = re.match(r"^(decision|note)\b\s*(.*)$", line, re.IGNORECASE)
-                if m3:
-                    level = m3.group(1).lower()
-                    body = m3.group(2).strip(" :：").strip()
+                body = m2.group(2).strip(" :：").strip()
         if body:
             # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
             if any(mk in body for mk in
                    ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
                     "没有可提炼", "无内容", "无相关", "暂无")):
                 continue
-            out.append({"level": level, "module": module, "content": body,
-                        "confidence": 0.9})
+            out.append({"level": level, "content": body, "confidence": 0.9})
     return out
 
 
-def extract_decisions(text: str) -> List[str]:
-    """兼容别名: 只返回 decision 档的内容 (旧调用点)。"""
-    return [it["content"] for it in extract_memories(text) if it["level"] == "decision"]
+def extract_insights(text: str) -> List[str]:
+    """兼容别名: 只返回 insight 档的内容 (旧调用点)。"""
+    return [it["content"] for it in extract_memories(text) if it["level"] == "insight"]
 
 
 def summarize(text: str, max_chars: int = 400) -> str:
     """把长文本压缩成有界摘要 (用于 note 超长时的滚动压缩)。
 
-    保留关键事实/决策/结论, 去掉重复与啰嗦。
+    保留关键事实/洞察/结论, 去掉重复与啰嗦。
     dummy 后端: 直接截断。
     """
     t = (text or "").strip()
@@ -214,7 +199,7 @@ def summarize(text: str, max_chars: int = 400) -> str:
     if backend() == "dummy":
         return t[:max_chars]
     prompt = (
-        "下面是一段工作记录, 请压缩成一段简洁摘要, 保留关键事实、决策、结论,"
+        "下面是一段工作记录, 请压缩成一段简洁摘要, 保留关键事实、洞察、结论,"
         "去掉重复和啰嗦。直接输出摘要, 不要客套。\n\n"
         "记录:\n" + t[:16000]
     )
@@ -233,7 +218,7 @@ def check_boundaries(project_ctx: str, proposal: str) -> str:
             "检查结果: 通过(占位)"
         )
     prompt = (
-        "你是项目边界监督器。下面给出项目的方向、决策和规格内容, 以及一个新的提议。\n"
+        "你是项目边界监督器。下面给出项目的方向、洞察和规格内容, 以及一个新的提议。\n"
         "请逐条对照规格中的边界条件/约束, 输出检查报告, 格式:\n"
         "1. ✅通过 | ⚠️警告 | ❌违反 —— 边界条件原文 (说明)\n"
         "2. ...\n"

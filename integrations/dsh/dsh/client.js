@@ -469,6 +469,18 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
           body.className = "dsh-lclone-dt-body";
           body.textContent = it.content || "(无内容)";
           item.appendChild(body);
+          // 勾选「提升至全局记忆」(仅项目级, 位于按钮上方): 勾选后点「保留」→ 提升到全局层并落地。
+          let promoteCb = null;
+          if (it.project_id) {
+            const cbRow = document.createElement("label");
+            cbRow.className = "dsh-lclone-dt-promote";
+            cbRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;opacity:.9;user-select:none";
+            promoteCb = document.createElement("input");
+            promoteCb.type = "checkbox";
+            cbRow.appendChild(promoteCb);
+            cbRow.appendChild(document.createTextNode("提升至全局记忆"));
+            item.appendChild(cbRow);
+          }
           const actions = document.createElement("div");
           actions.className = "dsh-lclone-dt-actions";
           const mkBtn = (label, cls, act) => {
@@ -478,7 +490,7 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
             b.addEventListener("click", act);
             return b;
           };
-          actions.appendChild(mkBtn("保留", "dsh-lclone-dt-keep", () => review(it.id, "keep")));
+          actions.appendChild(mkBtn("保留", "dsh-lclone-dt-keep", () => review(it.id, (promoteCb && promoteCb.checked) ? "promote" : "keep")));
           actions.appendChild(mkBtn("删除", "", () => review(it.id, "delete")));
           actions.appendChild(mkBtn("稍后", "", () => { seen.add(it.id); poll(); }));
           item.appendChild(actions);
