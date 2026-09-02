@@ -729,6 +729,73 @@ def suggest(conn: sqlite3.Connection, dup_threshold: float = 0.92,
     return out
 
 
+# ---------------------------------------------------------------- 记忆矛盾检测
+def find_conflicts(conn: sqlite3.Connection,
+                   project_id: Optional[int] = None, threshold: float = 0.88,
+                   max_each: int = 20) -> List[dict]:
+    """检测「疑似矛盾」的洞察对: 语义相近(高向量相似)但内容相反/规则改版。
+
+    用 LLM 判断每对是否真矛盾 (返回 JSON); dummy 后端退回候选对 (仅相似度, 无矛盾判定)。
+    是不是矛盾由用户裁定 —— 本函数只提示候选, 不自动改记忆。
+    """
+    q = (
+        "SELECT m.id, m.project_id, m.content, m.created_at, m.embedding,"
+        " p.name AS project_name"
+        " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
+        " WHERE m.status='active' AND m.level='insight' AND m.embedding IS NOT NULL"
+        + _alive_filter()
+        + (" AND m.project_id=?" if project_id is not None else "")
+        + " ORDER BY m.id DESC LIMIT 300"
+    )
+    params = (project_id,) if project_id is not None else ()
+    rows = conn.execute(q, params).fetchall()
+    # 1) 候选对: 向量相似度 >= threshold (语义相近才可能矛盾)
+    cands = []
+    for i in range(len(rows)):
+        if len(cands) >= max_each:
+            break
+        for j in range(i + 1, len(rows)):
+            sim = _cosine(unpack_vec(rows[i]["embedding"]),
+                          unpack_vec(rows[j]["embedding"]))
+            if sim >= threshold:
+                cands.append((rows[i], rows[j], sim))
+    if not cands:
+        return []
+    # 2) LLM 判定是否真矛盾
+    body = "\n".join(
+        f"#{ri['id']}({ri['project_name'] or '全局'}): {ri['content'][:120]}\n"
+        f"#{rj['id']}({rj['project_name'] or '全局'}): {rj['content'][:120]}\n"
+        f"--- 相似度 {sim:.2f}"
+        for ri, rj, sim in cands
+    )
+    prompt = (
+        "下面是若干「语义相近」的记忆对。请判断每对是否**矛盾**(内容相反 / 规则改版 / 相冲突)。\n"
+        "只输出 JSON 数组: [{\"a\": <id>, \"b\": <id>, \"conflict\": true|false, \"reason\": \"<为什么矛盾>\"}], "
+        "冲突的才输出, 没有就输出 []。中文。\n\n" + body
+    )
+    verdicts = llm.chat_json(prompt) or []
+    out = []
+    for v in verdicts:
+        try:
+            a, b = int(v.get("a")), int(v.get("b"))
+        except (TypeError, ValueError):
+            continue
+        if not v.get("conflict"):
+            continue
+        ra = next((r for r in rows if r["id"] == a), None)
+        rb = next((r for r in rows if r["id"] == b), None)
+        if not ra or not rb:
+            continue
+        out.append({
+            "a": a, "b": b,
+            "content_a": ra["content"], "content_b": rb["content"],
+            "project": ra["project_name"] or "个人区",
+            "reason": v.get("reason", ""),
+            "hint": f"lclone review --id {a} --action delete",
+        })
+    return out
+
+
 # ---------------------------------------------------------------- 分类加载 (按 项目 分组)
 def _format_grouped(items: List[dict], show_id: bool = False) -> str:
     """把召回/加载结果按「项目」分组、项目内按等级分组渲染 (分类加载)。"""

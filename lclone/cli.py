@@ -298,6 +298,21 @@ def cmd_demote(args) -> None:
     print(f"记忆 #{args.id} 已下降至项目 #{pid}, 生命周期与其绑定")
 
 
+def cmd_conflicts(args) -> None:
+    conn = _conn(args)
+    pid = _resolve_project(conn, args.project) if args.project else None
+    items = mem_mod.find_conflicts(conn, project_id=pid)
+    if not items:
+        print("(未发现疑似矛盾的洞察)")
+        return
+    for i in items:
+        print(f"#{i['a']} ↔ #{i['b']} [{i['project']}]")
+        print(f"  A: {i['content_a'][:80]}")
+        print(f"  B: {i['content_b'][:80]}")
+        print(f"  矛盾: {i['reason']}")
+        print()
+
+
 def cmd_suggest(args) -> None:
     conn = _conn(args)
     items = mem_mod.suggest(conn, dup_threshold=args.dup_threshold,
@@ -530,6 +545,11 @@ def build_parser() -> argparse.ArgumentParser:
     sgg.add_argument("--unused-days", type=int, default=30,
                      help="active 记忆超过 N 天未被召回")
     sgg.set_defaults(func=cmd_suggest)
+
+    sg_c = sub.add_parser("conflicts", parents=[parent],
+                          help="矛盾检测: 找疑似互相矛盾/规则改版的洞察对 (需真实 LLM 判定)")
+    sg_c.add_argument("--project", default=None, help="限定项目名或 id")
+    sg_c.set_defaults(func=cmd_conflicts)
 
     spn = sub.add_parser("pending", parents=[parent],
                           help="打印待确认洞察数 (非交互, 供插件探测)")

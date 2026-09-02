@@ -237,6 +237,16 @@ TOOLS = [
             "required": ["id"],
         },
     },
+    {
+        "name": "conflicts",
+        "description": "矛盾检测: 扫描疑似互相矛盾/规则改版的洞察对, 用 LLM 判定是否真矛盾; 只提示, 是否处理由用户定 (需真实 LLM 后端; dummy 后端不判矛盾)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "限定项目名或 id"},
+            },
+        },
+    },
 ]
 
 
@@ -339,6 +349,18 @@ def call_tool(name: str, args: dict) -> str:
                 conn, eid, content=args.get("content"), ref=args.get("ref"),
                 status=args.get("status"))
             return f"进化资产 #{eid} 已同步"
+        if name == "conflicts":
+            pid = _resolve_project(conn, args.get("project"))
+            items = mem_mod.find_conflicts(conn, project_id=pid)
+            if not items:
+                return "(没有发现疑似矛盾的洞察; 矛盾检测需真实 LLM 后端, dummy 后端不判矛盾)"
+            return "\n\n".join(
+                f"#{i['a']} ↔ #{i['b']} [{i['project']}]\n"
+                f"  A: {i['content_a'][:80]}\n"
+                f"  B: {i['content_b'][:80]}\n"
+                f"  矛盾: {i['reason']}"
+                for i in items
+            )
         if name == "promote":
             mem_mod.promote(conn, int(args["id"]))
             return f"记忆 #{args['id']} 已上升至全局层 (生命周期无限, 多项目共读)"

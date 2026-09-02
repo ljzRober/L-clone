@@ -469,6 +469,24 @@ check("101 ingest 剥噪(claude-mem-context)",
 check("102 ingest 剥噪不动正常文本",
       mem_mod._strip_ingest_noise("决定 6月1日上线") == "决定 6月1日上线")
 
+# ---- 记忆矛盾检测: 找疑似互相矛盾的洞察对 (LLM 判定) ----
+_ci_a = mem_mod.remember(conn, "决定: 记忆用 SQLite 存储", level="insight",
+                         project_id=pid, confirmed=True)
+_ci_b = mem_mod.remember(conn, "决定: 记忆改用 PostgreSQL 存储", level="insight",
+                         project_id=pid, confirmed=True)
+_orig_cj = llm_mod.chat_json
+llm_mod.chat_json = lambda prompt, temperature=None: [
+    {"a": _ci_a, "b": _ci_b, "conflict": True, "reason": "存储选型前后矛盾"}]
+_con = mem_mod.find_conflicts(conn, project_id=pid, threshold=0.0)
+llm_mod.chat_json = _orig_cj
+check("103 矛盾检测发现冲突对",
+      any(c["a"] == _ci_a and c["b"] == _ci_b for c in _con), str(_con))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.main(["conflicts", "--db", dbp])
+check("104 CLI conflicts", "未发现疑似矛盾" in buf.getvalue(),
+      buf.getvalue()[:60])
+
 print()
 if fails:
     print("FAILED:", fails)
