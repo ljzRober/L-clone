@@ -455,6 +455,20 @@ with contextlib.redirect_stdout(cli_buf):
 check("97 CLI evolution add", "已沉淀进化资产" in cli_buf.getvalue(),
       cli_buf.getvalue()[:80])
 
+# ---- ingest 剥噪: capture 前剥离宿主注入的标签块 ----
+_noisy = "用户：帮我看下这个 bug。<system-reminder>你是一个 coding agent……</system-reminder>\n<private>这是私密信息</private>"
+_clean = mem_mod._strip_ingest_noise(_noisy)
+check("100 ingest 剥噪(系统提示/私有块)",
+      "帮我看下这个 bug" in _clean and "coding agent" not in _clean
+      and "私密信息" not in _clean, _clean[:60])
+_noisy2 = "用户：正常讨论内容\n<claude-mem-context>注入记忆段</claude-mem-context>"
+_clean2 = mem_mod._strip_ingest_noise(_noisy2)
+check("101 ingest 剥噪(claude-mem-context)",
+      "正常讨论内容" in _clean2 and "注入记忆段" not in _clean2, _clean2[:60])
+# 不影响正常内容
+check("102 ingest 剥噪不动正常文本",
+      mem_mod._strip_ingest_noise("决定 6月1日上线") == "决定 6月1日上线")
+
 print()
 if fails:
     print("FAILED:", fails)

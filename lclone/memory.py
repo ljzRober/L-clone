@@ -165,15 +165,29 @@ def _filter_item(item: dict) -> Optional[dict]:
     return dict(item, level="insight")
 
 
+def _strip_ingest_noise(text: str) -> str:
+    """剥掉 ingest 阶段噪声: 宿主注入的系统提示/记忆/上下文标签, 避免污染洞察提取。
+
+    只剥离带成对标签的注入块, 不误伤正常对话内容。
+    """
+    t = text or ""
+    for tag in ("system-reminder", "private", "claude-mem-context", "available_skills",
+                "injected", "context"):
+        t = re.sub(rf"<{tag}>.*?</{tag}>", "", t, flags=re.DOTALL)
+    return t
+
+
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             session_key: str = "") -> List[int]:
     """自动捕获: LLM 提炼洞察 (insight)。note 通道已废弃, 由 evolution 承接。
 
     洞察(insight) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效)。
-    准入: 每条内容先过 _filter_item (排除「做了什么」/ 过短琐碎)。
+    准入: 每条内容先过 _filter_item (排除「做了什么」/ 过短琐碎);
+    ingest 前先 _strip_ingest_noise 剥掉宿主注入的系统提示/上下文标签。
     不再每轮无条件记录原始文本 (note-append 已废弃); 提炼为空则本条不落库。
     """
+    text = _strip_ingest_noise(text)
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
     items = llm.extract_memories(text)
