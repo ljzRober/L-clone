@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex Stop hook: 每轮结束时把本轮内容 capture 进大脑草稿 (decision/note)。
+# Codex Stop hook: 每轮结束时把本轮内容 capture 进大脑草稿 (洞察 insight)。
 # stdin 收到 JSON (可能含 transcript_path), 读不到就退化用 stdin 原文, 静默失败不阻断。
 set -uo pipefail
 

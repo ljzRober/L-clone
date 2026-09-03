@@ -17,7 +17,7 @@
 
 ```bash
 lclone bootstrap "话题"    # 会话开始：charter + 全局记忆(无条件) + 按话题召回 + 待确认决策
-lclone capture "内容"      # 自动沉淀：decision→草稿待确认, note→直接生效
+lclone capture "内容"      # 自动沉淀：insight→洞察草稿待确认
 ```
 
 hook 脚本按以下顺序解析 `lclone`：PATH 里的 `lclone` → 本仓库 `.venv/bin/python -m lclone`。

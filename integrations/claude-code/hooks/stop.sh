@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code Stop hook: 会话结束时把转录 capture 进大脑草稿 (decision/note)。
+# Claude Code Stop hook: 会话结束时把转录 capture 进大脑草稿 (洞察 insight)。
 # stdin 收到 JSON (含 transcript_path), 静默失败不阻断。
 set -uo pipefail
 
