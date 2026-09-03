@@ -161,7 +161,7 @@ erDiagram
         text level "insight (note 通道已废弃)"
         text content "四段卡正文"
         text reason "为什么记"
-        text status "pending草稿/active正式/archived归档"
+        text status "pending草稿/active正式"
         text source_type "auto自动/manual主动"
         text source_ref "来源: 会话或 ADR 文件"
         blob embedding "向量"

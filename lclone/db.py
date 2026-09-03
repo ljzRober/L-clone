@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- L1 层: 洞察 (insight = 原子化、自包含的富知识卡/教训/规则)
--- status: pending(草稿, 待确认) | active(正式) | archived(归档)
+-- status: pending(草稿, 待确认) | active(正式)
 -- source_type: auto(自动捕获) | manual(主动触发)
 CREATE TABLE IF NOT EXISTS memories (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_specs_proj ON specs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
 CREATE INDEX IF NOT EXISTS idx_recall_log_mem ON recall_log(memory_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 """
 
 
@@ -147,6 +148,8 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "session_key" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
+    # 索引: sessions(session_key) 需在列补齐后建 (兼容旧库; messages(thread_id) 已在 SCHEMA)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(session_key)")
     # 迁移: 进化资产改为文件式 (~/.lclone/evolutions/), 不再用 SQL 表
     # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
     conn.execute("DROP TABLE IF EXISTS evolution_links")

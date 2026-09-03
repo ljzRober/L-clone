@@ -22,7 +22,7 @@ lclone promote <id>                                # 洞察上升: 项目 -> 全
 lclone demote <id> --project <id|name>             # 洞察下降: 挂到指定项目(含项目间横搬)
 lclone suggest [--dup-threshold 0.92] [--stale-days 7] [--unused-days 30]  # 删除提示
 lclone organize                                    # 整理: LLM 语义合并相近洞察 (不跨项目/等级)
-lclone memories [--project id] [--level insight|note] [--status active|pending|archived] [--limit 20]
+lclone memories [--project id] [--level insight] [--status active|pending] [--limit 20]
 lclone pending                                     # 打印待确认洞察数 (非交互, 供插件探测)
 lclone supervise "新提议" --project id              # 规范环
 lclone ask "问题" [--project id] [--thread id] [--k 5] [--no-specs] [-v]

@@ -553,9 +553,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sm = sub.add_parser("memories", parents=[parent], help="列出记忆")
     sm.add_argument("--project", default=None, help="只看某项目")
-    sm.add_argument("--level", choices=["insight", "note"],
-                    default=None, help="只看某等级")
-    sm.add_argument("--status", choices=["active", "pending", "archived"],
+    sm.add_argument("--level", choices=["insight"],
+                    default=None, help="只看某等级 (现仅洞察)")
+    sm.add_argument("--status", choices=["active", "pending"],
                     default="active", help="默认只看正式记忆, 草稿用 pending")
     sm.add_argument("--limit", type=int, default=20)
     sm.set_defaults(func=cmd_memories)
