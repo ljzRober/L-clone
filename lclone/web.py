@@ -344,7 +344,7 @@ WORK_BODY = r"""
 """
 
 WORK_JS = r"""const $ = id => document.getElementById(id);
-let PROJS = [], MEMS = [], LINKS = [];
+let PROJS = [], MEMS = [], LINKS = [], EVOS = [];
 const EXPANDED = new Set();
 const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
 const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
@@ -368,14 +368,21 @@ function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
   alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
 });
-const LN = { insight:'洞察' };
+const LN = { insight:'洞察', evolution:'进化' };
 
 async function loadAll() {
-  const [p, m, l, pend] = await Promise.all([
+  const [p, m, l, pend, evos] = await Promise.all([
     API.projects(), API.memories('?status=active&limit=500'), API.links(),
     (await fetch('/api/pending')).json(),
+    (await fetch('/api/evolutions')).json(),
   ]);
-  PROJS = p; MEMS = m.items; LINKS = l.items;
+  PROJS = p; MEMS = m.items; LINKS = l.items; EVOS = (evos.items || []);
+  // 进化资产并入记忆流, 在「进化」档位显示 (level=evolution)
+  EVOS.forEach(e => {
+    MEMS.push({ id: 'E' + e.id, level: 'evolution', project_id: e.project_id,
+                content: (e.content || e.ref || '') ? (e.name + ' — ' + (e.content || e.ref)) : e.name,
+                created_at: e.created_at, evo: e });
+  });
   const pn = (pend.items || []).length;
   $('pending-n').textContent = pn;
   $('btn-pending').classList.toggle('hot', pn > 0);
@@ -468,7 +475,7 @@ function renderGraph() {
   const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
   const boxLeft = padX, boxW = W - padX * 2;
   const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
-  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'] ];
+  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'], ['evolution','进化','#7a4fb0','#f1eafa'] ];
   function head(x, y, w, tint, col, title, sub) {
     return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
       `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
@@ -513,7 +520,10 @@ function renderGraph() {
         `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.total} 条</text>` +
         `<text x="${cx + colW - 14}" y="${oy + G_H / 2 + 6}" class="bs" style="fill:${c.col};cursor:pointer" text-anchor="middle" onclick="openAddLevel('${c.lv}')">＋</text></g>`;
       let by = oy + G_H + 12;
-      if (!c.shown.length) s += `<text x="${cx + 12}" y="${by + 22}" class="bs">无记忆</text>`;
+      if (!c.shown.length) {
+        const emptyTxt = c.lv === 'evolution' ? '暂无进化资产' : '无记忆';
+        s += `<text x="${cx + 12}" y="${by + 22}" class="bs">${emptyTxt}</text>`;
+      }
       else c.shown.forEach((m, idx) => {
         const r = Math.floor(idx / perRow), col = idx % perRow;
         s += memBox(m, cx + 10 + col * (boxW + BOXGAP), by + r * (BOX_H + BOXGAP), boxW, c.col);
@@ -950,6 +960,13 @@ def create_app(db_path: Optional[str] = None):
         items = mem_mod.list_memories(conn, project_id=project_id, level=level,
                                       status=status, limit=limit, layer=layer)
         return {"items": [dict(r) for r in items]}
+
+    @app.get("/api/evolutions")
+    def evolutions(project_id: Optional[int] = None, status: Optional[str] = None,
+                   conn: sqlite3.Connection = Depends(get_db)):
+        """进化资产列表 (web 端进化档位, 暂无数据时为空)。"""
+        items = mem_mod.list_evolutions(conn, project_id=project_id, status=status)
+        return {"items": items}
 
     @app.get("/api/links")
     def links(conn: sqlite3.Connection = Depends(get_db)):
