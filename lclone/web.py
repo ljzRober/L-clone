@@ -190,6 +190,30 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .modal textarea { min-height:150px; resize:vertical; }
 .row { display:flex; gap:8px; align-items:center; }
 
+/* ---- 进化文件目录 (file-explorer) ---- */
+.evo-exp { width:min(940px,96vw); }
+.evo-hd { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.evo-path { font-family:var(--mono); font-size:12px; color:var(--dim); }
+.evo-body { display:grid; grid-template-columns:minmax(320px,46%) 1fr; gap:14px; min-height:46vh; }
+.evo-list { overflow:auto; border:1px solid var(--line); border-radius:12px; padding:8px; }
+.evo-group { font-family:var(--mono); font-size:11px; color:var(--dim); padding:8px 8px 3px;
+             letter-spacing:.06em; }
+.evo-row { display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:8px;
+           cursor:pointer; font-family:var(--mono); font-size:12px; color:var(--fg); }
+.evo-row:hover { background:var(--card2); }
+.evo-row.on { background:var(--card2); outline:1px solid var(--line); }
+.evo-ic { width:20px; height:20px; border-radius:5px; display:inline-flex; align-items:center;
+          justify-content:center; font-size:10px; font-weight:700; color:#0a0f1c; flex:none; }
+.et-sh{background:#34d399} .et-py{background:#c084fc} .et-md{background:#60a5fa}
+.et-yml{background:#fbbf24} .et-db{background:#fb923c} .et-txt{background:#9ca3af} .et-dir{background:#94a3b8;color:#0f172a}
+.evo-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.evo-meta { color:var(--dim); font-size:11px; flex:none; }
+.evo-preview { border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto;
+               font-family:var(--mono); font-size:12px; line-height:1.6; color:var(--fg);
+               white-space:pre-wrap; word-break:break-word; max-height:52vh; }
+.evo-empty { color:var(--dim); font-size:13px; padding:26px 12px; text-align:center;
+             border:1px dashed var(--line); border-radius:12px; }
+
 /* ---- 问答页 ---- */
 .ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
 .ask-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
@@ -302,6 +326,7 @@ WORK_BODY = r"""
       <span style="flex:1"></span>
       <button class="ghost" onclick="loadAll()" title="重新拉取并刷新记忆/项目/链接">刷新</button>
       <button class="ghost" onclick="organize()" title="把语义相近的记忆合并成一条（不跨项目/等级/模块）">整理</button>
+      <button class="ghost" onclick="openEvoExplorer()" title="查看进化文件（目录）">进化</button>
       <button class="act" onclick="openAdd()">＋ 添加记忆</button>
     </div>
     <div id="graph"></div>
@@ -339,6 +364,21 @@ WORK_BODY = r"""
       <button class="modal-x" onclick="closePending()" title="关闭">✕</button>
     </div>
     <div id="pending-list"></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="evo-exp">
+  <div class="modal modal-lg evo-exp">
+    <div class="modal-head">
+      <h3>进化文件</h3>
+      <span class="evo-path" id="evo-path">~/.lclone/evolutions/</span>
+      <span style="flex:1"></span>
+      <button class="modal-x" onclick="closeEvoExp()" title="关闭">✕</button>
+    </div>
+    <div class="evo-body">
+      <div class="evo-list" id="evo-list"></div>
+      <div class="evo-preview" id="evo-preview">点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span></div>
+    </div>
   </div>
 </div>
 """
@@ -643,6 +683,52 @@ function openEvo(name) {
   $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').style.display = 'none';
   $('modal').classList.add('on');
 }
+/* ---- 进化文件目录 (file-explorer) ---- */
+const EVO_ET = { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
+                 db:'et-db', json:'et-db', txt:'et-txt' };
+function evoChip(ext) { return '<span class="evo-ic ' + (EVO_ET[ext] || 'et-txt') + '">' + (ext || '·').slice(0,3) + '</span>'; }
+let EVO_CONTENT = {};   // 文件名 -> 内容 (供预览)
+async function openEvoExplorer() {
+  const r = await (await fetch('/api/evolutions')).json();
+  const items = r.items || [];
+  EVO_CONTENT = {};
+  const collect = (nodes) => {
+    for (const n of nodes) {
+      if (n.is_dir) collect(n.children || []);
+      else if (n.name) EVO_CONTENT[n.name] = n.content || '';
+    }
+  };
+  collect(items);
+  let html = '';
+  if (!items.length) {
+    html = '<div class="evo-empty">~/.lclone/evolutions/ 暂无进化文件<br><span style="color:var(--dim)">把脚本/模型/配置写成文件放进来即可出现在这里。</span></div>';
+  } else {
+    const walk = (nodes, depth) => {
+      let s = '';
+      for (const n of nodes) {
+        if (n.is_dir) {
+          s += `<div class="evo-group">${'&nbsp;'.repeat(depth)}📁 ${esc(n.name)}/</div>` + walk(n.children || [], depth + 1);
+        } else {
+          const meta = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
+          s += `<div class="evo-row" data-name="${esc(n.name)}" onclick="showEvo('${esc(n.name)}')">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(meta)}</span></div>`;
+        }
+      }
+      return s;
+    };
+    html = walk(items, 0);
+  }
+  $('evo-list').innerHTML = html;
+  $('evo-preview').innerHTML = '点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span>';
+  $('evo-exp').classList.add('on');
+}
+function closeEvoExp() { $('evo-exp').classList.remove('on'); }
+function showEvo(name) {
+  document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
+  const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
+  if (row) row.classList.add('on');
+  $('evo-preview').textContent = EVO_CONTENT[name] || '(空文件)';
+}
+
 function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
 async function saveEdit() {
   if (CUR_MID == null) return saveAdd();
@@ -980,11 +1066,15 @@ def create_app(db_path: Optional[str] = None):
         return {"items": [dict(r) for r in items]}
 
     @app.get("/api/evolutions")
-    def evolutions():
-        """进化资产 (文件式): 扫 ~/.lclone/evolutions/, 返回 [{name, ext, content}]。"""
-        items = []
-        for f in mem_mod.list_evolution_files():
-            items.append({**f, "content": mem_mod.read_evolution_file(f["name"]) or ""})
+    def evolutions(name: Optional[str] = None):
+        """进化资产 (文件式): 返回 ~/.lclone/evolutions/ 的文件目录树 (含 content/size/mtime)。"""
+        def add_content(node):
+            if node.get("is_dir"):
+                node["children"] = [add_content(c) for c in node.get("children", [])]
+            else:
+                node["content"] = mem_mod.read_evolution_file(node["name"]) or ""
+            return node
+        items = [add_content(f) for f in mem_mod.list_evolution_files()]
         return {"items": items}
 
     @app.get("/api/links")

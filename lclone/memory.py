@@ -364,14 +364,40 @@ def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
 
 
 def list_evolution_files() -> List[dict]:
-    """扫进化目录, 返回 [{name, ext}] (文件结构显示用)。"""
+    """扫进化目录, 返回 [{name, ext, size, mtime, is_dir, children}] (文件目录 UI 用, 递归)。"""
     out = []
     for p in sorted(Path(evo_dir()).iterdir()):
-        if p.is_file():
+        if p.is_dir():
+            out.append({"name": p.name, "ext": "", "size": 0, "mtime": "",
+                        "is_dir": True,
+                        "children": list_evolution_files_sub(p)})
+        elif p.is_file():
+            st = p.stat()
             name = p.name
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            out.append({"name": name, "ext": ext})
+            out.append({"name": name, "ext": ext, "size": st.st_size,
+                        "mtime": _fmt_mtime(st.st_mtime), "is_dir": False, "children": []})
     return out
+
+
+def list_evolution_files_sub(d: Path) -> List[dict]:
+    out = []
+    for p in sorted(d.iterdir()):
+        if p.is_dir():
+            out.append({"name": p.name, "ext": "", "size": 0, "mtime": "",
+                        "is_dir": True, "children": list_evolution_files_sub(p)})
+        elif p.is_file():
+            st = p.stat()
+            name = p.name
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            out.append({"name": name, "ext": ext, "size": st.st_size,
+                        "mtime": _fmt_mtime(st.st_mtime), "is_dir": False, "children": []})
+    return out
+
+
+def _fmt_mtime(ts: float) -> str:
+    import datetime
+    return datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
 
 
 def read_evolution_file(name: str) -> Optional[str]:
