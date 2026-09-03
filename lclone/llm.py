@@ -138,40 +138,39 @@ def extract_memories(text: str) -> List[dict]:
         "你是一个记忆提炼器。把输入里的「洞察/知识」提炼成一条条 insight 卡片, 而不是流水账。\n"
         "insight = 一条原子化、自包含、内容丰富的知识/见解/教训: 每一个条目是一件事\n"
         "(一个决定 / 一条经验 / 一个观察 / 一条复盘)。\n"
-        "每条 SHALL 按四段卡写成一行, 自带背景与后果, 让人独立读懂 (约 2-4 句):\n"
-        "  「要点(结论)｜背景/为什么｜影响/以后注意｜归属(项目级可标 [[spec:id]]/[[src:path]])」\n"
+        "每条 insight SHALL 按「四段分行」写, 自带背景与后果, 让人独立读懂 (共 2-4 句):\n"
+        "  要点：<一句话结论>\n"
+        "  背景/为什么：<为什么这么定/背景/推理>\n"
+        "  影响/以后注意：<带来什么/以后注意什么>\n"
+        "  归属：<项目级写 src:xx 或 m:NN；全局写 无>\n"
+        "多条之间用一行 `====` 分隔。只输出这些块, 不要其它解释。\n"
         "不要逐字转录对话/代码 (那是 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
         "只提炼真正值得跨会话记住的; 宁可少提甚至不提; 没有就输出空。\n"
-        "输出格式: 每条一行 `insight: <四段卡>`, 用「」分段但写在同一行。\n"
-        "示例: insight: 无 git 仓库时不静默落全局｜因为会影响后续召回范围｜以后要先问用户归属｜\n"
         "边界: 描述「做了什么」(代码改动/接口变化/重构/修 bug/新增端点) 一律不提炼 (归 git/spec);\n"
         "能写成带 WHEN/THEN 的 requirement 的契约也不提炼 (那是 spec)。\n"
-        "全局/跨项目无关仓库的内容不要标这类链接。\n"
         "输入以「用户：」/「助手：」标注; 仅用户提出、助手确认/落地/持续推进的选择才提炼为 insight。\n"
         "记录:\n" + text[:12000]
     )
     raw = chat([{"role": "user", "content": prompt}])
     out = []
-    for line in raw.splitlines():
-        line = line.strip().strip("-•*").strip()
-        if not line or len(line) <= 3:
+    # 按 `====` 分隔成块, 每块 = 一条 insight (内容为多行四段卡)
+    blocks = re.split(r"^\s*={2,}\s*$", (raw or "").strip(), flags=re.M)
+    for block in blocks:
+        block = block.strip().strip("-•*").strip()
+        if not block:
             continue
-        body = line
-        m = re.match(r"^(insight|note)\s*[:：]\s*(.+)$",
-                     line, re.IGNORECASE)
+        body = block
+        m = re.match(r"^(insight|note)\s*[:：]?\s*(.*)$", block, re.IGNORECASE | re.S)
         if m:
             body = m.group(2).strip()
-        else:
-            m2 = re.match(r"^(insight|note)\b\s*(.*)$", line, re.IGNORECASE)
-            if m2:
-                body = m2.group(2).strip(" :：").strip()
-        if body:
-            # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
-            if any(mk in body for mk in
-                   ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
-                    "没有可提炼", "无内容", "无相关", "暂无")):
-                continue
-            out.append({"level": "insight", "content": body, "confidence": 0.9})
+        if not body or len(body) < 4:
+            continue
+        # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
+        if any(mk in body for mk in
+               ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
+                "没有可提炼", "无内容", "无相关", "暂无")):
+            continue
+        out.append({"level": "insight", "content": body, "confidence": 0.9})
     return out
 
 
