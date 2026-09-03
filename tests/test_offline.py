@@ -32,6 +32,7 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 tmp = tempfile.mkdtemp(prefix="brain_test_")
 dbp = os.path.join(tmp, "t.db")
+os.environ["LCLONE_EVO_DIR"] = os.path.join(tmp, "evo")  # 进化文件目录 (文件式, 指向临时目录)
 demo_root = ROOT / "examples" / "demo_project"
 
 conn = db_mod.init(dbp)
@@ -357,28 +358,32 @@ check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
 bpath = db_mod.backup(db_path=dbp, dest_dir=os.path.join(tmp, "bak"))
 check("75 backup 生成快照", os.path.exists(bpath) and bpath.endswith(".db"))
 
-# ---- evolution 进化资产: 沉淀脚本/工具 + insight→evolution 链接 ----
+# ---- evolution 进化资产: 文件式 (~/.lclone/evolutions/), insight 用 [[evo:name.ext]] 指向 ----
 ev = mem_mod.create_evolution(
     conn, name="build-spec-map", kind="script",
     content="bash <sp-spec>/scripts/build-spec-map.sh --repo-root \"$PWD\"",
     reason="构建 L1 spec 地图, 常驻会话作索引", project_id=pid)
-check("76 create_evolution 落库", ev > 0 and mem_mod.list_evolutions(conn, project_id=pid))
-_ins = mem_mod.remember(conn, "L1 地图用脚本构建, 避免全量读 spec 撑爆上下文",
+_evonames = {e["name"] for e in mem_mod.list_evolution_files()}
+check("76 create_evolution 写入文件", ev == "build-spec-map.sh" and "build-spec-map.sh" in _evonames,
+      f"{ev} {sorted(_evonames)}")
+# insight → evolution 链接 = insight 内容里的 [[evo:文件名]]
+_ins = mem_mod.remember(conn, "L1 地图用脚本构建, 避免全量读 spec 撑爆上下文 [[evo:build-spec-map.sh]]",
                         level="insight", project_id=pid, confirmed=True)
-mem_mod.link_insight_to_evolution(conn, _ins, ev)
+_ins_update = _ins  # remember 已确认 -> active
 evos = mem_mod.evolutions_for_insight(conn, _ins)
-check("77 insight→evolution 链接", any(e["id"] == ev for e in evos),
-      str([e["id"] for e in evos]))
+check("77 insight→evolution 链接(经 [[evo:...]])", any(e["name"] == ev for e in evos),
+      str([e["name"] for e in evos]))
 ins = mem_mod.insights_for_evolution(conn, ev)
 check("78 evolution 反向取 insight", any(i["id"] == _ins for i in ins),
       str([i["id"] for i in ins]))
-mem_mod.update_evolution(conn, ev, status="stable", ref="scripts/build-spec-map.sh")
-ev_row = conn.execute("SELECT status, ref FROM evolutions WHERE id=?", (ev,)).fetchone()
-check("79 update_evolution 同步(改脚本)", ev_row["status"] == "stable"
-      and "build-spec-map" in ev_row["ref"], str(dict(ev_row)))
+# 复写文件 (改脚本)
+mem_mod.update_evolution(conn, ev, content="bash build-spec-map.sh --repo-root .")
+evc = mem_mod.read_evolution_file(ev)
+check("79 update_evolution 同步(改脚本)", evc and "build-spec-map.sh --repo-root ." in evc, evc[:40])
 ev2 = mem_mod.create_evolution(conn, name="gen-tool", kind="tool", content="通用小工具",
                                project_id=None)
-check("79b 项目无关 evolution content 存库", ev2 > 0)
+check("79b 项目无关 evolution content 存文件", ev2 == "gen-tool.py"
+      and mem_mod.read_evolution_file(ev2) == "通用小工具", ev2)
 
 # ---- 归属判定代码强制 (git 自动注册 / fail-closed) ----
 st, pid_l = proj_mod.resolve_project(conn, cwd=str(ROOT))
@@ -435,19 +440,19 @@ try:
 except ImportError:
     print("SKIP 24 Web (fastapi 未安装, 装依赖后自动启用)")
 
-# ---- recall 跟随 insight→evolution 边 (命中洞察带出进化资产) ----
-_ev_recall = mem_mod.remember(conn, "实践中沉淀的 build-spec-map 工具用于构建 spec 地图索引",
+# ---- recall 跟随 insight→evolution 边 (命中带 [[evo:...]] 的洞察, 带出进化文件) ----
+_ev_recall = mem_mod.remember(conn, "实践中沉淀的 build-spec-map 工具用于构建 spec 地图索引 [[evo:build-spec-map.sh]]",
                               level="insight", project_id=pid, confirmed=True)
 _li = mem_mod.recall(conn, "构建 spec 地图", project_id=pid, k=5, follow_links=True)
-check("94 recall 命中相关洞察", any(i["id"] == _ev_recall for i in _li),
-      str([i["id"] for i in _li]))
-_check_evo = any(i.get("via_evolution") for i in _li)
-check("95 recall 顺边带出 evolution", _check_evo,
-      str([(i["id"], i.get("via_evolution")) for i in _li]))
+check("94 recall 命中相关洞察", any(i.get("id") == _ev_recall for i in _li),
+      str([i.get("id") for i in _li]))
+_check_evo = any(i.get("via_evolution") and i.get("evo_name") == "build-spec-map.sh" for i in _li)
+check("95 recall 顺边带出 evolution(文件)", _check_evo,
+      str([(i.get("id"), i.get("evo_name")) for i in _li]))
 cli_buf = io.StringIO()
 with contextlib.redirect_stdout(cli_buf):
     cli.main(["evolution", "list", "--db", dbp])
-check("96 CLI evolution list", "build-spec-map" in cli_buf.getvalue(),
+check("96 CLI evolution list", "build-spec-map.sh" in cli_buf.getvalue(),
       cli_buf.getvalue()[:80])
 cli_buf = io.StringIO()
 with contextlib.redirect_stdout(cli_buf):

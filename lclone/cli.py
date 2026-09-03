@@ -145,26 +145,19 @@ def cmd_evolution_add(args) -> None:
     pid = _resolve_project(conn, args.project) if args.project else None
     if pid is None and args.project is None:
         status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
-    if not args.content and not args.ref:
-        raise SystemExit("evolution 需要有内容: --content (项目无关脚本/工具内容) 或 --ref (项目内路径)")
-    eid = mem_mod.create_evolution(
+    if not args.content:
+        raise SystemExit("evolution 需要 --content (进化文件内容; 或直接写文件到 ~/.lclone/evolutions/)")
+    ev = mem_mod.create_evolution(
         conn, name=args.name, kind=args.kind, content=args.content,
-        ref=args.ref, reason=args.reason, project_id=pid)
-    for iid in args.insight or []:
-        mem_mod.link_insight_to_evolution(conn, iid, eid)
+        ref=args.ref, reason=args.reason)
     proj = "全局层" if pid is None else f"项目 #{pid}"
-    print(f"已沉淀进化资产 #{eid} [{proj}] {args.name} (kind={args.kind})")
-    if args.insight:
-        print(f"  已链接 insight: {args.insight}")
-
+    print(f"已沉淀进化资产 {ev} [{proj}]")
 
 def cmd_evolution_list(args) -> None:
     conn = _conn(args)
-    pid = _resolve_project(conn, args.project) if args.project else None
-    for e in mem_mod.list_evolutions(conn, project_id=pid, status=args.status):
-        body = e["content"] or e["ref"] or ""
-        print(f"#{e['id']} [{e.get('project_name') or '全局层'}] [{e['kind']}{('/'+e['status']) if e['status']!='active' else ''}] "
-              f"{e['name'] : <20} {body[:80]}")
+    for e in mem_mod.list_evolution_files():
+        body = (mem_mod.read_evolution_file(e["name"]) or "").splitlines()[0] if mem_mod.read_evolution_file(e["name"]) else ""
+        print(f"{e['name'] : <28} {body[:50]}")
 
 
 def cmd_review(args) -> None:
@@ -447,13 +440,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sev = sub.add_parser("evolution", parents=[parent], help="进化资产 (可复用脚本/工具)")
     sev_sub = sev.add_subparsers(dest="evolution_cmd", required=True)
-    sev_add = sev_sub.add_parser("add", parents=[parent], help="沉淀一个脚本/工具 (内容存库 或 引用仓库路径)")
-    sev_add.add_argument("name", help="脚本/工具名")
-    sev_add.add_argument("--kind", default="script", choices=["script", "tool", "command", "other"])
-    sev_add.add_argument("--content", default="", help="项目无关的脚本/工具内容 (存记忆库本体)")
-    sev_add.add_argument("--ref", default="", help="项目内脚本路径 (内容留仓库, 只留引用, 如 scripts/x.py)")
+    sev_add = sev_sub.add_parser("add", parents=[parent], help="沉淀一个进化文件到 ~/.lclone/evolutions/ (文件名.类型)")
+    sev_add.add_argument("name", help="文件名 (可带扩展名, 如 build-spec-map.sh; 缺省按 kind 补扩展名)")
+    sev_add.add_argument("--kind", default="script", choices=["script", "tool", "command", "model", "other"])
+    sev_add.add_argument("--content", default="", help="进化文件内容 (写入 ~/.lclone/evolutions/)")
+    sev_add.add_argument("--ref", default="", help="项目内脚本路径 (内容留仓库, 不进 lclone)")
     sev_add.add_argument("--reason", default="", help="为什么沉淀")
-    sev_add.add_argument("--insight", type=int, action="append", default=[], help="支撑此资产的 insight id (可多次)")
     sev_add.add_argument("--project", default=None)
     sev_add.set_defaults(func=cmd_evolution_add)
     sev_list = sev_sub.add_parser("list", parents=[parent], help="列出进化资产")

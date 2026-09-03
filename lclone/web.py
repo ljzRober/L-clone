@@ -377,11 +377,11 @@ async function loadAll() {
     (await fetch('/api/evolutions')).json(),
   ]);
   PROJS = p; MEMS = m.items; LINKS = l.items; EVOS = (evos.items || []);
-  // 进化资产并入记忆流, 在「进化」档位显示 (level=evolution)
+  // 进化资产 (文件式) 并入记忆流, 在「进化」档位按 文件名.类型 显示 (level=evolution)
   EVOS.forEach(e => {
-    MEMS.push({ id: 'E' + e.id, level: 'evolution', project_id: e.project_id,
-                content: (e.content || e.ref || '') ? (e.name + ' — ' + (e.content || e.ref)) : e.name,
-                created_at: e.created_at, evo: e });
+    MEMS.push({ id: e.name, level: 'evolution', project_id: null,
+                content: (e.content || '') ? (e.name + ' — ' + e.content) : e.name,
+                created_at: '', evo: e });
   });
   const pn = (pend.items || []).length;
   $('pending-n').textContent = pn;
@@ -486,10 +486,11 @@ function renderGraph() {
     // 按实际列宽动态截断: 保守字宽 14px (中文全角略宽), 可用宽 = w - 34 (左右留白 + 安全余量)
     const perLine = Math.max(4, Math.floor((w - 34) / 14));
     const isEvo = m.level === 'evolution';
-    const label = isEvo ? (m.evo ? `${m.evo.name} (${m.evo.kind})` : t1) : t1;
+    const ext = isEvo && m.evo ? (m.evo.ext ? '.' + m.evo.ext : '') : '';
+    const label = isEvo ? (m.evo ? `${m.evo.name}${ext}` : t1) : t1;
     const a = label.slice(0, perLine) + (label.length > perLine ? '…' : '');
     const b = label.length > perLine ? label.slice(perLine, perLine * 2) + (label.length > perLine * 2 ? '…' : '') : '';
-    const click = isEvo ? `openEvo(${m.evo.id})` : `openMem(${m.id})`;
+    const click = isEvo ? `openEvo(${JSON.stringify(m.evo.name)})` : `openMem(${m.id})`;
     const badge = isEvo ? '进化' : (LN[m.level] || m.level);
     return `<g class="box" onclick="${click}"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
@@ -630,15 +631,14 @@ function openMem(mid) {
   $('modal').classList.add('on');
 }
 // 进化资产预览: 与 insight 一样, 默认按文本展示 (内容/引用/沉淀原因), 只读。
-function openEvo(eid) {
-  const e = EVOS.find(x => x.id === eid); if (!e) return;
+function openEvo(name) {
+  const e = EVOS.find(x => x.name === name); if (!e) return;
   CUR_MID = null;
-  $('m-title').textContent = '进化资产 #' + eid + ' · ' + e.name + ' (' + e.kind + ')';
-  $('m-content').value = (e.content || '') + (e.ref ? '\n\n[文件路径] ' + e.ref : '') +
-    (e.reason ? '\n\n[沉淀原因] ' + e.reason : '');
+  $('m-title').textContent = '进化资产 · ' + e.name + (e.ext ? ' (' + e.ext + ')' : '');
+  $('m-content').value = e.content || '';
   $('m-level').value = 'insight';
-  $('m-meta').textContent = `进化资产 #${eid} · ${e.kind} · ${e.status} · ${e.created_at} · ${e.project_id ? '项目' : '全局'}`;
-  $('m-owner-hint').textContent = '（进化资产：脚本/工具，仅预览文本，不在此编辑）';
+  $('m-meta').textContent = `进化资产 · ${e.ext || '?'} · ${e.name}`;
+  $('m-owner-hint').textContent = '（进化资产：~/.lclone/evolutions/ 下的文件，仅预览文本，修改请改文件本身）';
   $('m-links').innerHTML = '链接：无';
   $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').style.display = 'none';
   $('modal').classList.add('on');
@@ -980,10 +980,11 @@ def create_app(db_path: Optional[str] = None):
         return {"items": [dict(r) for r in items]}
 
     @app.get("/api/evolutions")
-    def evolutions(project_id: Optional[int] = None, status: Optional[str] = None,
-                   conn: sqlite3.Connection = Depends(get_db)):
-        """进化资产列表 (web 端进化档位, 暂无数据时为空)。"""
-        items = mem_mod.list_evolutions(conn, project_id=project_id, status=status)
+    def evolutions():
+        """进化资产 (文件式): 扫 ~/.lclone/evolutions/, 返回 [{name, ext, content}]。"""
+        items = []
+        for f in mem_mod.list_evolution_files():
+            items.append({**f, "content": mem_mod.read_evolution_file(f["name"]) or ""})
         return {"items": items}
 
     @app.get("/api/links")

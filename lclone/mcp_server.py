@@ -198,11 +198,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "脚本/工具名"},
-                "kind": {"type": "string", "enum": ["script", "tool", "command", "other"],
-                         "description": "默认 script"},
-                "content": {"type": "string", "description": "项目无关的脚本/工具内容 (存记忆库本体)"},
-                "ref": {"type": "string", "description": "项目内脚本路径 (内容留仓库, 只留引用)"},
+                "name": {"type": "string", "description": "文件名 (可带扩展名, 如 build-spec-map.sh; 缺省按 kind 补扩展名)"},
+                "kind": {"type": "string", "enum": ["script", "tool", "command", "model", "other"],
+                         "description": "默认 script, 决定缺省扩展名"},
+                "content": {"type": "string", "description": "进化文件内容 (写入 ~/.lclone/evolutions/<name>)"},
+                "ref": {"type": "string", "description": "项目内脚本路径 (内容留仓库; 此调用若给 content 则直接写文件)"},
                 "reason": {"type": "string", "description": "为什么沉淀"},
                 "insight": {"type": "array", "items": {"type": "integer"},
                             "description": "支撑此资产的 insight id 列表 (可多个)"},
@@ -225,13 +225,12 @@ TOOLS = [
     },
     {
         "name": "evolution_update",
-        "description": "同步一个进化资产到最新版本 (脚本被改时调用, 只更新给到的字段)",
+        "description": "同步一个进化文件到最新版本 (脚本被改时调用, 复写 ~/.lclone/evolutions/<id>)",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": {"type": "integer", "description": "evolution id"},
-                "content": {"type": "string", "description": "最新脚本/工具内容"},
-                "ref": {"type": "string", "description": "最新路径"},
+                "id": {"type": "string", "description": "进化文件名 (如 build-spec-map.sh)"},
+                "content": {"type": "string", "description": "最新文件内容"},
                 "status": {"type": "string", "description": "active(在用) | stable(暂不再修改)"},
             },
             "required": ["id"],
@@ -324,31 +323,28 @@ def call_tool(name: str, args: dict) -> str:
                 status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
                 if status == "no_git":
                     return _unattributed_msg()
-            if not (args.get("content") or args.get("ref")):
-                return "错误: evolution 需要有 --content (项目无关内容) 或 --ref (项目内路径)"
-            eid = mem_mod.create_evolution(
+            if not args.get("content"):
+                return "错误: evolution 需要 --content (进化文件内容; 或直接写文件到 ~/.lclone/evolutions/)"
+            ev = mem_mod.create_evolution(
                 conn, name=args.get("name", ""), kind=args.get("kind", "script"),
                 content=args.get("content", ""), ref=args.get("ref", ""),
-                reason=args.get("reason", ""), project_id=pid)
-            for iid in (args.get("insight") or []):
-                mem_mod.link_insight_to_evolution(conn, int(iid), eid)
-            return f"已沉淀进化资产 #{eid} [{'全局层' if pid is None else f'项目 #{pid}'}] {args.get('name')}"
+                reason=args.get("reason", ""))
+            return f"已沉淀进化资产 {ev} [{'全局层' if pid is None else f'项目 #{pid}'}]"
         if name == "evolution_list":
-            pid = _resolve_project(conn, args.get("project"))
-            items = mem_mod.list_evolutions(conn, project_id=pid, status=args.get("status"))
+            items = mem_mod.list_evolution_files()
             if not items:
-                return "(暂无进化资产)"
+                return "(暂无进化资产, 目录 ~/.lclone/evolutions/)"
             return "\n".join(
-                f"#{e['id']} [{e.get('project_name') or '全局层'}] [{e['kind']}{('/'+e['status']) if e['status']!='active' else ''}] "
-                f"{e['name']}  {((e['content'] or e['ref']) or '')[:60]}"
+                f"{e['name']}  <{'全局层'}>"
                 for e in items
             )
         if name == "evolution_update":
-            eid = int(args["id"])
-            mem_mod.update_evolution(
-                conn, eid, content=args.get("content"), ref=args.get("ref"),
-                status=args.get("status"))
-            return f"进化资产 #{eid} 已同步"
+            ev = args.get("id")
+            if isinstance(ev, int):
+                ev = str(ev)
+            mem_mod.update_evolution(conn, ev, content=args.get("content"),
+                                     status=args.get("status"))
+            return f"进化资产 {ev} 已同步"
         if name == "conflicts":
             pid = _resolve_project(conn, args.get("project"))
             items = mem_mod.find_conflicts(conn, project_id=pid)

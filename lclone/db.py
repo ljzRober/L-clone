@@ -49,30 +49,8 @@ CREATE TABLE IF NOT EXISTS memories (
   confirmed_at TEXT
 );
 
--- L1.5 层: 进化资产 (可复用脚本/工具, 实践中沉淀, 稳定=暂时不再修改)
--- 存储: content = 项目无关的通用脚本内容(存记忆库本体); ref = 项目内脚本路径(内容留仓库, 只留引用)
-CREATE TABLE IF NOT EXISTS evolutions (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-  kind       TEXT NOT NULL DEFAULT 'script',  -- script | tool | command | other
-  name       TEXT NOT NULL DEFAULT '',
-  content    TEXT NOT NULL DEFAULT '',
-  ref        TEXT NOT NULL DEFAULT '',
-  reason     TEXT NOT NULL DEFAULT '',
-  status     TEXT NOT NULL DEFAULT 'active',  -- active(实践中/在用) | stable(暂不再修改)
-  source_ref TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- insight → evolution 链接 (一个进化资产可被 1..N 个 insight 支撑)
-CREATE TABLE IF NOT EXISTS evolution_links (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  insight_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-  evolution_id INTEGER NOT NULL REFERENCES evolutions(id) ON DELETE CASCADE,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(insight_id, evolution_id)
-);
+-- 进化资产(evolution) = ~/.lclone/evolutions/ 下的文件 (不入 SQL 表);
+-- insight 用 [[evo:name.ext]] 指向。项目内脚本进仓库, 项目无关工具/模型/模板放记忆区。
 
 -- L2 层: 项目内 spec 文件的索引 (格式无关: openspec / adr / markdown / other)
 -- 权威内容永远在项目仓库里, 这里只存定位信息 + 摘要 + 哈希
@@ -134,9 +112,6 @@ CREATE INDEX IF NOT EXISTS idx_specs_proj ON specs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
 CREATE INDEX IF NOT EXISTS idx_recall_log_mem ON recall_log(memory_id);
-CREATE INDEX IF NOT EXISTS idx_evos_proj ON evolutions(project_id, status);
-CREATE INDEX IF NOT EXISTS idx_evolinks_insight ON evolution_links(insight_id);
-CREATE INDEX IF NOT EXISTS idx_evolinks_evo ON evolution_links(evolution_id);
 """
 
 
@@ -172,6 +147,10 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     scols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)")]
     if "session_key" not in scols:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
+    # 迁移: 进化资产改为文件式 (~/.lclone/evolutions/), 不再用 SQL 表
+    # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
+    conn.execute("DROP TABLE IF EXISTS evolution_links")
+    conn.execute("DROP TABLE IF EXISTS evolutions")
     tok = _fts_tokenizer(conn)
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "

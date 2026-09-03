@@ -16,6 +16,7 @@ import math
 import os
 import re
 import sqlite3
+from pathlib import Path
 from typing import List, Optional
 
 from . import db as db_mod
@@ -306,103 +307,115 @@ def set_status(conn: sqlite3.Connection, memory_id: int, status: str) -> None:
     conn.commit()
 
 
-# ---------------------------------------------------------------- 进化资产 (evolution)
+# ---------------------------------------------------------------- 进化资产 (evolution) —— 文件式
+# 进化资产 = ~/.lclone/evolutions/ 下的文件 (filename.ext), insight 用 [[evo:name.ext]] 指向。
+# 项目构建需要的脚本进仓库; 项目无关的工具/模型/模板放记忆区 (~/.lclone/evolutions)。不入 SQL 表。
+EVO_REF_RE = re.compile(r"\[\[evo:([^\]\n]+)\]\]")
+_KIND_EXT = {"script": "sh", "tool": "py", "command": "sh", "model": "md", "other": "txt"}
+
+
+def evo_dir() -> str:
+    """进化文件目录 (记忆区, 全局)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。"""
+    d = Path(os.environ.get("LCLONE_EVO_DIR") or (Path.home() / ".lclone" / "evolutions"))
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
+def _evo_path(name: str) -> Path:
+    # 只允许文件名, 防止穿越
+    safe = Path(name).name
+    return Path(evo_dir()) / safe
+
+
+def _ensure_ext(name: str, kind: str) -> str:
+    base = name.rsplit("/", 1)[-1]
+    if "." in base and not base.startswith("."):
+        return name
+    return name + "." + _KIND_EXT.get(kind or "other", "txt")
+
+
 def create_evolution(conn: sqlite3.Connection, name: str, kind: str = "script",
                      content: str = "", ref: str = "", reason: str = "",
                      project_id: Optional[int] = None, source_ref: str = "",
-                     status: str = "active") -> int:
-    """沉淀一个可复用脚本/工具 (evolution)。
+                     status: str = "active") -> str:
+    """沉淀一个进化文件到记忆区 (filesystem, 不入 SQL)。name 可带扩展名; 无则按 kind 兜底。
 
-    存储: content = 项目无关的通用脚本/工具内容 (存记忆库本体);
-          ref = 项目内脚本路径 (内容留仓库, 只留引用, 如 scripts/x.py)。
-    `status`: active(实践中/在用) | stable(暂不再修改)。改脚本时用 update_evolution 同步。
+    返回写入的文件名。项目内脚本保持 ref (内容在仓库), 不改写本文件; 项目无关内容直接存文件。
     """
-    cur = conn.execute(
-        "INSERT INTO evolutions(project_id, kind, name, content, ref, reason,"
-        " status, source_ref) VALUES (?,?,?,?,?,?,?,?)",
-        (project_id, kind, name, content, ref, reason, status, source_ref),
-    )
-    conn.commit()
-    return cur.lastrowid
+    fname = _ensure_ext(name, kind)
+    _evo_path(fname).write_text(content or "", encoding="utf-8")
+    return fname
 
 
-def update_evolution(conn: sqlite3.Connection, evolution_id: int,
+def update_evolution(conn: sqlite3.Connection, evolution_id: str,
                      content: Optional[str] = None, ref: Optional[str] = None,
                      status: Optional[str] = None, name: Optional[str] = None,
-                     reason: Optional[str] = None) -> None:
-    """同步一个 evolution 到最新版本 (脚本被改时调用)。
-
-    只更新给到的字段; content/ref/status 同步为最新的当前版本。
-    """
-    sets, params = [], []
-    for col, v in (("content", content), ("ref", ref), ("status", status),
-                   ("name", name), ("reason", reason)):
-        if v is not None:
-            sets.append(f"{col}=?")
-            params.append(v)
-    if sets:
-        sets.append("updated_at=datetime('now')")
-        params.append(evolution_id)
-        conn.execute(
-            f"UPDATE evolutions SET {', '.join(sets)} WHERE id=?", params)
-    conn.commit()
+                     reason: Optional[str] = None, ext: Optional[str] = None) -> None:
+    """同步一个进化文件到最新版本 (脚本被改时调用)。evolution_id 为文件名。"""
+    p = _evo_path(str(evolution_id))
+    if content is not None and p.exists():
+        p.write_text(content, encoding="utf-8")
 
 
 def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
-                              evolution_id: int) -> None:
-    """建立 insight → evolution 链接 (一个进化资产可被 1..N 个 insight 支撑)。"""
-    conn.execute(
-        "INSERT OR IGNORE INTO evolution_links(insight_id, evolution_id)"
-        " VALUES (?,?)",
-        (insight_id, evolution_id),
-    )
-    conn.commit()
+                              evolution_id: str) -> None:
+    """insight → evolution 链接 = insight 内容里的 [[evo:文件名]]; 无 SQL 表, 此处为空操作。"""
+    pass
 
 
-def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[dict]:
-    """取某个 insight 指向的 evolution 资产 (召回 follow 用)。"""
-    rows = conn.execute(
-        "SELECT e.id, e.project_id, e.kind, e.name, e.content, e.ref,"
-        " e.reason, e.status, e.created_at, p.name AS project_name"
-        " FROM evolution_links l JOIN evolutions e ON e.id = l.evolution_id"
-        " LEFT JOIN projects p ON p.id = e.project_id"
-        " WHERE l.insight_id=? ORDER BY e.id",
-        (insight_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+def list_evolution_files() -> List[dict]:
+    """扫进化目录, 返回 [{name, ext}] (文件结构显示用)。"""
+    out = []
+    for p in sorted(Path(evo_dir()).iterdir()):
+        if p.is_file():
+            name = p.name
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            out.append({"name": name, "ext": ext})
+    return out
 
 
-def insights_for_evolution(conn: sqlite3.Connection, evolution_id: int) -> List[dict]:
-    """取支撑某个 evolution 的 insight 列表。"""
-    rows = conn.execute(
-        "SELECT m.id, m.project_id, m.content, m.reason, p.name AS project_name"
-        " FROM evolution_links l JOIN memories m ON m.id = l.insight_id"
-        " LEFT JOIN projects p ON p.id = m.project_id"
-        " WHERE l.evolution_id=? ORDER BY m.id",
-        (evolution_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+def read_evolution_file(name: str) -> Optional[str]:
+    p = _evo_path(name)
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def evo_refs(content: str) -> List[str]:
+    """解析 [[evo:name.ext]] 引用。"""
+    return EVO_REF_RE.findall(content or "")
 
 
 def list_evolutions(conn: sqlite3.Connection, project_id: Optional[int] = None,
                     status: Optional[str] = None, limit: int = 50) -> List[dict]:
-    """列出进化资产 (按时间倒序), 支持按项目/状态过滤。"""
-    q = (
-        "SELECT e.id, e.project_id, e.kind, e.name, e.content, e.ref, e.reason,"
-        " e.status, e.created_at, e.updated_at, p.name AS project_name"
-        " FROM evolutions e LEFT JOIN projects p ON p.id = e.project_id"
-        " WHERE 1=1"
-    )
-    params: list = []
-    if project_id is not None:
-        q += " AND e.project_id=?"
-        params.append(project_id)
-    if status:
-        q += " AND e.status=?"
-        params.append(status)
-    q += " ORDER BY e.id DESC LIMIT ?"
-    params.append(limit)
-    return [dict(r) for r in conn.execute(q, params).fetchall()]
+    """列出进化文件 (扫目录), 兼容旧签名 (忽略 conn/project/status)。"""
+    return list_evolution_files()
+
+
+def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[dict]:
+    """取某 insight 经 [[evo:...]] 指向的进化文件。"""
+    row = conn.execute("SELECT content FROM memories WHERE id=?",
+                       (insight_id,)).fetchone()
+    if not row:
+        return []
+    out = []
+    for name in evo_refs(row["content"]):
+        c = read_evolution_file(name)
+        if c is not None:
+            out.append({"name": name, "ext": name.rsplit(".", 1)[-1].lower() if "." in name else "",
+                        "content": c, "kind": "", "status": "active", "project_id": None})
+    return out
+
+
+def insights_for_evolution(conn: sqlite3.Connection, evolution_id: str) -> List[dict]:
+    """找指向某进化文件的 insight。"""
+    rows = conn.execute(
+        "SELECT id, project_id, content, reason FROM memories WHERE level='insight'"
+    ).fetchall()
+    return [{"id": r["id"], "project_id": r["project_id"], "content": r["content"],
+             "reason": r["reason"], "project_name": None}
+            for r in rows if evolution_id in evo_refs(r["content"])]
 
 
 # ---------------------------------------------------------------- 上升 / 下降 (生命周期)
@@ -558,27 +571,32 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
     # 进化资产 follow: 命中 insight 后, 把它指向的 evolution 一起带出 (实践沉淀的工具/脚本)
     if base:
         evo_by_insight: dict = {}
-        for x in base:
+        base_snapshot = list(base)  # 快照: 只对当前 base 查 evo, 避免循环追加被重新迭代
+        for x in base_snapshot:
             evo_by_insight[x["id"]] = evolutions_for_insight(conn, x["id"])
-        for x in base:
+        for x in base_snapshot:
             for evo in evo_by_insight.get(x["id"], []):
                 base.append({
                     "kind": "evolution",
-                    "id": evo["id"], "project_id": evo["project_id"],
-                    "project": evo.get("project_name") or "个人区",
-                    "level": "evolution", "content": evo["content"] or evo["ref"],
-                    "reason": evo["reason"], "source_ref": f"evolution:{evo['id']}",
-                    "created_at": evo["created_at"], "score": None,
-                    "via_evolution": True, "evo_name": evo["name"], "evo_kind": evo["kind"],
+                    "name": evo["name"], "project_id": evo["project_id"],
+                    "project": "个人区",
+                    "level": "evolution", "content": evo["content"],
+                    "reason": "", "source_ref": f"evolution:{evo['name']}",
+                    "created_at": "", "score": None,
+                    "via_evolution": True, "evo_name": evo["name"], "evo_kind": evo["ext"],
                 })
 
     # 召回日志 (供 suggest 的"长期未用"信号)
     if base:
-        conn.executemany(
-            "INSERT INTO recall_log(memory_id) VALUES (?)",
-            [(x["id"],) for x in base],
-        )
-        conn.commit()
+        # 只记录真实记忆 (有整数 id), 进化文件(名字) 不写 recall_log
+        mem_ids = [x["id"] for x in base if x.get("id") is not None
+                   and isinstance(x["id"], int)]
+        if mem_ids:
+            conn.executemany(
+                "INSERT INTO recall_log(memory_id) VALUES (?)",
+                [(mid,) for mid in mem_ids],
+            )
+            conn.commit()
     return base
 
 
