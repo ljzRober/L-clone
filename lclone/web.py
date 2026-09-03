@@ -485,12 +485,16 @@ function renderGraph() {
     const t1 = (m.content || '').replace(/\s+/g, ' ').trim();
     // 按实际列宽动态截断: 保守字宽 14px (中文全角略宽), 可用宽 = w - 34 (左右留白 + 安全余量)
     const perLine = Math.max(4, Math.floor((w - 34) / 14));
-    const a = t1.slice(0, perLine) + (t1.length > perLine ? '…' : '');
-    const b = t1.length > perLine ? t1.slice(perLine, perLine * 2) + (t1.length > perLine * 2 ? '…' : '') : '';
-    return `<g class="box" onclick="openMem(${m.id})"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
+    const isEvo = m.level === 'evolution';
+    const label = isEvo ? (m.evo ? `${m.evo.name} (${m.evo.kind})` : t1) : t1;
+    const a = label.slice(0, perLine) + (label.length > perLine ? '…' : '');
+    const b = label.length > perLine ? label.slice(perLine, perLine * 2) + (label.length > perLine * 2 ? '…' : '') : '';
+    const click = isEvo ? `openEvo(${m.evo.id})` : `openMem(${m.id})`;
+    const badge = isEvo ? '进化' : (LN[m.level] || m.level);
+    return `<g class="box" onclick="${click}"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
       `<text x="${x + 12}" y="${y + 20}" class="bt" style="font-size:12px">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt" style="font-size:12px">${esc(b)}</text>` : '') +
-      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">#${m.id} · ${(m.created_at || '').slice(0, 10)}</text></g>`;
+      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">${badge} · ${(m.created_at || '').slice(0, 10)}</text></g>`;
   }
   function levelColumns(ms, ox, oy, lvls) {
     const cols_src = lvls || levels;
@@ -622,7 +626,21 @@ function openMem(mid) {
   outs.forEach(t => { const tm = MEMS.find(x => x.id === t); build.push(`<span>→ <a onclick="openMem(${t})">#${t}${tm ? ' · ' + esc(tm.content.slice(0, 14)) : ''}</a></span>`); });
   ins.forEach(s => { const sm = MEMS.find(x => x.id === s); build.push(`<span>← <a onclick="openMem(${s})">#${s}${sm ? ' · ' + esc(sm.content.slice(0, 14)) : ''}</a></span>`); });
   $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
-  $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').textContent = '保存修改';
+  $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
+  $('modal').classList.add('on');
+}
+// 进化资产预览: 与 insight 一样, 默认按文本展示 (内容/引用/沉淀原因), 只读。
+function openEvo(eid) {
+  const e = EVOS.find(x => x.id === eid); if (!e) return;
+  CUR_MID = null;
+  $('m-title').textContent = '进化资产 #' + eid + ' · ' + e.name + ' (' + e.kind + ')';
+  $('m-content').value = (e.content || '') + (e.ref ? '\n\n[文件路径] ' + e.ref : '') +
+    (e.reason ? '\n\n[沉淀原因] ' + e.reason : '');
+  $('m-level').value = 'insight';
+  $('m-meta').textContent = `进化资产 #${eid} · ${e.kind} · ${e.status} · ${e.created_at} · ${e.project_id ? '项目' : '全局'}`;
+  $('m-owner-hint').textContent = '（进化资产：脚本/工具，仅预览文本，不在此编辑）';
+  $('m-links').innerHTML = '链接：无';
+  $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').style.display = 'none';
   $('modal').classList.add('on');
 }
 function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
