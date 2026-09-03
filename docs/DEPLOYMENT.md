@@ -43,7 +43,9 @@ Web 服务同时暴露 MCP 端点, Claude Code / Codex / DSH 等可远程读写�
 ```
 端点:   POST /mcp          (JSON-RPC over HTTP)
 鉴权:   Authorization: Bearer <LCLONE_API_KEY>   或   X-API-Key: <key>
-工具:   bootstrap / capture / recall / remember / promote / demote / suggest / organize / projects / review / ask
+工具:   remember / capture / recall / bootstrap / promote / demote
+        suggest / projects / review / ask / organize
+        evolution_add / evolution_list / evolution_update / conflicts
 ```
 
 配置示例(Claude Code 的 MCP server, 走 streamable-http):
