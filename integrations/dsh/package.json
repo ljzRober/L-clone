@@ -4,7 +4,7 @@
   "type": "module",
   "description": "L-clone 记忆钩子：DSH 每轮结束(turn/end)自动 capture 到外置大脑；Web GUI 侧边栏「大脑看板」按钮一键打开记忆工作台。",
   "main": "dsh/index.js",
-  "files": ["dsh/index.js", "dsh/client.js", "dsh/cordis.patch.yml"],
+  "files": ["dsh/index.js", "dsh/client.js", "dsh/cordis.patch.yml", "brain", "scripts/install.js"],
   "exports": {
     ".": "./dsh/index.js",
     "./client": "./dsh/client.js",
@@ -19,6 +19,17 @@
       "inject": []
     }
   },
-  "keywords": ["dsh-plugin", "memory", "lclone"],
-  "license": "MIT"
+  "keywords": ["dsh-plugin", "memory", "lclone", "external-brain"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ljzRober/L-clone.git"
+  },
+  "homepage": "https://github.com/ljzRober/L-clone/tree/main/integrations/dsh",
+  "bugs": {
+    "url": "https://github.com/ljzRober/L-clone/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

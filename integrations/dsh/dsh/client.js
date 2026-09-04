@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     const OTHER_ACTIVE_ATTR = "data-dsh-ssh-active";
     const ACTIVATE_EVENT = "dsh-panel-activate";
     const HEALTH_ENDPOINT = "/api/lclone-health";
-    let DASHBOARD_URL = "http://127.0.0.1:8000"; // 后端基址; 会从 /api/lclone-health 的 webUrl 更新(支持服务器部署)
+    let DASHBOARD_URL = "/__lclone/board"; // 插件 serve 的看板前端(前后台分离); 会从 health 的 boardUrl 更新
     let DOCS_URL = "https://github.com/ljzRober/L-clone"; // 文档链接; 会从 health 的 docsUrl 更新
     // 决策确认 (本变更): 客户端轮询 host 代理路由, 弹窗 + 角标呈现待确认决策, 不进主 agent。
     const DECISIONS_ENDPOINT = "/api/lclone-decisions";
@@ -233,6 +233,7 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
       let offlineHint;
       let skillHint;
       let docsLinkEl;
+      let setupHint;
       const ensure = () => {
         if (container !== void 0) return;
         const column = document.querySelector(CONVERSATION_COLUMN_SELECTOR);
@@ -324,9 +325,14 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
         skillHint.appendChild(skillText);
         skillHint.appendChild(skillCode);
 
+        setupHint = document.createElement("div");
+        setupHint.className = "lclone-board-offline";
+        setupHint.style.display = "none";
+
         container.appendChild(bar);
         container.appendChild(offlineHint);
         container.appendChild(skillHint);
+        container.appendChild(setupHint);
         container.appendChild(iframe);
         column.appendChild(container);
       };
@@ -364,7 +370,7 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
           .then((body) => {
             const online = body && body.ok === true;
             const skillOk = body && body.skill !== false;
-            if (body && typeof body.webUrl === "string" && body.webUrl) DASHBOARD_URL = body.webUrl.replace(/\/+$/, "");
+            if (body && typeof body.boardUrl === "string" && body.boardUrl) DASHBOARD_URL = body.boardUrl;
             if (body && typeof body.docsUrl === "string" && body.docsUrl) DOCS_URL = body.docsUrl;
             statusDot.dataset.state = online ? "online" : "offline";
             if (offlineHint !== void 0) offlineHint.style.display = online ? "none" : "flex";
@@ -374,6 +380,26 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
               if (online && iframe.getAttribute("src") !== DASHBOARD_URL) iframe.src = DASHBOARD_URL;
             }
             if (docsLinkEl !== void 0) docsLinkEl.href = DOCS_URL;
+            const setup = body && Array.isArray(body.setup) ? body.setup : [];
+            if (setupHint !== void 0) {
+              if (setup.length) {
+                setupHint.textContent = "";
+                const t = document.createElement("div");
+                t.style.fontWeight = "600";
+                t.style.marginBottom = "4px";
+                t.textContent = "要跑起来还差这几步：";
+                setupHint.appendChild(t);
+                for (const s of setup) {
+                  const row = document.createElement("div");
+                  row.style.marginTop = "4px";
+                  row.textContent = "• " + s;
+                  setupHint.appendChild(row);
+                }
+                setupHint.style.display = "flex";
+              } else {
+                setupHint.style.display = "none";
+              }
+            }
           })
           .catch(() => {
             statusDot.dataset.state = "offline";

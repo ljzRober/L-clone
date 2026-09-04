@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>外置大脑 · 记忆</title>
+<style>
+
+:root {
+  --bg:#0b0f17; --surface:#111827; --card:#151d2e; --card2:#1a2337; --line:#243047;
+  --fg:#e7ebf4; --dim:#8b95a9; --acc:#e0b15c; --acc2:#5b8def;
+  --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+  --serif:Georgia,"Songti SC","Noto Serif SC","SimSun",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body { margin:0; font-family:var(--sans); background:var(--bg); color:var(--fg);
+       background-image:
+         radial-gradient(1100px 480px at 18% -8%, rgba(224,177,92,.06), transparent),
+         radial-gradient(900px 420px at 92% 0%, rgba(91,141,239,.07), transparent); }
+.app { display:flex; flex-direction:column; height:100vh; }
+header { display:flex; align-items:center; gap:14px; padding:14px 24px;
+         border-bottom:1px solid var(--line); flex:0 0 auto; background:rgba(11,15,23,.72); }
+.brand { font-family:var(--serif); font-size:20px; font-weight:600; letter-spacing:.06em; }
+.brand em { font-style:normal; color:var(--acc); }
+.tag { font-size:11px; color:var(--dim); font-family:var(--mono); }
+.sp { flex:1; }
+button { font-family:inherit; }
+.act { background:var(--acc); color:#241d08; border:0; border-radius:9px; padding:8px 16px;
+       cursor:pointer; font-size:13px; font-weight:600; }
+.act:hover { filter:brightness(1.08); }
+.ghost { background:transparent; color:var(--dim); border:1px solid var(--line); border-radius:8px;
+         padding:6px 12px; cursor:pointer; font-size:12px; }
+.ghost:hover { color:var(--fg); border-color:var(--acc); }
+.ghost.hot { color:var(--warn); border-color:var(--warn); background:rgba(251,191,36,.08); }
+a.navbtn { text-decoration:none; color:var(--dim); border:1px solid var(--line); border-radius:8px;
+           padding:6px 12px; font-size:12px; }
+a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
+
+/* ---- 记忆工作台 ---- */
+.shell { display:flex; flex:1 1 auto; min-height:0; }
+.sidebar { width:252px; flex:0 0 auto; border-right:1px solid var(--line); padding:14px 10px 26px;
+           overflow-y:auto; background:var(--surface); }
+.eyebrow { font-family:var(--mono); font-size:10px; color:var(--dim); letter-spacing:.16em;
+           text-transform:uppercase; margin:16px 8px 6px; }
+.eyebrow:first-child { margin-top:2px; }
+.layer { display:flex; align-items:center; gap:10px; width:100%; text-align:left; border:1px solid transparent;
+         background:transparent; color:var(--dim); border-radius:9px; padding:8px 10px; cursor:pointer;
+         font-size:13px; }
+.layer:hover { background:var(--card); color:var(--fg); }
+.layer.on { background:var(--card2); color:var(--fg); border-color:var(--line); }
+.layer.drop { border-color:var(--acc); background:var(--card); box-shadow:inset 0 0 0 1px var(--acc); }
+.rail { width:4px; height:16px; border-radius:2px; flex:0 0 auto; }
+.rail.global { background:var(--acc); }
+.rail.project { background:var(--acc2); }
+.layer .nm { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.layer.sub { padding-left:24px; font-size:12px; }
+.layer.sub .nm { font-weight:normal; }
+.layer .cnt { font-family:var(--mono); font-size:11px; color:var(--dim); }
+.layer .cnt b { color:var(--fg); }
+/* 节点行右侧组 (垃圾桶 + 数量): 靠右排版 */
+.layer .right { margin-left:auto; display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; }
+/* 删除/添加 图标按钮 (垃圾桶/加号) */
+.icon-btn { background:transparent; border:none; color:var(--dim); cursor:pointer; width:20px; height:20px;
+            display:inline-flex; align-items:center; justify-content:center; padding:0; border-radius:5px;
+            font-family:inherit; transition:color .12s, background .12s; }
+.icon-btn:hover { color:var(--bad); background:rgba(248,113,113,.12); }
+.icon-btn:focus-visible { outline:2px solid var(--bad); outline-offset:1px; }
+/* 节点行内图标 (垃圾桶): 嵌在名字与计数之间 */
+.icon-inline { color:var(--dim); cursor:pointer; width:18px; height:18px; margin:0 2px;
+               display:inline-flex; align-items:center; justify-content:center; border-radius:4px;
+               opacity:.45; transition:opacity .12s, color .12s, background .12s; }
+.icon-inline:hover { opacity:1; color:var(--bad); background:rgba(248,113,113,.12); }
+.icon-inline:focus-visible { outline:2px solid var(--bad); outline-offset:1px; }
+#reg-form { display:none; padding:8px; }
+#reg-form.on { display:block; }
+#reg-form input { width:100%; background:#0d1424; color:var(--fg); border:1px solid var(--line);
+                  border-radius:8px; padding:7px 9px; font-size:12px; margin-bottom:6px; font-family:inherit; }
+.main { flex:1 1 auto; min-width:0; overflow-y:auto; padding:18px 24px 56px; }
+.sec-head { display:flex; align-items:baseline; gap:10px; margin-bottom:16px; }
+.sec-head h2 { margin:0; font-family:var(--serif); font-size:18px; font-weight:600; }
+.sec-head .sub { color:var(--dim); font-size:12px; font-family:var(--mono); }
+.cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:13px 14px;
+        display:flex; flex-direction:column; gap:8px; cursor:grab;
+        min-width:0; overflow:hidden;
+        transition:border-color .15s, transform .15s; }
+.card:hover { border-color:#2e3b55; transform:translateY(-1px); }
+.card.dragging { opacity:.45; }
+.badge { display:inline-block; font-size:10px; border-radius:6px; padding:2px 7px; font-family:var(--mono); }
+.b-decision { background:#1f3a6b; color:#8fb3ff; }
+.b-note { background:#26303f; color:#a9bdd6; }
+.b-global { background:#4a3a14; color:var(--acc); }
+.b-project { background:#1d2b4a; color:#7fb0ff; }
+.card .body { font-size:13px; line-height:1.6; color:var(--fg); min-width:0;
+              word-break:break-word; overflow-wrap:anywhere;
+              display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.lk { color:var(--acc); font-family:var(--mono); font-size:11px; }
+.card .meta { font-family:var(--mono); font-size:10px; color:var(--dim); }
+.card .ops { display:flex; gap:6px; align-items:center; margin-top:auto; }
+.empty { color:var(--dim); font-size:13px; padding:34px 12px; text-align:center;
+         border:1px dashed var(--line); border-radius:12px; }
+
+/* ---- 添加记忆弹窗 ---- */
+.modal-bg { display:none; position:fixed; inset:0; background:rgba(4,6,10,.62); backdrop-filter:blur(3px);
+            z-index:40; align-items:center; justify-content:center; }
+.modal-bg.on { display:flex; }
+.modal { width:min(520px,92vw); background:var(--surface); border:1px solid var(--line);
+         border-radius:14px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,.5);
+         max-height:88vh; overflow-y:auto; }
+.modal h3 { margin:0 0 14px; font-family:var(--serif); font-size:16px; font-weight:600; }
+.modal input, .modal textarea, .modal select { width:100%; background:#0d1424; color:var(--fg);
+         border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:13px;
+         margin-bottom:10px; font-family:inherit; }
+.modal textarea { min-height:150px; resize:vertical; }
+.row { display:flex; gap:8px; align-items:center; }
+
+/* ---- 进化文件目录 (file-explorer) ---- */
+.evo-exp { width:min(940px,96vw); }
+.evo-hd { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.evo-path { font-family:var(--mono); font-size:12px; color:var(--dim); }
+.evo-body { display:grid; grid-template-columns:minmax(320px,46%) 1fr; gap:14px; min-height:46vh; }
+.evo-list { overflow:auto; border:1px solid var(--line); border-radius:12px; padding:8px; }
+.evo-group { font-family:var(--mono); font-size:11px; color:var(--dim); padding:8px 8px 3px;
+             letter-spacing:.06em; }
+.evo-row { display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:8px;
+           cursor:pointer; font-family:var(--mono); font-size:12px; color:var(--fg); }
+.evo-row:hover { background:var(--card2); }
+.evo-row.on { background:var(--card2); outline:1px solid var(--line); }
+.evo-ic { width:20px; height:20px; border-radius:5px; display:inline-flex; align-items:center;
+          justify-content:center; font-size:10px; font-weight:700; color:#0a0f1c; flex:none; }
+.et-sh{background:#34d399} .et-py{background:#c084fc} .et-md{background:#60a5fa}
+.et-yml{background:#fbbf24} .et-db{background:#fb923c} .et-txt{background:#9ca3af} .et-dir{background:#94a3b8;color:#0f172a}
+.evo-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.evo-meta { color:var(--dim); font-size:11px; flex:none; }
+.evo-preview { border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto;
+               font-family:var(--mono); font-size:12px; line-height:1.6; color:var(--fg);
+               white-space:pre-wrap; word-break:break-word; max-height:52vh; }
+.evo-empty { color:var(--dim); font-size:13px; padding:26px 12px; text-align:center;
+             border:1px dashed var(--line); border-radius:12px; }
+
+/* ---- 问答页 ---- */
+.ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
+.ask-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.ask-card h3 { font-family:var(--serif); font-size:14px; margin:0 0 8px; font-weight:600; }
+#chat { height:44vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:8px 2px; }
+.msg { max-width:84%; padding:9px 13px; border-radius:12px; white-space:pre-wrap;
+       font-size:14px; line-height:1.6; }
+.msg.user { align-self:flex-end; background:var(--acc); color:#241d08; }
+.msg.assistant { align-self:flex-start; background:var(--card2); border:1px solid var(--line); }
+.ask-card textarea { width:100%; background:#0d1424; color:var(--fg); border:1px solid var(--line);
+        border-radius:8px; padding:9px 11px; font-size:13px; font-family:inherit; resize:vertical; min-height:56px; }
+.ask-card select { background:#0d1424; color:var(--fg); border:1px solid var(--line); border-radius:8px;
+        padding:7px 9px; font-size:13px; margin-bottom:8px; }
+.muted { color:var(--dim); font-size:12px; }
+pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line); border-radius:8px;
+          padding:10px 12px; font-size:12px; font-family:var(--mono); overflow-x:auto; }
+
+/* ---- 架构图 ---- */
+.toolbar { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+.toolbar .sum { font-family:var(--mono); font-size:11px; color:var(--dim); }
+.zoomb { width:30px; height:28px; padding:0; }
+#graph { height: calc(100vh - 210px); min-height:520px; overflow:auto;
+         border:1px solid var(--line); border-radius:14px; position:relative;
+         background:#f6f8fb; }
+#graph svg { display:block; transform-origin:0 0; }
+/* 分层块状架构图 (浅色画布, 还原参考图) */
+.bandbox { fill:#ffffff; stroke:#e4e9f1; }
+.bandhead { fill:#eef2f8; stroke:#e4e9f1; }
+.band.bg-g .bh { fill:#2f7d4f; } .band.bg-g .bandhead { fill:#e8f5ee; }
+.band.bg-p .bh { fill:#2b6cb0; } .band.bg-p .bandhead { fill:#e8f1fb; }
+.band.bg-m .bh { fill:#7a4fb0; } .band.bg-m .bandhead { fill:#f1eafa; }
+.band.bg-d .bh { fill:#2b6cb0; } .band.bg-d .bandhead { fill:#e8f1fb; }
+.band.bg-n .bh { fill:#67707f; } .band.bg-n .bandhead { fill:#f0f2f5; }
+.bh { fill:#2a3342; font-size:14px; font-weight:bold; font-family:Georgia,"Songti SC",serif; }
+.bs { fill:#8b95a9; font-size:11px; }
+.hd-g{fill:#e8f5ee;} .hd-p{fill:#e8f1fb;} .hd-m{fill:#f1eafa;} .hd-d{fill:#e8f1fb;} .hd-n{fill:#f0f2f5;}
+.box { cursor:pointer; }
+.box rect { fill:#fff; stroke:#cfd8e4; stroke-width:1; transition:stroke .15s; }
+.box:hover rect { stroke:#5b8def; stroke-width:2; }
+.bt { fill:#1f2733; font-size:12px; }
+/* 项目卡片独立色 (区别于记忆方块) */
+.projcard rect { fill:#eef6ff; stroke:#7fb0ff; stroke-width:1; }
+.projcard:hover rect { stroke:#3c82f6; stroke-width:2; }
+.projcard .bt { fill:#2b6cb0; font-weight:bold; }
+.projcard .bm { fill:#5b8def; }
+/* 列头模块/等级着色 */
+.colhead { stroke:#dfe6ef; stroke-width:1; }
+.bm { fill:#8b95a9; font-size:10px; font-family:ui-monospace,Menlo,monospace; }
+.box .inner { fill:#f4f7fb; stroke:#e4e9f1; }
+.rail-global { fill:#e0b15c; }
+.rail-project { fill:#5b8def; }
+.flow { stroke:#9aa5b5; stroke-width:2; }
+.cap { fill:#5a6474; font-size:14px; font-family:Georgia,"Songti SC",serif; font-weight:bold; }
+
+/* ---- 大弹窗 (记忆详情/编辑) ---- */
+.modal-lg { width:min(860px,95vw); }
+.modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.modal-head h3 { margin:0; }
+.modal-x { background:transparent; border:1px solid var(--line); border-radius:8px; color:var(--dim);
+           width:32px; height:32px; cursor:pointer; font-size:15px; line-height:1; }
+.modal-x:hover { color:var(--fg); border-color:var(--acc); }
+.modal-lg .meta { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:10px; }
+.modal-lg .links { font-size:12px; color:var(--dim); margin:10px 0; }
+.modal-lg .links a { color:var(--acc); cursor:pointer; margin-right:10px; }
+.modal-lg .row { margin-top:8px; }
+
+@media (max-width:760px) {
+  .shell { flex-direction:column; }
+  .sidebar { width:100%; border-right:0; border-bottom:1px solid var(--line);
+             display:flex; flex-wrap:wrap; gap:6px; padding:10px; }
+  .eyebrow { display:none; }
+  #tree { display:contents; }
+  .layer { width:auto; }
+  .main { padding:14px; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+
+</style>
+<script>
+(() => {
+  const BASE = (window.LCLONE_API_BASE || "").replace(/\/+$/, "");
+  if (!BASE) return;
+  const orig = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    if (typeof input === "string" && input.charAt(0) === "/" && !input.startsWith(BASE + "/")) {
+      input = BASE + input;
+    }
+    return orig(input, init);
+  };
+})();
+</script></head>
+<body>
+
+<header>
+  <span class="brand">外置<em>大脑</em></span>
+  <span class="tag" id="backend"></span>
+  <span class="sp"></span>
+  <button class="ghost" id="btn-pending" onclick="openPending()" title="查看并处理待确认洞察">待确认 <b id="pending-n">0</b></button>
+  <a class="navbtn" href="/ask">问答 →</a>
+</header>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="eyebrow">层级</div>
+    <div id="tree"></div>
+    <div class="eyebrow">整理</div>
+    <button class="layer" id="reg-toggle" onclick="toggleReg()">
+      <span class="rail" style="background:transparent"></span><span class="nm">＋ 添加项目</span>
+    </button>
+    <div id="reg-form">
+      <input id="pj-name" placeholder="项目名">
+      <input id="pj-path" placeholder="仓库路径（可选）">
+      <input id="pj-charter" placeholder="charter 一句话（可选）">
+      <button class="act" style="width:100%" onclick="addProject()">注册</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="toolbar">
+      <button class="ghost zoomb" onclick="zoom(1.25)" title="放大">＋</button>
+      <button class="ghost zoomb" onclick="zoom(0.8)" title="缩小">－</button>
+      <button class="ghost zoomb" onclick="zoomFit()" title="适应">⛶</button>
+      <span class="sum" id="graph-sum"></span>
+      <span style="flex:1"></span>
+      <button class="ghost" onclick="loadAll()" title="重新拉取并刷新记忆/项目/链接">刷新</button>
+      <button class="ghost" onclick="organize()" title="把语义相近的记忆合并成一条（不跨项目/等级/模块）">整理</button>
+      <button class="ghost" onclick="openEvoExplorer()" title="查看进化文件（目录）">进化</button>
+      <button class="act" onclick="openAdd()">＋ 添加记忆</button>
+    </div>
+    <div id="graph"></div>
+  </main>
+</div>
+
+<div class="modal-bg" id="modal">
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <h3 id="m-title">记忆详情</h3>
+      <button class="modal-x" onclick="closeModal()" title="关闭">✕</button>
+    </div>
+    <div class="meta" id="m-meta"></div>
+    <textarea id="m-content" placeholder="记忆内容…"></textarea>
+    <div class="row">
+      <select id="m-level" style="width:150px">
+        <option value="insight">洞察</option>
+      </select>
+      <select id="m-owner" style="flex:1"><option value="">全局层</option></select>
+      <span class="muted" id="m-owner-hint"></span>
+    </div>
+    <div class="links" id="m-links"></div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="ghost" id="btn-del" onclick="delMem()">删除</button>
+      <button class="ghost" id="btn-move" onclick="applyMove()">移动到所选</button>
+      <button class="act" id="btn-save" onclick="saveEdit()">保存修改</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="pending-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>待确认洞察</h3>
+      <button class="modal-x" onclick="closePending()" title="关闭">✕</button>
+    </div>
+    <div id="pending-list"></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="evo-exp">
+  <div class="modal modal-lg evo-exp">
+    <div class="modal-head">
+      <h3>进化文件</h3>
+      <span class="evo-path" id="evo-path">~/.lclone/evolutions/</span>
+      <span style="flex:1"></span>
+      <button class="modal-x" onclick="closeEvoExp()" title="关闭">✕</button>
+    </div>
+    <div class="evo-body">
+      <div class="evo-list" id="evo-list"></div>
+      <div class="evo-preview" id="evo-preview">点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let PROJS = [], MEMS = [], LINKS = [], EVOS = [];
+const EXPANDED = new Set();
+const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
+const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
+let CUR_MID = null;
+const API = {
+  projects: async () => (await (await fetch('/api/projects')).json()).items,
+  memories: async qs => (await fetch('/api/memories' + qs)).json(),
+  links: async () => (await fetch('/api/links')).json(),
+  remember: async body => (await fetch('/api/remember', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  promote: async id => (await fetch('/api/memories/'+id+'/promote', {method:'POST'})).json(),
+  demote: async (id, project_id) => (await fetch('/api/memories/'+id+'/demote', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({project_id})})).json(),
+  review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
+  sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
+  removeProject: async id => (await fetch('/api/projects/'+id+'/remove', {method:'POST'})).json(),
+  restoreProject: async id => (await fetch('/api/projects/'+id+'/restore', {method:'POST'})).json(),
+};
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
+function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
+window.addEventListener('unhandledrejection', e => {
+  alert('错误: ' + ((e.reason && e.reason.message) || e.reason));
+});
+const LN = { insight:'洞察', evolution:'进化' };
+
+async function loadAll() {
+  const [p, m, l, pend, evos] = await Promise.all([
+    API.projects(), API.memories('?status=active&limit=500'), API.links(),
+    (await fetch('/api/pending')).json(),
+    (await fetch('/api/evolutions')).json(),
+  ]);
+  PROJS = p; MEMS = m.items; LINKS = l.items; EVOS = (evos.items || []);
+  // 进化资产 (文件式) 并入记忆流, 在「进化」档位按 文件名.类型 显示 (level=evolution)
+  EVOS.forEach(e => {
+    MEMS.push({ id: e.name, level: 'evolution', project_id: null,
+                content: (e.content || '') ? (e.name + ' — ' + e.content) : e.name,
+                created_at: '', evo: e });
+  });
+  const pn = (pend.items || []).length;
+  $('pending-n').textContent = pn;
+  $('btn-pending').classList.toggle('hot', pn > 0);
+  fillOwnerSelect();
+  renderSidebar(); renderGraph();
+}
+function fillOwnerSelect() {
+  const sel = $('m-owner');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全局层</option>' + PROJS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+/* ---- 侧边栏 (快速选择) ---- */
+function treeBtn(kind, pid, name, rail, cntHtml, id) {
+  const b = document.createElement('button');
+  b.className = 'layer'; b.id = id;
+  b.innerHTML = `<span class="rail ${rail}"></span><span class="nm">${esc(name)}</span><span class="cnt">${cntHtml}</span>`;
+  b.onclick = () => selectSidebar(kind, pid);
+  return b;
+}
+
+/* ---- 项目/模块 删除 UI (垃圾桶图标内嵌到节点行右侧) ---- */
+const TRASH_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M5.5 4V2.8a.8.8 0 0 1 .8-.8h3.4a.8.8 0 0 1 .8.8V4M3.5 4l.7 9.2a.8.8 0 0 0 .8.7h6a.8.8 0 0 0 .8-.7L12.5 4M6.5 7v4M9.5 7v4"/></svg>';
+
+// 项目树节点: 名字靠左, 垃圾桶 + 记忆数量靠右
+function _projectNode(p, cntHtml) {
+  const b = document.createElement('button');
+  b.className = 'layer'; b.id = 'lg-p' + p.id;
+  const nm = document.createElement('span');
+  nm.className = 'nm'; nm.textContent = p.name;
+  const right = document.createElement('span');
+  right.className = 'right';
+  const trash = document.createElement('span');
+  trash.className = 'icon-inline'; trash.title = '删除项目';
+  trash.setAttribute('role', 'button');
+  trash.innerHTML = TRASH_ICON;
+  trash.onclick = (ev) => { ev.stopPropagation(); delProject(p); };
+  const cnt = document.createElement('span');
+  cnt.className = 'cnt'; cnt.innerHTML = cntHtml;
+  right.appendChild(trash); right.appendChild(cnt);
+  b.appendChild(nm); b.appendChild(right);
+  b.onclick = () => selectSidebar('project', p.id);
+  return b;
+}
+
+async function delProject(p) {
+  if (!confirm(`确定删除项目「${p.name}」吗？\n\n墓碑式删除: 项目从列表消失、记忆停止加载，但数据保留，可撤销。`)) return;
+  try { await API.removeProject(p.id); }
+  catch (e) { alert('删除失败: ' + ((e && e.message) || e)); return; }
+  EXPANDED.delete(p.id);
+  await loadAll();
+  alert(`已删除项目「${p.name}」(数据保留, 可撤销)`);
+}
+
+function renderSidebar() {
+  const box = $('tree'); box.innerHTML = '';
+  box.appendChild(treeBtn('global', null, '全局层', 'global', '∞', 'lg-global'));
+  PROJS.forEach(p => {
+    const pendTag = p.pending_count ? ` 待确认 <b>${p.pending_count}</b>` : '';
+    // 项目节点: 名字 + 行内垃圾桶 (删除项目), 点击节点本身仍为选中
+    box.appendChild(_projectNode(p, `记忆 <b>${p.mem_count}</b>${pendTag}`));
+  });
+  if (!PROJS.length) box.appendChild(makeEl('div', 'muted', '(暂无项目)'));
+  document.querySelectorAll('.layer').forEach(x => x.classList.remove('on'));
+  // 高亮: 项目 > 全局层
+  let sel = 'lg-global';
+  if (EXPANDED.size === 1) sel = 'lg-p' + [...EXPANDED][0];
+  const el = $(sel); if (el) el.classList.add('on');
+}
+function selectSidebar(kind, pid) {
+  if (kind === 'project') {
+    // 点击谁显示谁: 点其他项目直接切换; 点当前已展开的项目则收起回全局
+    if (EXPANDED.size === 1 && EXPANDED.has(pid)) EXPANDED.clear();
+    else { EXPANDED.clear(); EXPANDED.add(pid); }
+  } else {
+    EXPANDED.clear();
+  }
+  renderGraph(); renderSidebar();
+  $('graph').scrollTop = 0;
+}
+
+/* ---- 架构图: 全局/项目 两层, 每层两横向划分; 默认=全局大框(两列+嵌套项目框); 项目=大框(两列) ---- */
+function renderGraph() {
+  const globals = MEMS.filter(m => !m.project_id);
+  const selProj = EXPANDED.size ? PROJS.find(p => EXPANDED.has(p.id)) : null;
+  const selProjMems = selProj ? MEMS.filter(m => m.project_id === selProj.id) : [];
+  const cont = document.getElementById('graph');
+  const W = Math.max(cont.clientWidth || 1200, 900);
+  const padX = 28, HEAD = 56, G_H = 36, GAP = 22, BOX_H = 52, BOXGAP = 10, IN = 14, XGAP = 18;
+  const boxLeft = padX, boxW = W - padX * 2;
+  const innerLeft = boxLeft + IN, innerW = boxW - IN * 2;
+  const levels = [ ['insight','洞察','#2b6cb0','#e8f1fb'], ['evolution','进化','#7a4fb0','#f1eafa'] ];
+  function head(x, y, w, tint, col, title, sub) {
+    return `<rect x="${x}" y="${y}" width="${w}" height="${G_H}" rx="16" fill="${tint}"/>` +
+      `<text x="${x + IN}" y="${y + G_H / 2 + 6}" class="bh" style="fill:${col}">${title}</text>` +
+      `<text x="${x + w - 14}" y="${y + G_H / 2 + 6}" class="bs" text-anchor="end">${sub}</text>`;
+  }
+  function memBox(m, x, y, w, col) {
+    const t1 = (m.content || '').replace(/\s+/g, ' ').trim();
+    // 按实际列宽动态截断: 保守字宽 14px (中文全角略宽), 可用宽 = w - 34 (左右留白 + 安全余量)
+    const perLine = Math.max(4, Math.floor((w - 34) / 14));
+    const isEvo = m.level === 'evolution';
+    const ext = isEvo && m.evo ? (m.evo.ext ? '.' + m.evo.ext : '') : '';
+    const label = isEvo ? (m.evo ? `${m.evo.name}${ext}` : t1) : t1;
+    const a = label.slice(0, perLine) + (label.length > perLine ? '…' : '');
+    const b = label.length > perLine ? label.slice(perLine, perLine * 2) + (label.length > perLine * 2 ? '…' : '') : '';
+    const click = isEvo ? `openEvo(${JSON.stringify(m.evo.name)})` : `openMem(${m.id})`;
+    const badge = isEvo ? '进化' : (LN[m.level] || m.level);
+    return `<g class="box" onclick="${click}"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
+      `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
+      `<text x="${x + 12}" y="${y + 20}" class="bt" style="font-size:12px">${esc(a)}</text>` + (b ? `<text x="${x + 12}" y="${y + 33}" class="bt" style="font-size:12px">${esc(b)}</text>` : '') +
+      `<text x="${x + 12}" y="${y + BOX_H - 6}" class="bm" style="font-size:10px">${badge} · ${(m.created_at || '').slice(0, 10)}</text></g>`;
+  }
+  function levelColumns(ms, ox, oy, lvls) {
+    const cols_src = lvls || levels;
+    let s = '';
+    const colW = (innerW - GAP * (cols_src.length - 1)) / cols_src.length;
+    // 网格化: 按列宽算每行放几个记忆 (1~3 个), 压缩高度
+    const perRow = Math.max(1, Math.min(3, Math.floor((colW - 20) / 170)));
+    const boxW = (colW - 20 - (perRow - 1) * BOXGAP) / perRow;
+    const pageSize = perRow * ROWS_PER_PAGE;   // 页容量 = 整行数, 保证网格排满
+    const cols = cols_src.map(([lv, n, c, t]) => {
+      const mems = ms.filter(m => m.level === lv);
+      const total = mems.length;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      let page = LEVEL_PAGE[lv] || 0;
+      if (page >= pages) page = 0;
+      const shown = mems.slice(page * pageSize, (page + 1) * pageSize);
+      return { lv, name: n, col: c, tint: t, total, pages, page, shown };
+    });
+    const maxRows = Math.max(...cols.map(c => Math.ceil(c.shown.length / perRow)), 1);
+    const hasPager = cols.some(c => c.pages > 1);
+    const gh = G_H + 12 + maxRows * BOX_H + (maxRows - 1) * BOXGAP + 8 + (hasPager ? 30 : 0);
+    cols.forEach((c, i) => {
+      const cx = ox + i * (colW + GAP);
+      s += `<g><rect x="${cx}" y="${oy}" width="${colW}" height="${gh}" rx="12" class="bandbox"/>` +
+        `<rect x="${cx}" y="${oy}" width="${colW}" height="${G_H}" rx="12" fill="${c.tint}"/>` +
+        `<text x="${cx + 10}" y="${oy + G_H / 2 + 6}" class="bh" style="fill:${c.col}">${c.name}</text>` +
+        `<text x="${cx + colW - 38}" y="${oy + G_H / 2 + 6}" class="bs" text-anchor="end">${c.total} 条</text>` +
+        `<text x="${cx + colW - 14}" y="${oy + G_H / 2 + 6}" class="bs" style="fill:${c.col};cursor:pointer" text-anchor="middle" onclick="openAddLevel('${c.lv}')">＋</text></g>`;
+      let by = oy + G_H + 12;
+      if (!c.shown.length) {
+        const emptyTxt = c.lv === 'evolution' ? '暂无进化资产' : '无记忆';
+        s += `<text x="${cx + 12}" y="${by + 22}" class="bs">${emptyTxt}</text>`;
+      }
+      else c.shown.forEach((m, idx) => {
+        const r = Math.floor(idx / perRow), col = idx % perRow;
+        s += memBox(m, cx + 10 + col * (boxW + BOXGAP), by + r * (BOX_H + BOXGAP), boxW, c.col);
+      });
+      if (c.pages > 1) {
+        const byy = by + (Math.ceil(c.shown.length / perRow) || 0) * (BOX_H + BOXGAP);
+        s += `<text x="${cx + 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px" onclick="prevPage('${c.lv}')">‹ 上一页</text>` +
+          `<text x="${cx + colW / 2}" y="${byy + 22}" class="bs" text-anchor="middle">第 ${c.page + 1} / ${c.pages} 页</text>` +
+          `<text x="${cx + colW - 10}" y="${byy + 22}" class="bs" style="fill:${c.col};cursor:pointer;font-size:12px" text-anchor="end" onclick="nextPage('${c.lv}')">下一页 ›</text>`;
+      }
+    });
+    return { s, gh };
+  }
+
+  let bg = '';
+  let contentBottom = 0;
+  if (selProj) {
+    // ---- 项目视图: 两横向划分 ----
+    const { s, gh } = levelColumns(selProjMems, innerLeft, HEAD + G_H + 18);
+    const pvH = G_H + 18 + gh + 30;
+    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${pvH}" rx="16" class="bandbox"/>`;
+    bg += head(boxLeft, HEAD, boxW, '#f1eafa', '#7a4fb0', '项目「' + esc(selProj.name) + '」', selProjMems.length + ' 条记忆');
+    bg += s;
+    bg += `<text x="${W / 2}" y="${HEAD + pvH + 18}" class="bs" text-anchor="middle">← 侧边栏「全局层」返回总览 · 记忆卡片点开编辑</text>`;
+    contentBottom = HEAD + pvH + 18;
+  } else {
+    // ---- 全局视图: 两横向划分 + 嵌套项目框 ----
+    const { s, gh } = levelColumns(globals, innerLeft, HEAD + G_H + 18);
+    const rowN = 4, pw = (innerW - 2 * IN - (rowN - 1) * 16) / rowN, ph = 96;
+    const projRows = Math.max(1, Math.ceil(PROJS.length / rowN));
+    const projFrameH = G_H + 14 + projRows * ph + (projRows - 1) * 12 + 14;
+    const globalH = G_H + 18 + gh + XGAP + projFrameH + 16;
+    bg += `<rect x="${boxLeft}" y="${HEAD}" width="${boxW}" height="${globalH}" rx="16" class="bandbox"/>`;
+    bg += head(boxLeft, HEAD, boxW, '#e8f5ee', '#2f7d4f', '全局层 ∞', `${globals.length} 条记忆`);
+    bg += s;
+    const projTop = HEAD + G_H + 18 + gh + XGAP;
+    bg += `<rect x="${innerLeft}" y="${projTop}" width="${innerW}" height="${projFrameH}" rx="14" class="bandbox"/>`;
+    bg += head(innerLeft, projTop, innerW, '#e8f1fb', '#2b6cb0', '项目（竖向划分）', `${PROJS.length} 个`);
+    let bx = innerLeft + IN, byy = projTop + G_H + 20;
+    PROJS.forEach((p, i) => {
+      if (i > 0 && i % rowN === 0) { bx = innerLeft + IN; byy += ph + 12; }
+      bg += `<g class="box" onclick="toggleProj(${p.id})">` +
+        `<rect x="${bx}" y="${byy}" width="${pw}" height="${ph}" rx="12" class="bandbox"/>` +
+        `<rect x="${bx}" y="${byy}" width="${pw}" height="30" rx="12" fill="#e8f1fb"/>` +
+        `<text x="${bx + 12}" y="${byy + 21}" class="bt" style="fill:#2b6cb0;font-weight:bold">${esc(p.name)}</text>` +
+        `<text x="${bx + 12}" y="${byy + 48}" class="bm" style="fill:#5b8def">${p.mem_count} 条记忆${p.pending_count ? ' · 待确认 ' + p.pending_count : ''}</text>` +
+        `<text x="${bx + 12}" y="${byy + 64}" class="bs">${esc((p.charter || '').slice(0, 22))}</text>` +
+        `<text x="${bx + 12}" y="${byy + 84}" class="bs" style="fill:#8b95a9">点击进入 →</text></g>`;
+      bx += pw + 16;
+    });
+    if (!PROJS.length) bg += `<text x="${innerLeft + IN}" y="${byy + 22}" class="bs">暂无项目</text>`;
+    contentBottom = HEAD + globalH + 16;
+  }
+
+  const H = Math.max(cont.clientHeight || 640, contentBottom + padX);
+  const svg = `<svg id="graph-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="${W}" height="${H}" fill="#f6f8fb"/>` + bg + '</svg>';
+  $('graph').innerHTML = svg;
+  $('graph-svg').style.transform = 'scale(1)';
+  $('graph-sum').textContent = `记忆 ${MEMS.length} · 全局 ${globals.length} · 项目 ${PROJS.length}` + (selProj ? ' · 项目：' + selProj.name : '');
+}
+
+function prevPage(lv) {
+  LEVEL_PAGE[lv] = Math.max(0, (LEVEL_PAGE[lv] || 0) - 1);
+  renderGraph();
+}
+function nextPage(lv) {
+  LEVEL_PAGE[lv] = (LEVEL_PAGE[lv] || 0) + 1;
+  renderGraph();
+}
+
+function toggleProj(pid) {
+  if (EXPANDED.has(pid)) EXPANDED.delete(pid); else EXPANDED.add(pid);
+  renderGraph(); renderSidebar();
+}
+function zoom(f) {
+  const svg = $('graph-svg'); if (!svg) return;
+  const cur = parseFloat(svg.style.transform.replace(/[^0-9.]/g,'') || '1');
+  const nxt = Math.min(2.5, Math.max(0.4, cur * f));
+  svg.style.transform = `scale(${nxt})`; svg.style.transformOrigin = '0 0';
+}
+function zoomFit() { const svg = $('graph-svg'); if (svg) { svg.style.transform = 'scale(1)'; svg.style.transformOrigin = '0 0'; } }
+
+/* ---- 记忆弹窗 (查看/编辑/迁移/删除) ---- */
+function openMem(mid) {
+  const m = MEMS.find(x => x.id === mid); if (!m) return;
+  CUR_MID = mid;
+  $('m-title').textContent = '记忆详情';
+  $('m-content').value = m.content;
+  $('m-level').value = m.level || 'insight';
+  $('m-owner').value = m.project_id || '';
+  $('m-meta').textContent = `#${m.id} · ${m.project_id ? '项目「' + (m.project_name || '') + '」' : '全局层'} · ${m.created_at} · ${m.source_type === 'auto' ? '自动捕获' : '主动记忆'}`;
+  $('m-owner-hint').textContent = m.project_id ? '（改为全局层 = 上升）' : '（选择项目 = 下降）';
+  const outs = LINKS.filter(l => l.source_id === mid).map(l => l.target_id);
+  const ins = LINKS.filter(l => l.target_id === mid).map(l => l.source_id);
+  const build = [];
+  outs.forEach(t => { const tm = MEMS.find(x => x.id === t); build.push(`<span>→ <a onclick="openMem(${t})">#${t}${tm ? ' · ' + esc(tm.content.slice(0, 14)) : ''}</a></span>`); });
+  ins.forEach(s => { const sm = MEMS.find(x => x.id === s); build.push(`<span>← <a onclick="openMem(${s})">#${s}${sm ? ' · ' + esc(sm.content.slice(0, 14)) : ''}</a></span>`); });
+  $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
+  $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
+  $('modal').classList.add('on');
+}
+// 进化资产预览: 与 insight 一样, 默认按文本展示 (内容/引用/沉淀原因), 只读。
+function openEvo(name) {
+  const e = EVOS.find(x => x.name === name); if (!e) return;
+  CUR_MID = null;
+  $('m-title').textContent = '进化资产 · ' + e.name + (e.ext ? ' (' + e.ext + ')' : '');
+  $('m-content').value = e.content || '';
+  $('m-level').value = 'insight';
+  $('m-meta').textContent = `进化资产 · ${e.ext || '?'} · ${e.name}`;
+  $('m-owner-hint').textContent = '（进化资产：~/.lclone/evolutions/ 下的文件，仅预览文本，修改请改文件本身）';
+  $('m-links').innerHTML = '链接：无';
+  $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').style.display = 'none';
+  $('modal').classList.add('on');
+}
+/* ---- 进化文件目录 (file-explorer) ---- */
+const EVO_ET = { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
+                 db:'et-db', json:'et-db', txt:'et-txt' };
+function evoChip(ext) { return '<span class="evo-ic ' + (EVO_ET[ext] || 'et-txt') + '">' + (ext || '·').slice(0,3) + '</span>'; }
+let EVO_CONTENT = {};   // 文件名 -> 内容 (供预览)
+async function openEvoExplorer() {
+  const r = await (await fetch('/api/evolutions')).json();
+  const items = r.items || [];
+  EVO_CONTENT = {};
+  const collect = (nodes) => {
+    for (const n of nodes) {
+      if (n.is_dir) collect(n.children || []);
+      else if (n.name) EVO_CONTENT[n.name] = n.content || '';
+    }
+  };
+  collect(items);
+  let html = '';
+  if (!items.length) {
+    html = '<div class="evo-empty">~/.lclone/evolutions/ 暂无进化文件<br><span style="color:var(--dim)">把脚本/模型/配置写成文件放进来即可出现在这里。</span></div>';
+  } else {
+    const walk = (nodes, depth) => {
+      let s = '';
+      for (const n of nodes) {
+        if (n.is_dir) {
+          s += `<div class="evo-group">${'&nbsp;'.repeat(depth)}📁 ${esc(n.name)}/</div>` + walk(n.children || [], depth + 1);
+        } else {
+          const meta = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
+          s += `<div class="evo-row" data-name="${esc(n.name)}" onclick="showEvo('${esc(n.name)}')">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(meta)}</span></div>`;
+        }
+      }
+      return s;
+    };
+    html = walk(items, 0);
+  }
+  $('evo-list').innerHTML = html;
+  $('evo-preview').innerHTML = '点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span>';
+  $('evo-exp').classList.add('on');
+}
+function closeEvoExp() { $('evo-exp').classList.remove('on'); }
+function showEvo(name) {
+  document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
+  const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
+  if (row) row.classList.add('on');
+  $('evo-preview').textContent = EVO_CONTENT[name] || '(空文件)';
+}
+
+function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
+async function saveEdit() {
+  if (CUR_MID == null) return saveAdd();
+  const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
+  await API.review({ id: CUR_MID, action: 'edit', content });
+  await loadAll(); closeModal(); alert('已保存 #' + CUR_MID);
+}
+async function applyMove() {
+  if (CUR_MID == null) return;
+  const owner = $('m-owner').value;
+  if (owner === '') await API.promote(CUR_MID); else await API.demote(CUR_MID, Number(owner));
+  await loadAll(); closeModal(); alert('已移动 #' + CUR_MID + (owner === '' ? ' → 全局层' : ' → 项目'));
+}
+async function delMem() {
+  if (CUR_MID == null) return;
+  if (!confirm('确定删除记忆 #' + CUR_MID + ' 吗？')) return;
+  await API.review({ id: CUR_MID, action: 'delete' });
+  await loadAll(); closeModal(); alert('已删除 #' + CUR_MID);
+}
+
+/* ---- 待确认洞察 (B 类确认关卡) ---- */
+async function openPending() {
+  const r = await (await fetch('/api/pending')).json();
+  const items = r.items || [];
+  const box = $('pending-list');
+  if (!items.length) box.innerHTML = '<div class="empty">暂无待确认洞察</div>';
+  else box.innerHTML = items.map(m => `
+    <div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+      <div style="font-size:13px;color:var(--fg);margin-bottom:6px">${esc(m.content)}</div>
+      <div style="font-size:11px;color:var(--dim);margin-bottom:8px">#${m.id} · ${m.project_name ? '项目「'+esc(m.project_name)+'」' : '全局层'} · ${(m.created_at||'').slice(0,16)}</div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="ghost" onclick="confirmPending(${m.id},'delete')">删除</button>
+        <button class="act" onclick="confirmPending(${m.id},'keep')">保留</button>
+      </div>
+    </div>`).join('');
+  $('pending-modal').classList.add('on');
+}
+function closePending() { $('pending-modal').classList.remove('on'); }
+async function confirmPending(id, action) {
+  await API.review({ id, action });
+  await loadAll(); openPending();
+}
+
+/* ---- 添加记忆 / 注册项目 ---- */
+function openAdd() {
+  $('m-content').value = ''; $('m-level').value = 'insight';
+  $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+  $('m-meta').textContent = '新建记忆'; $('m-links').textContent = '';
+  $('m-title').textContent = '新建记忆';
+  $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').textContent = '记住';
+  CUR_MID = null;
+  $('modal').classList.add('on'); $('m-content').focus();
+}
+function openAddLevel(level) {
+  openAdd();
+  $('m-level').value = level || 'insight';
+  $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
+}
+async function saveAdd() {
+  const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
+  const level = $('m-level').value;
+  const body = { content, level };
+  if ($('m-owner').value) body.project_id = Number($('m-owner').value);
+  const r = await API.remember(body);
+  await loadAll(); closeModal(); alert('已记住 #' + r.id);
+}
+function toggleReg() { $('reg-form').classList.toggle('on'); }
+async function organize() {
+  if (!confirm('整理会把语义相近的记忆合并成一条（不跨项目/等级）。确定执行？')) return;
+  const btn = event && event.target;
+  try {
+    const r = await (await fetch('/api/organize', {method:'POST'})).json();
+    await loadAll();
+    alert(`整理完成: 合并 ${r.merged} 组, 删除 ${r.removed} 条冗余记忆`);
+  } catch (e) { alert('整理失败: ' + ((e && e.message) || e)); }
+}
+async function addProject() {
+  const body = { name: $('pj-name').value.trim(), path: $('pj-path').value.trim(), charter: $('pj-charter').value.trim() };
+  if (!body.name) return alert('需要项目名');
+  const r = await API.addProject(body);
+  try { await API.sync(r.id); } catch (e) { /* 路径无效等, 忽略 */ }
+  $('pj-name').value=''; $('pj-path').value=''; $('pj-charter').value=''; toggleReg();
+  await loadAll();
+}
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
+$('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+(async function boot() {
+  const h = await (await fetch('/api/health')).json();
+  $('backend').textContent = '后端: ' + h.backend;
+  await loadAll();
+})();
+
+// 待确认角标实时刷新: 后台插件会持续捕获, 角标不能只靠页面加载时刷新一次
+setInterval(async () => {
+  try {
+    const r = await (await fetch('/api/pending')).json();
+    const n = (r.items || []).length;
+    $('pending-n').textContent = n;
+    $('btn-pending').classList.toggle('hot', n > 0);
+  } catch (e) { /* 忽略轮询失败 */ }
+}, 30000);
+
+</script>
+</body>
+</html>

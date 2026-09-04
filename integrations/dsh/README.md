@@ -1,53 +1,80 @@
-# DSH 插件（L-clone 记忆钩子 + 大脑看板）
+# lclone-memory-dsh（DSH 插件：L-clone 记忆钩子 + 大脑看板）
 
-DSH 的插件有两种装法：
+让 [L-clone 外置大脑](https://github.com/ljzRober/L-clone) 在 DeepSeek Harness (DSH) 里自动工作。**自包含**：下载本包即带全套 L-clone 大脑源码 + 前端，无需另装大脑。
 
-- **静态 bundle（本目录，推荐）**：npm 包 + `dsh/index.js`（host）+ `dsh/client.js`（浏览器 UI）+ `dsh/cordis.patch.yml`，用 `dsh plugin add` 安装，**标准模式直接生效，不用切预设**。
-- 动态插件（`cordis_define`/`cordis_run`）：临时、进程级，需创造模式——不是我们要的。
+- **写侧（每轮自动 capture）**：DSH `turn/end` 把本轮「用户 + 助手」文本 **POST 到后端 `/api/capture`**，提炼为洞察（进草稿待确认）；
+- **读侧（会话开始注入）**：会话首轮 **GET 后端 `/api/bootstrap`** 取记忆文本 + 本包 skill 全文，注入上下文；
+- **「大脑看板」**：插件 **serve 包内前端**（前后台分离），并设 `LCLONE_API_BASE=后端地址`（CORS 跨域），一键打开记忆工作台。
 
-本插件是**双面包**：host 端 `dsh/index.js` 订阅会话事件做记忆捕获；client 端 `dsh/client.js`（经 `package.json` 的 `dsh.client` 声明被 dsh client-modules 扫描加载）在 Web GUI 侧边栏注入「大脑看板」按钮，点击在对话中心区全屏打开 L-clone 记忆工作台（iframe :8000），顶栏显示服务在线状态，支持一键返回会话并与 task-board/ssh 面板互斥。
+> 前后台分离：前端（`brain/lclone/frontend/*.html`）是独立静态资源；后端（REST/MCP，`lclone web`）只做 API。插件 serve 前端、直连后端 API。
 
-## 已确认的事件（从 dsh-session 源码 + 官方 dsh-session-telemetry 包核实）
+---
 
-```js
-ctx.on('session/event', (session, event) => { ... })   // 注意是 (session, event) 两个参数
+## 前置：让 L-clone 后端跑起来
+
+插件**只连后端**（不走本机 `lclone` 命令、无需 `LCLONE_CMD`）。所以先保证后端（记忆服务）起来。
+
+**一键初始化（推荐，含建 venv + 装依赖 + 配模型 + 可启后端）**：
+```bash
+node <本包>/scripts/install.js          # 建 ~/.lclone/venv + 装依赖 + 配模型
+# 可选：env LCLONE_INSTALL_START=1 时直接后台常驻后端
 ```
+配模型用的 env（有则写进 `~/.lclone/.env`）：`OPENAI_API_KEY` / `BRAIN_BASE_URL` / `BRAIN_CHAT_MODEL` / `BRAIN_EMBED_MODEL` / `BRAIN_LLM`。
 
-| event.type | 时机 | event.data |
-|---|---|---|
-| `turn/end` | **每轮结束** | `{ turn, reason }` |
-| `user/message` | 用户消息 | `{ content: [{type:'text', text}], role }` |
-| `assistant/message` | 模型消息 | `{ message: { content: [{type:'text'|'reasoning', text}] }, turn, step }` |
+或手动：`python -m lclone web`（后台常驻 `lclone serve start`）；配模型 `python -m lclone setup`。
 
-本插件在 `dsh/index.js` 里：按 session 累计每轮的 user+assistant 文本 → `turn/end` 时调 `lclone capture` 沉淀为草稿。
+> 没有 env 时 `install.js` 会提示用 `python -m lclone setup` 交互式配模型。
 
-## 安装（标准模式，一行）
+---
+
+## 安装（npm，一行）
 
 ```bash
-dsh plugin --profile web add /Users/didi/github/L-clone/integrations/dsh -w
+dsh plugin --profile web add lclone-memory-dsh -w
+```
+> 末尾 `-w` 必须加（pnpm workspace 根）。`dsh plugin add` 透传 pnpm，按你 `.npmrc` 的 registry 解析。
+> 装完**重启 DSH web 会话**。
+
+### 从源码/本地开发装
+```bash
+dsh plugin --profile web add /path/to/L-clone/integrations/dsh -w
 ```
 
-> 末尾的 `-w` 必须加：`dsh plugin add` 是 pnpm 的薄转发，profile 目录是 pnpm workspace 根，
-> 新版 pnpm 会拒绝在根上 `add`（`ERR_PNPM_ADDING_TO_ROOT`），`-w` 显式声明"就装到根"。
+---
 
-- 也可以 `dsh plugin --profile web add github:<你的仓库> -w` 从远端装。
-- 装完重启 DSH web 会话即生效。
-- 插件是 symlink 链入仓库：改 host/client 代码后只需**重启 dsh web**（`lsof -ti :3080 | xargs kill; sleep 1; dsh web`），无需重新 add。
+## 配置（环境变量）
 
-## 配置
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LCLONE_WEB_URL` | `http://127.0.0.1:8000` | 后端基址（capture/bootstrap/看板 CORS 都指向它）；部署到服务器时设为服务器地址 |
+| `LCLONE_DOCS_URL` | `https://github.com/ljzRober/L-clone` | 「查看使用文档」链接 |
+| `LCLONE_API_KEY` | — | 后端鉴权（设了后请求带 `X-API-Key`） |
+| `LCLONE_HOME` | `~` | skill 查找家目录（`~/.agents/skills/lclone-memory/SKILL.md`） |
+| `LCLONE_STATE_DIR` | `~/.lclone` | 插件日志等状态目录 |
 
-- `LCLONE_CMD` 环境变量覆盖 lclone 命令。默认自动定位仓库 `.venv` 里的 python（Windows 用 `Scripts/python.exe`、Unix 用 `bin/python`），都找不到再退回 PATH 上的 `lclone`。
-- **后台地址可配置**：`LCLONE_WEB_URL` 指定后端基址（默认 `http://127.0.0.1:8000`）。本地留空；部署到服务器时设为服务器地址 host 端健康探测/决策代理与 client 端看板 iframe 都指向它。
-- **文档链接可配置**：`LCLONE_DOCS_URL`（默认 `https://github.com/ljzRober/L-clone`）。
-- 若设置了 `LCLONE_API_KEY`，host 端请求后端自动带 `X-API-Key`。
-- **本插件做前端展示 + 写侧捕获 + 会话开始注入，不负责启动后台/装 skill**（后台与 skill 需你自行就绪）：
-  - 后台服务没起时，看板显示默认内容并提示「请先运行 `python -m lclone web`（或 `lclone serve start` 后台常驻）」+ 文档链接；
-  - skill 缺失时，看板提示「请运行 `lclone integrate --target skill`」。
-- 读侧（bootstrap 注入 charter+全局记忆）由本插件在会话首轮经 `agent.steer` **硬触发**（每会话一次）；lclone-memory skill 作兜底（agent 调 `bootstrap`）。写侧（capture）由插件在 `turn/end` **硬触发**。
-- 看板依赖 lclone Web 服务（后端 `LCLONE_WEB_URL`）；未启动时看板显示默认提示而非白屏。
+> 后端模型配置用 lclone 自身的 env（`OPENAI_API_KEY`/`BRAIN_BASE_URL` 等，见 `lclone setup`），不经过插件。
+
+---
+
+## 首次运行 / 就绪引导
+
+- **看板**检测到后端未达/skill 缺失时，显示**就绪清单**（"要跑起来还差这几步"）并附命令；
+- **会话首轮**若后端不可达，注入一条提示（`node <包>/scripts/install.js` 或 `python -m lclone web`）；
+- 后端自检：`python -m lclone doctor`。
+
+## 事件（dsh-session 已确认）
+
+```js
+ctx.on('session/event', (session, event) => { ... })   // (session, event)
+```
+| event.type | 时机 | data |
+|---|---|---|
+| `turn/end` | 每轮结束 | `{ turn, reason }` |
+| `user/message` | 用户消息 | `{ content:[{type:'text',text}], role }` |
+| `assistant/message` | 模型消息 | `{ message:{content:[{type:'text'|'reasoning',text}]}, turn, step }` |
 
 ## 参考
 
-- 插件 bundle 格式照 `~/.dsh/plugins/superdesign-skill-src/`（dsh-market 里已装的 superdesign 插件）—— `package.json` 的 `dsh.bundle.patch` + `dsh/index.js`(导出 `name`/`apply`) + `dsh/cordis.patch.yml`(insert 一行)。
-- client 面（双面包）格式照 `dshmarket` / `@linxin666/dsh-client-ui-task-board`：`exports["./client"]` + `dsh.client: { platform: "web", inject }` 声明 + `window.__ModuleLoader__.load({ id, factory })` bundle；侧边栏按钮 DOM 注入与面板切换照 task-board，面板互斥照 `dsh-panel-activate` 协议。
-- 官方先例 `@deepseek-ai/dsh-session-telemetry` 就是 `ctx.on("session/event", (session, event) => ...)` 订阅会话事件流的。
+- bundle 格式照 `~/.dsh/plugins/superdesign-skill-src/`：`package.json` 的 `dsh.bundle.patch` + `dsh/index.js`(导出 `name`/`apply`) + `dsh/cordis.patch.yml`。
+- client 面（双面包）照 `dshmarket` / `@linxin666/dsh-client-ui-task-board`：`exports["./client"]` + `dsh.client` 声明 + `window.__ModuleLoader__.load`。
+- 官方先例 `@deepseek-ai/dsh-session-telemetry` 用 `ctx.on("session/event", ...)`。

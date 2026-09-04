@@ -19,27 +19,31 @@
 //     - user/message:      event.data.content = [{type:'text', text}]
 //     - assistant/message: event.data.message.content = [{type:'text'|'reasoning', text}]
 //
-// 安装: dsh plugin --profile web add <本目录绝对路径>
-// 环境变量 LCLONE_CMD 可覆盖 lclone 命令。
-// 关键: spawn 时必须 cwd=仓库根, 否则 `python -m lclone` 找不到 lclone 包。
+// 安装(发布后): dsh plugin --profile web add lclone-memory-dsh -w
+// 后端地址用 LCLONE_WEB_URL(默认 http://127.0.0.1:8000); 不走本机 lclone 命令。
 
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { fileURLToPath } from 'node:url'
 import { join, dirname } from 'node:path'
-import { existsSync, appendFileSync } from 'node:fs'
+import { existsSync, appendFileSync, mkdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 
-// 仓库根 (插件经 symlink 链入仓库, import.meta.url 是真实路径)
-const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../..')
-const LOG_PATH = join(REPO, 'lclone-plugin.log')
+// 插件自身的状态目录 (日志等): 不依赖仓库根, 发布后装到哪都能写。
+// 优先 $LCLONE_STATE_DIR, 其次 $LCLONE_HOME/.lclone, 最后 ~/.lclone。
+const STATE_DIR = process.env.LCLONE_STATE_DIR
+  || join(process.env.LCLONE_HOME || homedir(), '.lclone')
+const LOG_PATH = join(STATE_DIR, 'dsh-plugin.log')
+try { mkdirSync(STATE_DIR, { recursive: true }) } catch {}
 // 后端基址 + 文档链接 (可配置: LCLONE_WEB_URL / LCLONE_DOCS_URL, 默认本地 + GitHub)
 const WEB_URL = (process.env.LCLONE_WEB_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
 const DOCS_URL = process.env.LCLONE_DOCS_URL || 'https://github.com/ljzRober/L-clone'
 const WEB = new URL(WEB_URL)
+// 包内前端 (前后台分离): 插件 serve 自带的 index.html, 并把 LCLONE_API_BASE 设为后端地址。
+const FRONTEND_INDEX = join(dirname(dirname(fileURLToPath(import.meta.url))),
+  'brain', 'lclone', 'frontend', 'index.html')
 
 function log(msg) {
   try {
@@ -47,20 +51,7 @@ function log(msg) {
   } catch {}
 }
 
-// 解析 lclone 命令: LCLONE_CMD 优先; 否则定位仓库 .venv 里的 python -m lclone。
-function resolveLclone() {
-  if (process.env.LCLONE_CMD) return process.env.LCLONE_CMD.trim().split(/\s+/)
-  // Windows 用 Scripts/python.exe, 否则 bin/python; 都试一遍再退回 PATH 上的 lclone
-  const pys = process.platform === 'win32'
-    ? [join(REPO, '.venv', 'Scripts', 'python.exe'), join(REPO, '.venv', 'bin', 'python')]
-    : [join(REPO, '.venv', 'bin', 'python'), join(REPO, '.venv', 'Scripts', 'python.exe')]
-  for (const py of pys) {
-    if (existsSync(py)) return [py, '-m', 'lclone']
-  }
-  return ['lclone']
-}
-
-const [lcloneBin, ...lcloneBaseArgs] = resolveLclone()
+// 插件走后端 HTTP, 不再需要本机 lclone 命令 (也无需 LCLONE_CMD)。
 
 function extractText(event) {
   const d = event.data || {}
@@ -88,56 +79,28 @@ function buildCaptureText(userText, assistantText) {
   return '助手：' + a.slice(0, ASSISTANT_CAP)
 }
 
+// 写侧: 走后端 HTTP POST /api/capture (后台由 lclone web / scripts/install.js 提供)。
 function runCapture(text, sessionKey, cwd, onDone) {
   const t = (text || '').trim()
   if (!t) { if (onDone) onDone(); return }
+  const body = { text: t, session_key: sessionKey || '', global_fallback: true }
+  if (cwd) body.cwd = cwd // git 仓库 → 后端自动归属/注册
   log(`capture ${t.length} chars cwd=${cwd || '(无)'}`)
-  const args = [...lcloneBaseArgs, 'capture', t]
-  if (sessionKey) args.push('--session-key', sessionKey)
-  if (cwd) {
-    args.push('--cwd', cwd) // git 仓库 → 代码自动归属/注册
-  } else {
-    args.push('--project', 'global') // 无会话 cwd: 显式归全局层, 不误归 lclone 仓库
-  }
-  args.push('--global-fallback') // cwd 存在但非 git: 后台静默落全局, 不丢数据
-  const child = spawn(lcloneBin, args, {
-    cwd: REPO, // 关键: 让 `python -m lclone` 能 import 到 lclone 包
-    env: { ...process.env, BRAIN_DB_PATH: join(REPO, 'lclone.db') },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  })
-  let err = ''
-  child.stderr.on('data', (d) => { err += d.toString() })
-  child.on('error', (e) => log('spawn error: ' + e.message))
-  child.on('exit', (code) => {
-    log('capture exit code ' + code + (err ? '\n' + err.slice(0, 800) : ''))
+  lcloneRequester('POST', '/api/capture', body, (ok, json) => {
+    log('capture via http ' + (ok ? 'ok' : 'fail') + (json ? ' ' + JSON.stringify(json).slice(0, 160) : ''))
     if (onDone) onDone()
   })
-  child.unref()
 }
 
-// 会话启动一次性注入 (read-side): 运行 `lclone bootstrap --cwd <会话cwd>`, 把
-// [lclone-memory skill 全文] + [bootstrap 记忆] 经 agent.steer 注入一次, 让 skill 主导会话。
-// 只用一条 steer(完整 UserMessage 形状 + source{kind:'plugin'}), 不显示成用户气泡, 不重复注入。
+// 读侧: 走后端 HTTP GET /api/bootstrap (返回会话引导文本)。
 function runBootstrap(cwd, onDone) {
-  const args = [...lcloneBaseArgs, 'bootstrap']
-  if (cwd) args.push('--cwd', cwd) // 环境感知: 命中项目 → 项目+全局记忆; 否则仅全局
-  const child = spawn(lcloneBin, args, {
-    cwd: REPO,
-    env: { ...process.env, BRAIN_DB_PATH: join(REPO, 'lclone.db') },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
+  let path = '/api/bootstrap'
+  if (cwd) path += '?cwd=' + encodeURIComponent(cwd)
+  lcloneRequester('GET', path, null, (ok, json) => {
+    const text = ok && json ? (json.text || '') : ''
+    log('bootstrap via http ' + (ok ? '' + text.length : 'fail'))
+    onDone(text.trim())
   })
-  let out = ''
-  let err = ''
-  child.stdout.on('data', (d) => { out += d.toString() })
-  child.stderr.on('data', (d) => { err += d.toString() })
-  child.on('error', (e) => { log('bootstrap spawn error: ' + e.message); if (onDone) onDone('') })
-  child.on('exit', (code) => {
-    log('bootstrap exit code ' + code + (err ? '\n' + err.slice(0, 400) : ''))
-    if (onDone) onDone(out.trim())
-  })
-  child.unref()
 }
 
 // 组装注入文本: [skill 全文] + [bootstrap 记忆]。
@@ -155,19 +118,24 @@ async function injectSessionStart(ctx, sessionId, cwd) {
   runBootstrap(cwd, (bootOut) => {
     readFile(SKILL_FILE, { encoding: 'utf8' })
       .then((skillBody) => {
-        const text = buildBootText(skillBody, bootOut)
-        if (!text) return
-        try {
-          agent.steer({
-            id: randomUUID(),
-            role: 'user',
-            content: [{ type: 'text', text }],
-            source: { kind: 'plugin', plugin: 'lclone-memory' },
-          })
-          log(`bootstrap injected once for ${sessionId}: ${text.length} chars`)
-        } catch (e) {
-          log('bootstrap steer failed: ' + (e && e.message))
-        }
+        probeLcloneHealth((ok) => {
+          const text = buildBootText(skillBody, bootOut)
+          const tip = ok
+            ? ''
+            : '⚠️ [lclone-memory] 后端不可达：请先启动 L-clone 后端（运行 `<包>/scripts/install.js` 一键初始化，或 `python -m lclone web`）。装好后重启 DSH web 会话。\n\n'
+          if (!tip && !text) return
+          try {
+            agent.steer({
+              id: randomUUID(),
+              role: 'user',
+              content: [{ type: 'text', text: tip + text }],
+              source: { kind: 'plugin', plugin: 'lclone-memory' },
+            })
+            log(`bootstrap injected once for ${sessionId}: ${text.length} chars${ok ? '' : ' (+后端缺失引导)'}`)
+          } catch (e) {
+            log('bootstrap steer failed: ' + (e && e.message))
+          }
+        })
       })
       .catch(() => {})
   })
@@ -210,6 +178,14 @@ function lcloneRequester(method, path, body, onDone) {
 // 健康检查: 探测后端存活, 供 client 端「大脑看板」按钮显示在线状态。
 function probeLcloneHealth(onDone) {
   lcloneRequester('GET', '/api/health', null, (ok, json) => onDone(ok && json && json.ok === true))
+}
+
+// 组装「就绪引导清单」: 按 后端/skill 缺失情况给出可执行步骤 (前后台分离后无 CLI 依赖)。
+function buildSetupGuide(ok, skill) {
+  const setup = []
+  if (!ok) setup.push('启动后端：`node <包>/scripts/install.js` 一键初始化，或 `python -m lclone web`（后台常驻 `lclone serve start`）；必要时用 LCLONE_WEB_URL 指定地址')
+  if (!skill) setup.push('安装记忆 skill：`lclone integrate --target skill`')
+  return setup
 }
 
 // 读 HTTP 请求体 (POST body), 供 /api/lclone-review 用。
@@ -296,7 +272,7 @@ export const name = 'lclone-memory'
 export const inject = ['skills', 'agents']
 
 export function apply(ctx) {
-  log('plugin loaded, lclone = ' + lcloneBin + ' ' + lcloneBaseArgs.join(' '))
+  log('plugin loaded (backend-driven, LCLONE_WEB_URL=' + WEB_URL + ')')
   // 全量加载 lclone-memory skill (保证完整在场; 记忆注入由 agent 依 skill 按环境驱动)。
   try {
     ctx.skills.registerProvider(() => skillProvider)
@@ -324,9 +300,37 @@ export function apply(ctx) {
               return
             }
             probeLcloneHealth((ok) => {
+              const skill = existsSync(skillPath())
               response.writeHead(200, { 'content-type': 'application/json' })
-              response.end(JSON.stringify({ ok, skill: existsSync(skillPath()), webUrl: WEB_URL, docsUrl: DOCS_URL }))
+              response.end(JSON.stringify({
+                ok, skill,
+                setup: buildSetupGuide(ok, skill),
+                webUrl: WEB_URL, docsUrl: DOCS_URL,
+                boardUrl: '/__lclone/board',
+              }))
             })
+          },
+        })
+        // 前后台分离: 插件 serve 包内前端, 并把 LCLONE_API_BASE 指向后端(CORS 跨域)。
+        register({
+          kind: 'exact',
+          path: '/__lclone/board',
+          handler: (request, response) => {
+            if (request.method !== 'GET') {
+              response.writeHead(405, { allow: 'GET' })
+              response.end()
+              return
+            }
+            readFile(FRONTEND_INDEX, { encoding: 'utf8' })
+              .then((html) => {
+                const apiBase = WEB_URL.replace(/"/g, '')
+                // 在 <head> 最前面设置 LCLONE_API_BASE, 先于 fetch 包装脚本执行。
+                html = html.replace('<head>',
+                  '<head><script>window.LCLONE_API_BASE="' + apiBase + '";</script>')
+                response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+                response.end(html)
+              })
+              .catch(() => { response.writeHead(404); response.end() })
           },
         })
         // 待确认决策列表 (client 轮询, 弹窗 + 角标用)
