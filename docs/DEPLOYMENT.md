@@ -4,6 +4,8 @@
 
 设计定位:**记忆在服务器, 模型走 API**(不本地部署模型, 无需 GPU)。
 
+**前后台分离**: `lclone web` 在服务器上同时提供**前端**(`lclone/frontend/` 静态单页, 浏览器打开即记忆工作台) 与**后端**(REST `/api/*` + MCP `/mcp`)。前端是独立静态资源, 可被其它源 serve 后**跨域**(已开 CORS `allow-origin:*`)调用本后端——因此 DSH 插件可"自己 serve 前端、把 `LCLONE_WEB_URL` 指向本服务器"。
+
 ## 服务器选择
 
 | 方案 | 成本 | 说明 |
@@ -81,7 +83,8 @@ lclone.yourdomain.com {
 
 ## 多设备访问
 
-- 浏览器: 任何设备打开 `https://你的域名` 即用(Web 面板)
+- 浏览器: 任何设备打开 `https://你的域名` 即用(前后台分离的 Web 面板)
 - 命令行: `ssh 服务器` 后执行 `lclone ask "..."` 等
-- AI 工具: 通过 MCP over HTTP(`POST /mcp`)让 Claude Code / Codex / DSH 直接读写大脑;
-  DSH 另有本地插件(`integrations/dsh`)在 Web GUI 注入「大脑看板」按钮
+- AI 工具: 通过 MCP over HTTP(`POST /mcp`)让 Claude Code / Codex / DSH 直接读写大脑
+- **DSH 插件**(`integrations/dsh`, 自包含): 设 `LCLONE_WEB_URL=<服务器地址>` 即连本后端;
+  插件自己 serve 前端(看板)并跨域(CORS 已开放)调本后端, 无需在本机装大脑
