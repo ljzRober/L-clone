@@ -1,32 +1,76 @@
-# integrations — 触发胶水层
+# integrations — 各端接入（下载与使用）
 
-本目录只放「生命周期点 → 调 lclone」的适配胶水，**零业务逻辑**。记忆引擎（capture/recall/bootstrap/分类器）全在 `lclone/`，这里不重复实现。
+本目录是 L-clone 到各 AI 工具的**触发胶水层**（生命周期点 → 调 lclone），零业务逻辑。记忆引擎在 `lclone/`。
 
-## 四个触发面
-
-| 目录 | 环境 | 触发方式 | 生命周期点 |
+| 目录 | 环境 | 接入方式 | 生命周期 |
 |---|---|---|---|
 | `claude-code/` | Claude Code | hooks | SessionStart→`bootstrap`；Stop→`capture` |
-| `codex/` | OpenAI Codex CLI | hooks + AGENTS.md + MCP | SessionStart→`bootstrap`；Stop→`capture` |
-| `dsh/` | DeepSeek Harness | Cordis 插件 | `agent/session-start`→`bootstrap`；轮结束→`capture` |
+| `codex/` | OpenAI Codex CLI | hooks + AGENTS.md | SessionStart→`bootstrap`；Stop→`capture` |
+| `dsh/` | DeepSeek Harness | 插件（自包含/后端驱动） | 会话首轮→记忆注入；轮结束→`capture`(走后端 HTTP) |
 | `skill/` | 任意支持 skill 的环境 | 指令注入（软兜底） | 会话开始→`bootstrap`；对话中→`capture` |
 
-## 前置
+---
 
-所有 shell 适配器统一调两个 CLI 命令（已实现）：
+## 通用前提
 
+先让 lclone 大脑就绪。两种装法：
+- **A. 装 lclone（pip，Claude/Codex 必需）**：`pip install lclone`（或仓库 `pip install -e .`）。
+- **B. DSH 自包含插件（新，免装大脑）**：插件自带大脑 + `scripts/install.js`。
+
+装好后配置模型：`lclone setup`（选 provider + 填 key → `.env` + 初始化库）。
+
+---
+
+## DSH（DeepSeek Harness）
+
+**方式 1 — 已装 lclone（常规）**
 ```bash
-lclone bootstrap "话题"    # 会话开始：charter + 全局记忆(无条件) + 按话题召回 + 待确认决策
-lclone capture "内容"      # 自动沉淀：insight→洞察草稿待确认
+lclone setup                         # 配置模型后端
+lclone web                           # 起后端(浏览器看板 + 插件走 HTTP)
+lclone integrate --target dsh        # 装 skill + 提示如下
+# → dsh plugin --profile web add <路径>/integrations/dsh -w
+dsh plugin --profile web add /路径/integrations/dsh -w
+# 设 LCLONE_WEB_URL=http://127.0.0.1:8000(或服务器地址)，重启 DSH web
 ```
 
-hook 脚本按以下顺序解析 `lclone`：PATH 里的 `lclone` → 本仓库 `.venv/bin/python -m lclone`。
+**方式 2 — 自包含（发布后，免装大脑）**
+```bash
+dsh plugin --profile web add lclone-memory-dsh -w
+node <包>/scripts/install.js         # 建 venv+装依赖+配模型+可启后端
+# 设 LCLONE_WEB_URL=<后端地址>，重启 DSH web
+```
+> DSH 插件**走后端 HTTP**（`/api/capture`、`/api/bootstrap`），无需本机 `lclone`/`LCLONE_CMD`；**后台 web 必须跑着**。
 
-## 安装
+## Claude Code
 
-- **Claude Code**：把 `claude-code/settings.json` 里的 hooks 合并进 `~/.claude/settings.json`（或 `.claude/settings.json`）。
-- **Codex**：把 `codex/hooks.json` 合并进 `~/.codex/hooks.json`；`codex/AGENTS.md` 内容追加到仓库 `AGENTS.md`。
-- **DSH**：见 `dsh/README.md`（需要把 Cordis 插件打进 roster）。
-- **skill**：`skill/SKILL.md` 是 `~/.agents/skills/lclone-memory/SKILL.md` 的版本化副本，保持同步。
+```bash
+lclone setup
+lclone integrate --target claude     # 装 skill + 合并 hooks → ~/.claude/settings.json
+```
+- hooks 自动：会话开始 `bootstrap`、结束 `capture`；用到的 `lclone` 在 PATH（或仓库 `.venv`）。
+- **后台 web 不必起**（hooks 走 CLI 直接写库）；要浏览记忆才 `lclone web`。
 
-> 路径占位：示例里用 `/Users/didi/github/L-clone`，迁移时改成本仓库实际路径。
+## Codex (OpenAI Codex CLI)
+
+```bash
+lclone setup
+lclone integrate --target codex      # 装 skill + 合并 hooks → ~/.codex/hooks.json
+# 再把 integrations/codex/AGENTS.md 内容追加到仓库 AGENTS.md(记忆规则)
+```
+- hooks: SessionStart→`bootstrap`、Stop→`capture`；AGENTS.md 指导 agent 记忆行为。
+
+---
+
+## 各端对比
+
+| 端 | 需要 lclone 大脑 | 连接方式 | 后台 web 必需? | 接入命令 |
+|---|---|---|---|---|
+| **Claude Code** | 是（pip） | hooks（CLI） | 否（浏览才要） | `lclone integrate --target claude` |
+| **Codex** | 是（pip） | hooks + AGENTS.md | 否 | `lclone integrate --target codex` |
+| **DSH** | 方式1 是 / 方式2 插件自带 | 插件 → 后端 HTTP | **是** | `lclone integrate --target dsh` 或 `dsh plugin add lclone-memory-dsh` |
+
+## 自检
+
+装完任一端：`lclone doctor`（后端 + 集成分段自检）。要可视化看板/改记忆：浏览器开 `lclone web`（部署到服务器时开服务器域名，`LCLONE_WEB_URL` 指向它）。
+
+> 路径占位：示例用 `/Users/didi/github/L-clone`，实际按你的安装路径替换。
