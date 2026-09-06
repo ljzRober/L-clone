@@ -41,9 +41,6 @@ try { mkdirSync(STATE_DIR, { recursive: true }) } catch {}
 const WEB_URL = (process.env.LCLONE_WEB_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '')
 const DOCS_URL = process.env.LCLONE_DOCS_URL || 'https://github.com/ljzRober/L-clone'
 const WEB = new URL(WEB_URL)
-// 包内前端 (前后台分离): 插件 serve 自带的 index.html, 并把 LCLONE_API_BASE 设为后端地址。
-const FRONTEND_INDEX = join(dirname(dirname(fileURLToPath(import.meta.url))),
-  'brain', 'lclone', 'frontend', 'index.html')
 
 function log(msg) {
   try {
@@ -306,31 +303,9 @@ export function apply(ctx) {
                 ok, skill,
                 setup: buildSetupGuide(ok, skill),
                 webUrl: WEB_URL, docsUrl: DOCS_URL,
-                boardUrl: '/__lclone/board',
+                boardUrl: WEB_URL,
               }))
             })
-          },
-        })
-        // 前后台分离: 插件 serve 包内前端, 并把 LCLONE_API_BASE 指向后端(CORS 跨域)。
-        register({
-          kind: 'exact',
-          path: '/__lclone/board',
-          handler: (request, response) => {
-            if (request.method !== 'GET') {
-              response.writeHead(405, { allow: 'GET' })
-              response.end()
-              return
-            }
-            readFile(FRONTEND_INDEX, { encoding: 'utf8' })
-              .then((html) => {
-                const apiBase = WEB_URL.replace(/"/g, '')
-                // 在 <head> 最前面设置 LCLONE_API_BASE, 先于 fetch 包装脚本执行。
-                html = html.replace('<head>',
-                  '<head><script>window.LCLONE_API_BASE="' + apiBase + '";</script>')
-                response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
-                response.end(html)
-              })
-              .catch(() => { response.writeHead(404); response.end() })
           },
         })
         // 待确认决策列表 (client 轮询, 弹窗 + 角标用)

@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     const OTHER_ACTIVE_ATTR = "data-dsh-ssh-active";
     const ACTIVATE_EVENT = "dsh-panel-activate";
     const HEALTH_ENDPOINT = "/api/lclone-health";
-    let DASHBOARD_URL = "/__lclone/board"; // 插件 serve 的看板前端(前后台分离); 会从 health 的 boardUrl 更新
+    let DASHBOARD_URL = "/"; // 看板 iframe 后端面板(由后端 serve, 前后台同源); 会从 health 的 boardUrl 更新为 LCLONE_WEB_URL
     let DOCS_URL = "https://github.com/ljzRober/L-clone"; // 文档链接; 会从 health 的 docsUrl 更新
     // 决策确认 (本变更): 客户端轮询 host 代理路由, 弹窗 + 角标呈现待确认决策, 不进主 agent。
     const DECISIONS_ENDPOINT = "/api/lclone-decisions";

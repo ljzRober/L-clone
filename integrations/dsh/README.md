@@ -4,9 +4,9 @@
 
 - **写侧（每轮自动 capture）**：DSH `turn/end` 把本轮「用户 + 助手」文本 **POST 到后端 `/api/capture`**，提炼为洞察（进草稿待确认）；
 - **读侧（会话开始注入）**：会话首轮 **GET 后端 `/api/bootstrap`** 取记忆文本 + 本包 skill 全文，注入上下文；
-- **「大脑看板」**：插件 **serve 包内前端**（前后台分离），并设 `LCLONE_API_BASE=后端地址`（CORS 跨域），一键打开记忆工作台。
+- **「大脑看板」**：看板 iframe **后端面板**（后端 `lclone web` serve，前后台同源），一键打开记忆工作台。
 
-> 前后台分离：前端（`brain/lclone/frontend/*.html`）是独立静态资源；后端（REST/MCP，`lclone web`）只做 API。插件 serve 前端、直连后端 API。
+> 前后台同源：web 面板由**后端**（`lclone web`）serve（`lclone/frontend/*.html` + API 同源）；插件只做**写侧 capture + 读侧 bootstrap** 钩子，看板按钮直接 iframe `LCLONE_WEB_URL`，无需插件内嵌前端/注入 `LCLONE_API_BASE`/跨域。
 
 ---
 
@@ -46,7 +46,7 @@ dsh plugin --profile web add /path/to/L-clone/integrations/dsh -w
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `LCLONE_WEB_URL` | `http://127.0.0.1:8000` | 后端基址（capture/bootstrap/看板 CORS 都指向它）；部署到服务器时设为服务器地址 |
+| `LCLONE_WEB_URL` | `http://127.0.0.1:8000` | 后端基址（capture/bootstrap + 看板 iframe 都指向它）；部署到服务器时设为服务器地址 |
 | `LCLONE_DOCS_URL` | `https://github.com/ljzRober/L-clone` | 「查看使用文档」链接 |
 | `LCLONE_API_KEY` | — | 后端鉴权（设了后请求带 `X-API-Key`） |
 | `LCLONE_HOME` | `~` | skill 查找家目录（`~/.agents/skills/lclone-memory/SKILL.md`） |
