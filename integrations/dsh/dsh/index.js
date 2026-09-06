@@ -76,7 +76,7 @@ function buildCaptureText(userText, assistantText) {
   return '助手：' + a.slice(0, ASSISTANT_CAP)
 }
 
-// 写侧: 走后端 HTTP POST /api/capture (后台由 lclone web / scripts/install.js 提供)。
+// 写侧: 走后端 HTTP POST /api/capture (后台由 lclone web 单独部署提供)。
 function runCapture(text, sessionKey, cwd, onDone) {
   const t = (text || '').trim()
   if (!t) { if (onDone) onDone(); return }
@@ -119,7 +119,7 @@ async function injectSessionStart(ctx, sessionId, cwd) {
           const text = buildBootText(skillBody, bootOut)
           const tip = ok
             ? ''
-            : '⚠️ [lclone-memory] 后端不可达：请先启动 L-clone 后端（运行 `<包>/scripts/install.js` 一键初始化，或 `python -m lclone web`）。装好后重启 DSH web 会话。\n\n'
+            : '⚠️ [lclone-memory] 后端不可达：请先启动 L-clone 后端（`python -m lclone web`，后台常驻 `lclone serve start`）。装好后重启 DSH web 会话。\n\n'
           if (!tip && !text) return
           try {
             agent.steer({
@@ -180,7 +180,7 @@ function probeLcloneHealth(onDone) {
 // 组装「就绪引导清单」: 按 后端/skill 缺失情况给出可执行步骤 (前后台分离后无 CLI 依赖)。
 function buildSetupGuide(ok, skill) {
   const setup = []
-  if (!ok) setup.push('启动后端：`node <包>/scripts/install.js` 一键初始化，或 `python -m lclone web`（后台常驻 `lclone serve start`）；必要时用 LCLONE_WEB_URL 指定地址')
+  if (!ok) setup.push('启动后端：`python -m lclone web`（后台常驻 `lclone serve start`）；部署到服务器/Docker 时用 LCLONE_WEB_URL 指定地址')
   if (!skill) setup.push('安装记忆 skill：`lclone integrate --target skill`')
   return setup
 }

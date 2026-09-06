@@ -10,7 +10,7 @@
 // 安装: dsh plugin --profile web add <本目录绝对路径> (与 host 端 index.js 同包, 双面包)。
 
 window.__ModuleLoader__.load({
-  id: "lclone-memory-dsh",
+  id: "@yueliudan/lclone-memory-dsh",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

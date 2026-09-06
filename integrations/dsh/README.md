@@ -1,6 +1,6 @@
-# lclone-memory-dsh（DSH 插件：L-clone 记忆钩子 + 大脑看板）
+# @yueliudan/lclone-memory-dsh（DSH 插件：L-clone 记忆钩子 + 大脑看板）
 
-让 [L-clone 外置大脑](https://github.com/ljzRober/L-clone) 在 DeepSeek Harness (DSH) 里自动工作。**自包含**：下载本包即带全套 L-clone 大脑源码 + 前端，无需另装大脑。
+让 [L-clone 外置大脑](https://github.com/ljzRober/L-clone) 在 DeepSeek Harness (DSH) 里自动工作。**薄插件**：本包只含 DSH 侧钩子（写侧 capture + 读侧 bootstrap + 看板 iframe）；L-clone 后端需**单独部署**（本仓库源码 / Docker），插件通过 `LCLONE_WEB_URL` 连它。
 
 - **写侧（每轮自动 capture）**：DSH `turn/end` 把本轮「用户 + 助手」文本 **POST 到后端 `/api/capture`**，提炼为洞察（进草稿待确认）；
 - **读侧（会话开始注入）**：会话首轮 **GET 后端 `/api/bootstrap`** 取记忆文本 + 本包 skill 全文，注入上下文；
@@ -10,27 +10,21 @@
 
 ---
 
-## 前置：让 L-clone 后端跑起来
+## 前置：单独部署 L-clone 后端
 
-插件**只连后端**（不走本机 `lclone` 命令、无需 `LCLONE_CMD`）。所以先保证后端（记忆服务）起来。
+插件**只连后端**（不走本机 `lclone` 命令、无需 `LCLONE_CMD`、不带后端源码）。所以请**先单独部署** L-clone 后端（记忆服务）：
 
-**一键初始化（推荐，含建 venv + 装依赖 + 配模型 + 可启后端）**：
-```bash
-node <本包>/scripts/install.js          # 建 ~/.lclone/venv + 装依赖 + 配模型
-# 可选：env LCLONE_INSTALL_START=1 时直接后台常驻后端
-```
-配模型用的 env（有则写进 `~/.lclone/.env`）：`OPENAI_API_KEY` / `BRAIN_BASE_URL` / `BRAIN_CHAT_MODEL` / `BRAIN_EMBED_MODEL` / `BRAIN_LLM`。
+- **源码 / 宿主机**：克隆本仓库 → `python -m venv .venv` → `pip install -r requirements.txt` → `.env` 配置模型（`OPENAI_API_KEY`/`BRAIN_BASE_URL`/`BRAIN_CHAT_MODEL` 等，或 `python -m lclone setup`）→ `python -m lclone web`（后台常驻 `lclone serve start`）。
+- **Docker**：`docker compose up -d`（数据在 volume `./data:/data`，`BRAIN_DB_PATH=/data/lclone.db`）。
 
-或手动：`python -m lclone web`（后台常驻 `lclone serve start`）；配模型 `python -m lclone setup`。
-
-> 没有 env 时 `install.js` 会提示用 `python -m lclone setup` 交互式配模型。
+后端起来后，插件用 `LCLONE_WEB_URL`（默认 `http://127.0.0.1:8000`）连它。
 
 ---
 
 ## 安装（npm，一行）
 
 ```bash
-dsh plugin --profile web add lclone-memory-dsh -w
+dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w
 ```
 > 末尾 `-w` 必须加（pnpm workspace 根）。`dsh plugin add` 透传 pnpm，按你 `.npmrc` 的 registry 解析。
 > 装完**重启 DSH web 会话**。
@@ -59,7 +53,7 @@ dsh plugin --profile web add /path/to/L-clone/integrations/dsh -w
 ## 首次运行 / 就绪引导
 
 - **看板**检测到后端未达/skill 缺失时，显示**就绪清单**（"要跑起来还差这几步"）并附命令；
-- **会话首轮**若后端不可达，注入一条提示（`node <包>/scripts/install.js` 或 `python -m lclone web`）；
+- **会话首轮**若后端不可达，注入一条提示（`python -m lclone web`）；
 - 后端自检：`python -m lclone doctor`。
 
 ## 事件（dsh-session 已确认）

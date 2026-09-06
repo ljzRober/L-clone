@@ -1,10 +1,10 @@
 {
-  "name": "lclone-memory-dsh",
-  "version": "0.2.0",
+  "name": "@yueliudan/lclone-memory-dsh",
+  "version": "0.2.1",
   "type": "module",
   "description": "L-clone 记忆钩子：DSH 每轮结束(turn/end)自动 capture 到外置大脑；Web GUI 侧边栏「大脑看板」按钮一键打开记忆工作台。",
   "main": "dsh/index.js",
-  "files": ["dsh/index.js", "dsh/client.js", "dsh/cordis.patch.yml", "brain", "scripts/install.js"],
+  "files": ["dsh/index.js", "dsh/client.js", "dsh/cordis.patch.yml"],
   "exports": {
     ".": "./dsh/index.js",
     "./client": "./dsh/client.js",
@@ -30,6 +30,7 @@
     "url": "https://github.com/ljzRober/L-clone/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
