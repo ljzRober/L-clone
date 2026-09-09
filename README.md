@@ -170,6 +170,44 @@ lclone remember "健身工具: Python+SQLite, 每周汇总, 下月1号上线" --
 python tests/test_offline.py    # 90+ offline assertions, no API key
 ```
 
+## Frontend download & multi-device remote access
+
+The backend (memory on the server) is decoupled from the access layer: the frontend can be installed from **npm (DSH plugin marketplace)**, or you can just open the Web panel the backend serves.
+
+### Open the Web panel in a browser
+After the backend is up (`docker compose up -d`), visit:
+- Memory workbench: `http://<server-ip>:8000/`
+- Q&A page: `http://<server-ip>:8000/ask`
+
+### Install the frontend (DSH brain-board plugin) from npm
+The DSH "brain board" frontend is a standalone npm plugin; install it with one command:
+```bash
+dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w
+```
+- **npm**: <https://www.npmjs.com/package/@yueliudan/lclone-memory-dsh>
+- Restart DSH after install; the plugin defaults to `http://127.0.0.1:8000` — point it at the server via environment variables.
+
+### Point it at a remote backend (environment variables)
+Set these before launching DSH:
+```bash
+export LCLONE_WEB_URL=http://<server-ip>:8000
+export LCLONE_API_KEY=<LCLONE_API_KEY from the server .env>
+```
+
+### Auth & "no-typing key"
+- If the server `.env` sets `LCLONE_API_KEY`, `/api/*` and `/mcp` require it (401 without a key).
+- **DSH plugin (auto-carries the key, from v0.2.2)**: reads the key from the environment and injects it into the board via postMessage, so the board loads with no manual input.
+- **Opening the panel directly in a browser**: paste the key once in the top **API Key** box and press Enter (stored in localStorage, remembered afterwards).
+- To drop the key entirely: leave `LCLONE_API_KEY` empty and restrict access by firewall/Tailscale IP allowlist.
+
+### Migrate data from local to server
+```bash
+lclone backup                                  # local: consistent snapshot via the backup API (WAL-safe)
+scp backups/lclone-<timestamp>.db root@<server>:/repo/data/lclone.db.new   # upload to a temp name
+ssh root@<server> 'cd /repo && docker compose down && mv data/lclone.db.new data/lclone.db && docker compose up -d'
+```
+> Never `cp` a live database file; use `lclone backup` (SQLite online backup API).
+
 ## Documentation index
 
 | Doc | Content |

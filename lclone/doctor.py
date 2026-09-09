@@ -120,11 +120,13 @@ def check_integration(home: Optional[Path] = None) -> List[dict]:
         "" if skill.exists() else "lclone integrate 会自动装")
 
     # 2. DSH 插件
-    dsh_pkg = home / ".dsh/profiles/web/node_modules/lclone-memory-dsh"
+    dsh_pkg = home / ".dsh/profiles/web/node_modules/@yueliudan/lclone-memory-dsh"
+    dsh_pkg_old = home / ".dsh/profiles/web/node_modules/lclone-memory-dsh"
     dsh_any = (home / ".dsh/plugins").exists()
-    add("DSH 插件", dsh_pkg.exists(), "已装" if dsh_pkg.exists() else
-        ("有插件目录但未装 lclone-memory-dsh" if dsh_any else "未检测到 DSH 插件"),
-        "dsh plugin --profile web add <integrations/dsh> -w")
+    dsh_ok = dsh_pkg.exists() or dsh_pkg_old.exists()
+    add("DSH 插件", dsh_ok, "已装" if dsh_ok else
+        ("有插件目录但未装 @yueliudan/lclone-memory-dsh" if dsh_any else "未检测到 DSH 插件"),
+        "dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w")
 
     # 3. Claude Code hooks
     cc = home / ".claude/settings.json"

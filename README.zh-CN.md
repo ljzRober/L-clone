@@ -171,6 +171,44 @@ lclone remember "健身工具: Python+SQLite, 每周汇总, 下月1号上线" --
 python tests/test_offline.py    # 90+ 项离线自测, 无需 API Key
 ```
 
+## 前端下载与多端远程访问
+
+后端(记忆在服务器)与前端(访问层)分离:前端可从 **npm(DSH 插件市场)**下载,也可直接用浏览器打开后台自带的 Web 面板。
+
+### 浏览器打开 Web 面板
+后台起来后(`docker compose up -d`)直接访问:
+- 记忆工作台: `http://<服务器IP>:8000/`
+- 问答页: `http://<服务器IP>:8000/ask`
+
+### 前端(DSH 大脑看板)从 npm 下载
+DSH 的「大脑看板」前端是独立 npm 插件,一条命令安装:
+```bash
+dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w
+```
+- **npm 市场**: <https://www.npmjs.com/package/@yueliudan/lclone-memory-dsh>
+- 装完重启 DSH;插件默认连 `http://127.0.0.1:8000`,部署到服务器时用环境变量指向。
+
+### 指向远程后台(环境变量)
+启动 DSH 前设置:
+```bash
+export LCLONE_WEB_URL=http://<服务器IP>:8000
+export LCLONE_API_KEY=<服务器 .env 里的 LCLONE_API_KEY>
+```
+
+### 鉴权与「免输 key」
+- 服务器 `.env` 的 `LCLONE_API_KEY` 非空 → `/api/*` 与 `/mcp` 全部要求鉴权(不带 key 返回 401)。
+- **DSH 插件(自动带 key, 自 v0.2.2 起)**:从环境变量读 key,经 postMessage 注入看板,看板免手输自动加载。
+- **浏览器直接打开面板**:顶部 **API Key** 框粘贴一次 key 回车(存 localStorage,之后免输)。
+- 想彻底免 key:把 `.env` 的 `LCLONE_API_KEY` 留空 + 用防火墙/Tailscale 只放行你的 IP,所有端零 key。
+
+### 从本地迁移数据到服务器
+```bash
+lclone backup                                  # 本地: 用备份 API 生成一致快照(WAL 安全)
+scp backups/lclone-<时间戳>.db root@<服务器>:/repo/data/lclone.db.new   # 传到临时名
+ssh root@<服务器> 'cd /repo && docker compose down && mv data/lclone.db.new data/lclone.db && docker compose up -d'
+```
+> 迁移不要直接 cp 正在写入的库文件;用 `lclone backup`(走 SQLite 在线备份 API)更稳。
+
 ## 文档索引
 
 | 文档 | 内容 |

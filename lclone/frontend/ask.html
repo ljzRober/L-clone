@@ -237,6 +237,11 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
 <header>
   <span class="brand">外置<em>大脑</em></span>
   <span class="tag" id="backend"></span>
+  <input id="api-key" type="password" placeholder="API Key" autocomplete="off"
+         title="后台启用鉴权时，粘贴 LCLONE_API_KEY 后回车（记住后所有请求自动带 X-API-Key）"
+         onchange="saveKey()"
+         onkeydown="if(event.key==='Enter'){event.preventDefault();saveKey();}"
+         style="background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;font-family:var(--mono);width:150px">
   <span class="sp"></span>
   <a class="navbtn" href="/">← 记忆工作台</a>
 </header>
@@ -261,6 +266,40 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
 <script>
 
 const $ = id => document.getElementById(id);
+
+// —— 鉴权: 后台启用 LCLONE_API_KEY 时, 为所有 /api 请求自动带 X-API-Key ——
+(function () {
+  const KEY = (localStorage.getItem('lclone_api_key') || '').trim();
+  if (!KEY) return;
+  const __f = window.fetch;
+  window.fetch = function (input, init) {
+    init = Object.assign({}, init || {});
+    init.headers = Object.assign({}, init.headers, { 'X-API-Key': KEY });
+    return __f.call(this, input, init);
+  };
+})();
+function saveKey() {
+  const el = document.getElementById('api-key');
+  localStorage.setItem('lclone_api_key', (el && el.value ? el.value : '').trim());
+  location.reload();
+}
+function initKey() {
+  const el = document.getElementById('api-key');
+  if (el) el.value = localStorage.getItem('lclone_api_key') || '';
+}
+initKey();
+// —— DSH 插件可经 postMessage 注入 LCLONE_API_KEY (跨域安全通道), 免人工输入 ——
+window.addEventListener('message', (e) => {
+  if (e && e.data && e.data.type === 'lclone-api-key' &&
+      typeof e.data.key === 'string' && e.data.key.length < 256) {
+    const k = e.data.key.trim();
+    if (k && k !== localStorage.getItem('lclone_api_key')) {
+      localStorage.setItem('lclone_api_key', k);
+      location.reload();
+    }
+  }
+});
+
 let THREAD = null;
 const API = {
   projects: async () => (await (await fetch('/api/projects')).json()).items,
@@ -311,6 +350,11 @@ async function supervise() {
 }
 async function loadProjects() {
   const rows = await API.projects();
+  if (!Array.isArray(rows)) {
+    $('ask-scope').innerHTML = '<option value="">全局层</option>';
+    $('sup-proj').innerHTML = '<option value="">(请先配置 API Key 再选择项目…)</option>';
+    return;
+  }
   const fill = sel => {
     const cur = sel.value;
     sel.innerHTML = '<option value="">全局层</option>' +
@@ -325,8 +369,10 @@ async function loadProjects() {
   if (supCur) sup.value = supCur;
 }
 (async function boot() {
-  const h = await (await fetch('/api/health')).json();
-  $('backend').textContent = '后端: ' + h.backend;
+  try {
+    const h = await (await fetch('/api/health')).json();
+    $('backend').textContent = h && h.backend ? ('后端: ' + h.backend) : '后端: 未鉴权/不可达';
+  } catch (e) { $('backend').textContent = '后端: 不可达'; }
   await loadProjects();
 })();
 

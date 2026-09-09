@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `claude-code/` | Claude Code | hooks | SessionStart→`bootstrap`；Stop→`capture` |
 | `codex/` | OpenAI Codex CLI | hooks + AGENTS.md | SessionStart→`bootstrap`；Stop→`capture` |
-| `dsh/` | DeepSeek Harness | 插件（自包含/后端驱动） | 会话首轮→记忆注入；轮结束→`capture`(走后端 HTTP) |
+| `dsh/` | DeepSeek Harness | 插件（薄插件/后端驱动） | 会话首轮→记忆注入；轮结束→`capture`(走后端 HTTP) |
 | `skill/` | 任意支持 skill 的环境 | 指令注入（软兜底） | 会话开始→`bootstrap`；对话中→`capture` |
 
 ---
@@ -15,7 +15,7 @@
 
 先让 lclone 大脑就绪。两种装法：
 - **A. 装 lclone（pip，Claude/Codex 必需）**：`pip install lclone`（或仓库 `pip install -e .`）。
-- **B. DSH 自包含插件（新，免装大脑）**：插件自带大脑 + `scripts/install.js`。
+- **B. DSH 薄插件 + 单独部署后台**：插件不打包大脑，后台用 `lclone web` 或 Docker 单独跑。
 
 装好后配置模型：`lclone setup`（选 provider + 填 key → `.env` + 初始化库）。
 
@@ -23,23 +23,15 @@
 
 ## DSH（DeepSeek Harness）
 
-**方式 1 — 已装 lclone（常规）**
+DSH 插件**只连后端 HTTP**（`/api/capture`、`/api/bootstrap`），无需本机 `lclone`/`LCLONE_CMD`；后台需**单独部署**。
 ```bash
-lclone setup                         # 配置模型后端
-lclone web                           # 起后端(浏览器看板 + 插件走 HTTP)
-lclone integrate --target dsh        # 装 skill + 提示如下
-# → dsh plugin --profile web add <路径>/integrations/dsh -w
-dsh plugin --profile web add /路径/integrations/dsh -w
+# 后台（任选其一）：lclone web 或 docker compose up -d
+lclone setup && lclone web                 # 源码/venv 起后端
+# 安装插件（远程引用，已发布 scoped 包）
+dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w
 # 设 LCLONE_WEB_URL=http://127.0.0.1:8000(或服务器地址)，重启 DSH web
 ```
-
-**方式 2 — 自包含（发布后，免装大脑）**
-```bash
-dsh plugin --profile web add lclone-memory-dsh -w
-node <包>/scripts/install.js         # 建 venv+装依赖+配模型+可启后端
-# 设 LCLONE_WEB_URL=<后端地址>，重启 DSH web
-```
-> DSH 插件**走后端 HTTP**（`/api/capture`、`/api/bootstrap`），无需本机 `lclone`/`LCLONE_CMD`；**后台 web 必须跑着**。
+> 从仓库源码本地开发装：`dsh plugin --profile web add /路径/L-clone/integrations/dsh -w`。
 
 ## Claude Code
 
@@ -67,7 +59,7 @@ lclone integrate --target codex      # 装 skill + 合并 hooks → ~/.codex/hoo
 |---|---|---|---|---|
 | **Claude Code** | 是（pip） | hooks（CLI） | 否（浏览才要） | `lclone integrate --target claude` |
 | **Codex** | 是（pip） | hooks + AGENTS.md | 否 | `lclone integrate --target codex` |
-| **DSH** | 方式1 是 / 方式2 插件自带 | 插件 → 后端 HTTP | **是** | `lclone integrate --target dsh` 或 `dsh plugin add lclone-memory-dsh` |
+| **DSH** | 是（单独部署后台） | 插件 → 后端 HTTP | **是** | `dsh plugin add @yueliudan/lclone-memory-dsh` |
 
 ## 自检
 

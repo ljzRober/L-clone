@@ -19,7 +19,7 @@
 //     - user/message:      event.data.content = [{type:'text', text}]
 //     - assistant/message: event.data.message.content = [{type:'text'|'reasoning', text}]
 //
-// 安装(发布后): dsh plugin --profile web add lclone-memory-dsh -w
+// 安装(发布后): dsh plugin --profile web add @yueliudan/lclone-memory-dsh -w
 // 后端地址用 LCLONE_WEB_URL(默认 http://127.0.0.1:8000); 不走本机 lclone 命令。
 
 import { randomUUID } from 'node:crypto'
@@ -304,6 +304,7 @@ export function apply(ctx) {
                 setup: buildSetupGuide(ok, skill),
                 webUrl: WEB_URL, docsUrl: DOCS_URL,
                 boardUrl: WEB_URL,
+                apiKey: process.env.LCLONE_API_KEY || '',
               }))
             })
           },

@@ -1,6 +1,6 @@
 {
   "name": "@yueliudan/lclone-memory-dsh",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "L-clone 记忆钩子：DSH 每轮结束(turn/end)自动 capture 到外置大脑；Web GUI 侧边栏「大脑看板」按钮一键打开记忆工作台。",
   "main": "dsh/index.js",

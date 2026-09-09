@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
     const HEALTH_ENDPOINT = "/api/lclone-health";
     let DASHBOARD_URL = "/"; // 看板 iframe 后端面板(由后端 serve, 前后台同源); 会从 health 的 boardUrl 更新为 LCLONE_WEB_URL
     let DOCS_URL = "https://github.com/ljzRober/L-clone"; // 文档链接; 会从 health 的 docsUrl 更新
+    let apiKey = ""; // 由 host 端 /api/lclone-health 注入 (免人工输入 key)
     // 决策确认 (本变更): 客户端轮询 host 代理路由, 弹窗 + 角标呈现待确认决策, 不进主 agent。
     const DECISIONS_ENDPOINT = "/api/lclone-decisions";
     const REVIEW_ENDPOINT = "/api/lclone-review";
@@ -286,6 +287,13 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
         iframe.className = "lclone-board-frame";
         iframe.src = DASHBOARD_URL;
         iframe.title = "L-clone 记忆工作台";
+        // 面板加载后, 把 host 端注入的 LCLONE_API_KEY 经 postMessage 传给看板 (免人工输入)。
+        iframe.addEventListener("load", () => {
+          if (!apiKey) return;
+          let target = "*";
+          try { const u = new URL(iframe.src || DASHBOARD_URL); if (u && u.origin) target = u.origin; } catch (e) {}
+          try { iframe.contentWindow.postMessage({ type: "lclone-api-key", key: apiKey }, target); } catch (e) {}
+        });
 
         offlineHint = document.createElement("div");
         offlineHint.className = "lclone-board-offline";
@@ -370,6 +378,7 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
           .then((body) => {
             const online = body && body.ok === true;
             const skillOk = body && body.skill !== false;
+            if (body && typeof body.apiKey === "string") apiKey = body.apiKey;
             if (body && typeof body.boardUrl === "string" && body.boardUrl) DASHBOARD_URL = body.boardUrl;
             if (body && typeof body.docsUrl === "string" && body.docsUrl) DOCS_URL = body.docsUrl;
             statusDot.dataset.state = online ? "online" : "offline";
