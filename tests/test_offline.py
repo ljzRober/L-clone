@@ -492,6 +492,64 @@ with contextlib.redirect_stdout(buf):
 check("104 CLI conflicts", "未发现疑似矛盾" in buf.getvalue(),
       buf.getvalue()[:60])
 
+# ---- 鉴权: env key + 受管 token (哈希存储, 可吊销) ----
+from lclone import auth as auth_mod  # noqa: E402
+
+_orig_key = os.environ.pop("LCLONE_API_KEY", None)
+from lclone import config as cfg_mod  # noqa: E402
+cfg_mod._loaded = False
+
+_tok_cols = {r["name"] for r in conn.execute("PRAGMA table_info(access_tokens)")}
+check("105 access_tokens 表存在",
+      {"id", "name", "token_hash", "created_at", "last_used_at", "revoked_at"} <= _tok_cols,
+      str(sorted(_tok_cols)))
+
+check("106 无 token 无 env key -> 未启用/免鉴权",
+      auth_mod.enabled(conn) is False and auth_mod.check({}, conn) is True)
+
+_tok = auth_mod.create_token(conn, "laptop")
+check("107 create 返回带前缀明文", _tok.startswith(auth_mod.TOKEN_PREFIX), _tok[:14])
+_row = conn.execute("SELECT token_hash FROM access_tokens WHERE name='laptop'").fetchone()
+check("108 库中只存哈希不存明文",
+      _row["token_hash"] == auth_mod.hash_token(_tok) and _tok not in _row["token_hash"])
+check("109 有活跃 token -> 启用",
+      auth_mod.enabled(conn) is True and auth_mod.check({}, conn) is False)
+check("110 有效 token (X-API-Key/Bearer) 通过",
+      auth_mod.check({"x-api-key": _tok}, conn) is True
+      and auth_mod.check({"authorization": "Bearer " + _tok}, conn) is True)
+check("111 无效 token 拒绝", auth_mod.check({"x-api-key": "lclone_bad"}, conn) is False)
+_lu = conn.execute("SELECT last_used_at FROM access_tokens WHERE name='laptop'").fetchone()
+check("112 last_used_at 更新", _lu["last_used_at"] is not None)
+check("113 revoke 后该 token 失效",
+      auth_mod.revoke_token(conn, name="laptop") == 1
+      and auth_mod.check({"x-api-key": _tok}, conn) is False)
+
+os.environ["LCLONE_API_KEY"] = "envkey-xyz"
+cfg_mod._loaded = False
+check("114 env key 兼容通过", auth_mod.check({"x-api-key": "envkey-xyz"}, conn) is True
+      and auth_mod.check({"x-api-key": "wrong"}, conn) is False)
+os.environ.pop("LCLONE_API_KEY", None)
+cfg_mod._loaded = False
+
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    cli.main(["auth", "create", "desktop", "--db", dbp])
+_out = _buf.getvalue()
+check("115 CLI auth create 打印一次明文", "desktop" in _out and "lclone_" in _out, _out[:50])
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    cli.main(["auth", "list", "--db", dbp])
+check("116 CLI auth list 显示 name 与状态",
+      "desktop" in _buf.getvalue() and "active" in _buf.getvalue(), _buf.getvalue()[:60])
+_buf = io.StringIO()
+with contextlib.redirect_stdout(_buf):
+    cli.main(["auth", "revoke", "desktop", "--db", dbp])
+check("117 CLI auth revoke 生效", "1" in _buf.getvalue(), _buf.getvalue()[:40])
+
+if _orig_key is not None:
+    os.environ["LCLONE_API_KEY"] = _orig_key
+    cfg_mod._loaded = False
+
 print()
 if fails:
     print("FAILED:", fails)

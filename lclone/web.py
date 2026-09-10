@@ -95,22 +95,25 @@ def create_app(db_path: Optional[str] = None):
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
 
+    # 解析一次数据库路径 (未显式传参时取 config), 供初始化 / 请求 / 鉴权共用
+    resolved_db = db_path or config.db_path()
+
     # 启动时确保 schema 存在; 每个请求使用独立连接 (FastAPI 同步接口跑在线线程池)
-    db_mod.init(db_path)
+    db_mod.init(resolved_db)
 
     def get_db():
         # 每个请求只连库, 不重新执行 schema 初始化 (启动时已 init 一次)
-        conn = db_mod.connect(db_path)
+        conn = db_mod.connect(resolved_db)
         try:
             yield conn
         finally:
             conn.close()
 
-    # 鉴权中间件: 设了 LCLONE_API_KEY 时保护 /api/* 与 /mcp
+    # 鉴权中间件: 保护 /api/* 与 /mcp (env key 或库中受管 token)
 
     @app.middleware("http")
     async def auth_mw(request, call_next):
-        return await auth.enforce(request, call_next)
+        return await auth.enforce(request, call_next, db_path=resolved_db)
     # 前端为独立静态资源 (lclone/frontend/), 由 FileResponse 服务; 后端不做内联 HTML。
 
     @app.post("/mcp")

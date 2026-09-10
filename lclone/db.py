@@ -105,6 +105,17 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 访问令牌 (auth): 多命名 token, 只存 sha256 哈希 (明文仅在创建时输出一次);
+-- revoked_at 非空 = 已吊销 (吊销即失效, 不物理删除)
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used_at TEXT,
+  revoked_at   TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_proj ON memories(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_proj ON sessions(project_id);

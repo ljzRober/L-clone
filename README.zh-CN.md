@@ -197,6 +197,7 @@ export LCLONE_API_KEY=<服务器 .env 里的 LCLONE_API_KEY>
 
 ### 鉴权与「免输 key」
 - 服务器 `.env` 的 `LCLONE_API_KEY` 非空 → `/api/*` 与 `/mcp` 全部要求鉴权(不带 key 返回 401)。
+- **多设备 token**:`lclone auth create <name>` 按设备发独立 token(库里只存 `sha256` 哈希、可单独吊销),`lclone auth list/revoke/test` 管理;触发条件为"设了 env key 或库中已有 token"。
 - **DSH 插件(自动带 key, 自 v0.2.2 起)**:从环境变量读 key,经 postMessage 注入看板,看板免手输自动加载。
 - **浏览器直接打开面板**:顶部 **API Key** 框粘贴一次 key 回车(存 localStorage,之后免输)。
 - 想彻底免 key:把 `.env` 的 `LCLONE_API_KEY` 留空 + 用防火墙/Tailscale 只放行你的 IP,所有端零 key。

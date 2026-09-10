@@ -196,6 +196,7 @@ export LCLONE_API_KEY=<LCLONE_API_KEY from the server .env>
 
 ### Auth & "no-typing key"
 - If the server `.env` sets `LCLONE_API_KEY`, `/api/*` and `/mcp` require it (401 without a key).
+- **Per-device tokens**: `lclone auth create <name>` issues an independent token (only its `sha256` hash is stored; revocable individually); manage with `lclone auth list/revoke/test`. Auth is enforced when the env key is set or any token exists.
 - **DSH plugin (auto-carries the key, from v0.2.2)**: reads the key from the environment and injects it into the board via postMessage, so the board loads with no manual input.
 - **Opening the panel directly in a browser**: paste the key once in the top **API Key** box and press Enter (stored in localStorage, remembered afterwards).
 - To drop the key entirely: leave `LCLONE_API_KEY` empty and restrict access by firewall/Tailscale IP allowlist.

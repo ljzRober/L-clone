@@ -332,6 +332,53 @@ def cmd_pending(args) -> None:
                      ensure_ascii=False))
 
 
+def cmd_auth(args) -> None:
+    """访问令牌管理: create / list / revoke / test。"""
+    from . import auth as auth_mod
+    action = args.action
+
+    if action == "test":
+        url = (args.url or args.name or "").rstrip("/")
+        token = args.token or ""
+        if not url or not token:
+            raise SystemExit("用法: lclone auth test <url> --token <tok>")
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(url + "/api/health",
+                                     headers={"X-API-Key": token})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                print(f"✅ 鉴权通过 (HTTP {r.status})")
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"❌ 鉴权失败 (HTTP {e.code})")
+        except Exception as e:  # noqa: BLE001 - 网络错误如实报出即可
+            raise SystemExit(f"❌ 无法连接 {url}: {e}")
+        return
+
+    conn = _conn(args)
+    if action == "create":
+        if not args.name:
+            raise SystemExit("用法: lclone auth create <name>")
+        token = auth_mod.create_token(conn, args.name)
+        print(f"已创建 token '{args.name}' (明文仅显示这一次, 请立即保存):")
+        print(token)
+    elif action == "list":
+        rows = auth_mod.list_tokens(conn)
+        if not rows:
+            print("(无 token)")
+            return
+        print(f"{'id':>4}  {'name':<20} {'created_at':<20} {'last_used_at':<20} 状态")
+        for r in rows:
+            status = "revoked" if r["revoked_at"] else "active"
+            print(f"{r['id']:>4}  {r['name']:<20} {r['created_at']:<20} "
+                  f"{(r['last_used_at'] or '-'):<20} {status}")
+    elif action == "revoke":
+        if not args.name and args.id is None:
+            raise SystemExit("用法: lclone auth revoke <name> | --id <N>")
+        n = auth_mod.revoke_token(conn, name=args.name, token_id=args.id)
+        print(f"已吊销 {n} 个 token" if n else "未找到匹配的未吊销 token")
+
+
 def cmd_memories(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project) if args.project else None
@@ -583,6 +630,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="管理 web 后台服务 (start/stop/status/restart)")
     ss.add_argument("action", choices=["start", "stop", "status", "restart"])
     ss.set_defaults(func=cmd_serve)
+
+    sa = sub.add_parser("auth", parents=[parent],
+                        help="访问令牌管理 (create/list/revoke/test)")
+    sa.add_argument("action", choices=["create", "list", "revoke", "test"])
+    sa.add_argument("name", nargs="?", default=None,
+                    help="create/revoke 的 token 名称; test 时为后端 URL")
+    sa.add_argument("--id", type=int, default=None, help="revoke 按 id")
+    sa.add_argument("--url", default=None, help="test 的目标后端 (如 http://IP:8000)")
+    sa.add_argument("--token", default=None, help="test 使用的 token")
+    sa.set_defaults(func=cmd_auth)
 
     return p
 

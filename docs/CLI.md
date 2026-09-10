@@ -33,6 +33,7 @@ lclone integrate [--target skill|dsh|claude|codex|commit|all]                   
 lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes]               # = setup + integrate
 lclone doctor [--check-llm] [--backend] [--integration]                                  # 自检(默认前后端分段展示)
 lclone backup [--dest backups]                                              # SQLite 在线快照备份
+lclone auth create <name> | list | revoke <name|--id N> | test <url> --token <tok>  # 访问令牌管理
 ```
 
 所有子命令可用 `--db <路径>` 指定数据库、`--cwd <目录>` 指定工作目录(git 归属判定用),前后均可。
@@ -118,11 +119,26 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 | `BRAIN_EMBED_DIM` | `384` | dummy 后端向量维度 |
 | `BRAIN_TEMPERATURE` | `0.3` | 采样温度 |
 | `BRAIN_HOST` / `BRAIN_PORT` | `0.0.0.0` / `8000` | Web 面板监听 |
-| `LCLONE_API_KEY` | — | Web 服务鉴权(设了后 `/api/*` 与 `/mcp` 需带 `Authorization: Bearer <key>`, `X-API-Key: <key>`;留空=本地免鉴权) |
+| `LCLONE_API_KEY` | — | 引导用鉴权 key(设了后 `/api/*` 与 `/mcp` 需带 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`;留空且库中无 token=本地免鉴权)。另可用 `lclone auth` 发放多把可吊销 token |
 | `LCLONE_HOME` | `~` | `doctor`/`install` 查找 skill 与触发配置的家目录 |
 | `LCLONE_CMD` | `lclone` | DSH 插件调用的 lclone 命令(可指到 `.venv/bin/python -m lclone`) |
 | `LCLONE_EVO_DIR` | `~/.lclone/evolutions` | 进化资产目录(文件式, 可用 `~` 展开) |
 | `DSH_SESSION_ID` | — | 外部会话 id, `capture` 用它做会话聚合(DSH 插件自动注入) |
+
+## 访问令牌管理 (`lclone auth`)
+
+除 `LCLONE_API_KEY` 外,还可**按设备发放多把 token**(库里只存 `sha256` 哈希,可单独吊销):
+
+| 命令 | 作用 |
+|---|---|
+| `lclone auth create <name>` | 生成一把 token,打印明文(**仅此一次**),入库其哈希 |
+| `lclone auth list` | 列出 id / name / created_at / last_used_at / 状态(active\|revoked) |
+| `lclone auth revoke <name>`(或 `--id <N>`) | 吊销(置 `revoked_at`,不删行),其后使用返回 401 |
+| `lclone auth test <url> --token <tok>` | 带该凭证请求 `<url>/api/health`,验证鉴权是否生效 |
+
+- **触发条件**:设了 `LCLONE_API_KEY`,或库中已存在 token → 强制鉴权;两者皆无 → 免鉴权(向后兼容)。**一旦创建过 token,鉴权持续启用**——吊销最后一把也不会自动敞开。
+- **部署形态**:Docker/服务器上 CLI 在容器内,用 `docker exec lclone python -m lclone auth create <name>`;或 `ssh` 上服务器后 `python -m lclone auth create <name>`。
+- **引导**:新装后台时 `scripts/deploy_server.sh` 会随机生成 `.env` 的 `LCLONE_API_KEY` 作为第一把凭证,可直接使用;`auth create` 用于后续按设备发放/吊销。
 
 ## Web 面板
 
@@ -154,8 +170,9 @@ python -m lclone web
 
 ## REST API(供其他程序调用)
 
-鉴权: 设了 `LCLONE_API_KEY` 时, 下列 `/api/*` 与 `/mcp` 需带
-`Authorization: Bearer <key>` 或 `X-API-Key: <key>`; 未设则本地免鉴权。
+鉴权: 设了 `LCLONE_API_KEY` 或库中已存在 token 时, 下列 `/api/*` 与 `/mcp` 需带
+`Authorization: Bearer <key>` 或 `X-API-Key: <key>`(可为 env key 或 `lclone auth` 发的受管 token);
+两者皆无则本地免鉴权。受管 token 用 `lclone auth create/list/revoke` 管理。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

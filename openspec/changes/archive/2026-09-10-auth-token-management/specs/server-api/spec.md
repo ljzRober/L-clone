@@ -1,30 +1,8 @@
-# server-api Specification
-
-## Purpose
-TBD - created by archiving change mcp-http-auth. Update Purpose after archive.
-## Requirements
-### Requirement: MCP over HTTP
-
-lclone SHALL 在 Web 服务上暴露 `POST /mcp` 端点，用 JSON-RPC over HTTP 提供与 stdio 相同的工具集。
-
-#### Scenario: 列出工具
-
-WHEN 客户端 `POST /mcp` 发 `tools/list`
-THEN 返回 JSON-RPC 响应，含 10 个工具（bootstrap/capture/recall/remember/promote/demote/suggest/projects/review/ask）
-
-#### Scenario: 调用工具
-
-WHEN 客户端 `POST /mcp` 发 `tools/call`
-THEN 复用 stdio 的分发逻辑执行工具并返回结果
-
-#### Scenario: 通知类消息
-
-WHEN 客户端 POST 无 `id` 的通知消息
-THEN 返回 202 空响应
+## MODIFIED Requirements
 
 ### Requirement: API key 鉴权
 
-lclone SHALL 支持两种凭证：`LCLONE_API_KEY` 环境变量与库中受管 token。当设置了 `LCLONE_API_KEY` 或库中已存在任何 token（含已吊销）时，`/api/*` 与 `/mcp` 需带有效凭证（`Authorization: Bearer <key>` 或 `X-API-Key: <key>`）。
+lclone SHALL 支持两种凭证：`LCLONE_API_KEY` 环境变量与库中受管 token。当设置了 `LCLONE_API_KEY` 或库中存在至少一个未吊销 token 时，`/api/*` 与 `/mcp` 需带有效凭证（`Authorization: Bearer <key>` 或 `X-API-Key: <key>`）。
 
 #### Scenario: 未设置 key
 
@@ -33,7 +11,7 @@ THEN 本地请求免鉴权（向后兼容）
 
 #### Scenario: 缺少凭证
 
-WHEN 已启用鉴权（设置了 `LCLONE_API_KEY` 或库中已存在任何 token）且请求不带凭证
+WHEN 已启用鉴权（设置了 `LCLONE_API_KEY` 或库中存在未吊销 token）且请求不带凭证
 THEN 返回 401
 
 #### Scenario: 凭证有效
@@ -50,6 +28,8 @@ THEN 放行并返回正常响应，且更新该 token 的最后使用时间
 
 WHEN 请求带一个 `revoked_at` 非空的受管 token
 THEN 返回 401
+
+## ADDED Requirements
 
 ### Requirement: Token 管理
 
@@ -74,4 +54,3 @@ THEN 将该 token 标记为已吊销（不物理删除），其后续使用返�
 
 WHEN 运行 `lclone auth test <url> --token <tok>`
 THEN 带该凭证请求 `<url>/api/health`；凭证有效时报告通过，无效时报告失败（401）
-

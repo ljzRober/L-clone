@@ -80,6 +80,7 @@ lclone.yourdomain.com {
 - SSH 密钥登录 + 关密码登录
 - 防火墙只放行 22 / 80 / 443
 - **定期备份 `data/lclone.db`**(你的大脑数据比服务器值钱), 可用 restic / rsync
+- **按设备发放 token**:`docker exec lclone python -m lclone auth create <设备名>`(库里只存 `sha256` 哈希,明文仅显示一次);设备丢失时 `lclone auth revoke <设备名>` 单独吊销,不必轮换所有凭证。`lclone auth test <url> --token <tok>` 可验证鉴权是否生效。
 
 ## 多设备访问
 
