@@ -1,5 +1,8 @@
 // L-clone 大脑看板 (DSH 客户端 UI bundle): 侧边栏「大脑看板」按钮 → 中心区全屏 iframe 记忆工作台。
 //
+// 本变更 (remote-attribution): 面板每次「关→开」时重新加载 iframe —— iframe 常驻挂载,
+//   否则刚写入的记忆要手点「刷新」才可见 (用户会以为没存上)。
+//
 // 格式照已验证先例:
 //   - bundle 外壳: window.__ModuleLoader__.load({ id: <包名>, factory })  (dshmarket 同款)
 //   - 侧边栏按钮 DOM 注入 + MutationObserver 自愈:  @linxin666/dsh-client-ui-task-board 同款
@@ -345,15 +348,26 @@ html[data-dsh-lclone-active]:not([data-dsh-ssh-active]) [data-pane=conversation]
         column.appendChild(container);
       };
 
+      // 每次「关→开」重新拉取看板: iframe 常驻挂载, 不重新赋值 src 就一直是上一次的快照,
+      // 刚 capture 进去的记忆在面板里看不到 (用户以为没存上)。首次打开由 ensure() 的 src 负责, 不重复加载。
+      let wasOpen = false;
+      const reloadBoard = () => {
+        if (iframe === void 0) return;
+        iframe.src = DASHBOARD_URL; // 同 URL 重新赋值也会触发 iframe 重新加载
+      };
+
       const applyActive = () => {
-        if (controller.isOpen()) {
+        const open = controller.isOpen();
+        if (open) {
           document.documentElement.removeAttribute(OTHER_ACTIVE_ATTR);
           document.documentElement.setAttribute(ACTIVE_ATTR, "");
           document.dispatchEvent(new CustomEvent(ACTIVATE_EVENT, { detail: PANEL_NAME }));
           refreshHealth();
+          if (wasOpen) reloadBoard();
         } else {
           document.documentElement.removeAttribute(ACTIVE_ATTR);
         }
+        wasOpen = open;
       };
 
       const onOtherActivate = (event) => {

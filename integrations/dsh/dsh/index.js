@@ -1,5 +1,13 @@
 // L-clone 记忆钩子 (DSH 静态插件 bundle): 每轮结束自动 capture 沉淀 + 决策确认改由客户端 UI 呈现 (不劫持主 agent)。
 //
+// 本变更 (remote-attribution):
+//   - 归属改在客户端解析: 后端部署在服务器时, 服务端的 resolve_project(cwd) 看不到本机路径
+//     → 永远 no_git → 自动捕获被静默降级成全局层, 项目节点收不到新记忆、弹窗也没有
+//     「提升至全局记忆」勾选框 (该勾选框只在项目级条目上渲染)。现在插件先 git toplevel,
+//     再匹配 /api/projects 的 path, 命中即上报 project_id; 未注册则 POST /api/projects 自动注册。
+//   - 请求超时 3s → 30s (capture 要跑 LLM 提炼): 旧值会在服务端已落库时误报 fail 并丢掉 ids;
+//     健康探测/决策轮询等快路由显式传小超时。onDone 加 done 标志, timeout+error 不再重复回调。
+//
 // 本变更 (decision-confirm-dsh-ui):
 //   - 捕获输入变丰富: 改为累计「用户 + 助手」消息, turn/end 时把整段交换喂给 capture,
 //     分类器据此判断「用户定了什么 + 助手是否确认/落地 → 可否落成一条决策」。
@@ -23,6 +31,7 @@
 // 后端地址用 LCLONE_WEB_URL(默认 http://127.0.0.1:8000); 不走本机 lclone 命令。
 
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { fileURLToPath } from 'node:url'
@@ -76,16 +85,86 @@ function buildCaptureText(userText, assistantText) {
   return '助手：' + a.slice(0, ASSISTANT_CAP)
 }
 
+// ---- 客户端项目归属解析 (远程后端下服务端看不到本机路径, 归属必须在客户端算) ----
+// 后端在服务器上时, `resolve_project(cwd)` 会在服务器文件系统上跑 git → 永远 no_git →
+// 所有自动捕获被静默降级成全局层, 项目节点收不到任何新记忆。故插件在客户端:
+//   git toplevel → 匹配 /api/projects 的 path → 命中即上报 project_id; 未注册则 POST /api/projects 自动注册。
+const PROJECT_CACHE_MS = 30000
+let projectCache = { at: 0, items: [] }
+
+function gitToplevel(cwd, cb) {
+  if (!cwd) { cb(null); return }
+  try {
+    execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { timeout: 5000 },
+      (err, stdout) => {
+        if (err) { cb(null); return }
+        const out = String(stdout || '').trim()
+        cb(out || null)
+      })
+  } catch (e) { cb(null) }
+}
+
+function fetchProjects(cb) {
+  if (projectCache.items.length && Date.now() - projectCache.at < PROJECT_CACHE_MS) {
+    cb(projectCache.items)
+    return
+  }
+  lcloneRequester('GET', '/api/projects', null, (ok, json) => {
+    const items = ok && json && Array.isArray(json.items) ? json.items : []
+    if (items.length) projectCache = { at: Date.now(), items }
+    cb(items)
+  }, 8000)
+}
+
+function matchProject(items, repo) {
+  const norm = (p) => String(p || '').replace(/\/+$/, '')
+  const target = norm(repo)
+  if (!target) return null
+  const exact = items.find((p) => norm(p.path) === target)
+  if (exact) return exact
+  // 兜底: 仓库根与 cwd 互为父子目录时也算命中 (注册路径是子目录/父目录的历史数据)
+  return items.find((p) => {
+    const q = norm(p.path)
+    return q && (target.startsWith(q + '/') || q.startsWith(target + '/'))
+  }) || null
+}
+
+// 解析 cwd 的项目归属; cb(projectId|undefined, projectName|undefined, why)
+function resolveProject(cwd, cb) {
+  gitToplevel(cwd, (repo) => {
+    if (!repo) { cb(undefined, undefined, 'no_git'); return }
+    fetchProjects((items) => {
+      const hit = matchProject(items, repo)
+      if (hit) { cb(hit.id, hit.name, 'matched'); return }
+      const name = repo.split('/').filter(Boolean).pop() || 'project'
+      lcloneRequester('POST', '/api/projects', { name, path: repo }, (ok, json) => {
+        projectCache.at = 0 // 失效缓存, 下次重新拉
+        if (ok && json && json.id) { cb(json.id, name, 'created'); return }
+        // 名字被别的机器/路径占用了 → 退一步按 name 复用同名项目, 不重复造项目
+        fetchProjects((fresh) => {
+          const byName = fresh.find((p) => p.name === name)
+          if (byName) cb(byName.id, byName.name, 'matched_by_name')
+          else cb(undefined, undefined, 'register_failed')
+        })
+      }, 8000)
+    })
+  })
+}
+
 // 写侧: 走后端 HTTP POST /api/capture (后台由 lclone web 单独部署提供)。
 function runCapture(text, sessionKey, cwd, onDone) {
   const t = (text || '').trim()
   if (!t) { if (onDone) onDone(); return }
   const body = { text: t, session_key: sessionKey || '', global_fallback: true }
-  if (cwd) body.cwd = cwd // git 仓库 → 后端自动归属/注册
+  if (cwd) body.cwd = cwd
   log(`capture ${t.length} chars cwd=${cwd || '(无)'}`)
-  lcloneRequester('POST', '/api/capture', body, (ok, json) => {
-    log('capture via http ' + (ok ? 'ok' : 'fail') + (json ? ' ' + JSON.stringify(json).slice(0, 160) : ''))
-    if (onDone) onDone()
+  resolveProject(cwd, (pid, pname, why) => {
+    if (pid) body.project_id = pid // 客户端解析出的归属, 后端直接采用
+    log(`capture attribution: project=${pid || '(全局)'}${pname ? ' ' + pname : ''} (${why})`)
+    lcloneRequester('POST', '/api/capture', body, (ok, json) => {
+      log('capture via http ' + (ok ? 'ok' : 'fail') + (json ? ' ' + JSON.stringify(json).slice(0, 160) : ''))
+      if (onDone) onDone()
+    }, 30000)
   })
 }
 
@@ -97,7 +176,7 @@ function runBootstrap(cwd, onDone) {
     const text = ok && json ? (json.text || '') : ''
     log('bootstrap via http ' + (ok ? '' + text.length : 'fail'))
     onDone(text.trim())
-  })
+  }, 15000)
 }
 
 // 组装注入文本: [skill 全文] + [bootstrap 记忆]。
@@ -139,7 +218,10 @@ async function injectSessionStart(ctx, sessionId, cwd) {
 }
 
 // 统一请求后端 (可配置 LCLONE_WEB_URL, 支持 http/https + LCLONE_API_KEY 鉴权)。
-function lcloneRequester(method, path, body, onDone) {
+// timeoutMs 默认 30s: capture 要跑一次 LLM 提炼 (实测 4s+), 旧的 3s 会在服务端已落库时
+// 误报 fail 并丢掉 ids; 健康探测等快路由显式传小值。
+// onDone 用 done 标志去重: 超时与 error 都触发时只回调一次 (旧实现会重复记两行 fail)。
+function lcloneRequester(method, path, body, onDone, timeoutMs) {
   const mod = WEB.protocol === 'https:' ? httpsRequest : httpRequest
   const apiKey = process.env.LCLONE_API_KEY
   const headers = {}
@@ -150,11 +232,17 @@ function lcloneRequester(method, path, body, onDone) {
     headers['Content-Type'] = 'application/json'
     headers['Content-Length'] = Buffer.byteLength(payload)
   }
+  let done = false
+  const finish = (ok, json) => {
+    if (done) return
+    done = true
+    onDone(ok, json)
+  }
   const req = mod(
     {
       hostname: WEB.hostname,
       port: WEB.port ? Number(WEB.port) : (WEB.protocol === 'https:' ? 443 : 80),
-      path, method, timeout: 3000, headers,
+      path, method, timeout: timeoutMs || 30000, headers,
     },
     (res) => {
       let data = ''
@@ -162,19 +250,19 @@ function lcloneRequester(method, path, body, onDone) {
       res.on('end', () => {
         let json = null
         try { json = JSON.parse(data || 'null') } catch (e) {}
-        onDone(res.statusCode >= 200 && res.statusCode < 300, json)
+        finish(res.statusCode >= 200 && res.statusCode < 300, json)
       })
     },
   )
-  req.on('timeout', () => { req.destroy(); onDone(false, null) })
-  req.on('error', () => onDone(false, null))
+  req.on('timeout', () => { req.destroy(); finish(false, null) })
+  req.on('error', () => finish(false, null))
   if (payload) req.write(payload)
   req.end()
 }
 
-// 健康检查: 探测后端存活, 供 client 端「大脑看板」按钮显示在线状态。
+// 健康检查: 探测后端存活, 供 client 端「大脑看板」按钮显示在线状态 (快路由, 4s 判离线)。
 function probeLcloneHealth(onDone) {
-  lcloneRequester('GET', '/api/health', null, (ok, json) => onDone(ok && json && json.ok === true))
+  lcloneRequester('GET', '/api/health', null, (ok, json) => onDone(ok && json && json.ok === true), 4000)
 }
 
 // 组装「就绪引导清单」: 按 后端/skill 缺失情况给出可执行步骤 (前后台分离后无 CLI 依赖)。
@@ -194,8 +282,8 @@ function readBody(request, cb) {
 }
 
 // 代理到后端。带 LCLONE_API_KEY 鉴权; 与健康探测同源, 避免客户端跨域。
-function lcloneFetch(method, path, body, onDone) {
-  lcloneRequester(method, path, body, onDone)
+function lcloneFetch(method, path, body, onDone, timeoutMs) {
+  lcloneRequester(method, path, body, onDone, timeoutMs)
 }
 
 // skill 安装路径 (与 lclone integrate 一致: ~/.agents/skills/lclone-memory/SKILL.md)
@@ -322,7 +410,7 @@ export function apply(ctx) {
             lcloneFetch('GET', '/api/pending', null, (ok, json) => {
               response.writeHead(200, { 'content-type': 'application/json' })
               response.end(JSON.stringify({ ok, items: (json && json.items) || [] }))
-            })
+            }, 8000)
           },
         })
         // 决策确认 (keep/delete); 落地为 active 或删除
@@ -348,7 +436,7 @@ export function apply(ctx) {
                 // 后端失败返回非 2xx, 让 client 能区分「已落地」与「未生效」
                 response.writeHead(good ? 200 : 502, { 'content-type': 'application/json' })
                 response.end(JSON.stringify({ ok: good, ...(json || {}) }))
-              })
+              }, 15000)
             })
           },
         })
