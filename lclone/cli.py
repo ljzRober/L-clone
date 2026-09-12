@@ -284,9 +284,23 @@ def cmd_integrate(args) -> None:
 
 
 def cmd_backup(args) -> None:
+    """备份大脑: SQLite 快照 + 进化资产目录快照 (两处存储, 一次备份覆盖)。"""
+    from pathlib import Path
+    import shutil
+
     from . import db as db_mod
+
     dest = db_mod.backup(db_path=args.db, dest_dir=args.dest)
     print(f"已备份到 {dest}")
+    # 进化资产是文件式的(不在 DB 里), 单独快照一份, 避免只备份了一半的大脑
+    evo = Path(mem_mod.evo_dir(create=False))
+    if evo.is_dir() and any(evo.iterdir()):
+        snap = Path(dest)
+        evo_dest = snap.with_name(snap.stem + ".evolutions")
+        if evo_dest.exists():
+            shutil.rmtree(evo_dest)
+        shutil.copytree(evo, evo_dest)
+        print(f"进化资产已备份到 {evo_dest}")
 
 
 def cmd_promote(args) -> None:

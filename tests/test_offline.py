@@ -776,6 +776,18 @@ check("158 无可用 key 时种入失败只降级提示",
       _nk_rc == 0 and "种子内容" in _nk_buf.getvalue() and "跳过" in _nk_buf.getvalue(),
       _nk_buf.getvalue()[-160:])
 
+# ---- 备份覆盖两处存储: SQLite(洞察) + 文件式进化资产 ----
+_bk_dest = tempfile.mkdtemp(prefix="bk_")
+_bk_buf = io.StringIO()
+with contextlib.redirect_stdout(_bk_buf):
+    cli.main(["backup", "--db", dbp, "--dest", _bk_dest])
+_bk_dbs = sorted(pathlib.Path(_bk_dest).glob("lclone-*.db"))
+_bk_evos = sorted(pathlib.Path(_bk_dest).glob("lclone-*.evolutions"))
+check("159 备份同时覆盖 DB 与进化资产",
+      len(_bk_dbs) == 1 and len(_bk_evos) == 1 and _bk_evos[0].is_dir()
+      and any(_bk_evos[0].iterdir()),
+      _bk_buf.getvalue().strip().replace("\n", " | ")[:110])
+
 print()
 if fails:
     print("FAILED:", fails)

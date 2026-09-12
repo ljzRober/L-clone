@@ -8,7 +8,10 @@ services:
     env_file: .env
     environment:
       - BRAIN_DB_PATH=/data/lclone.db
+      # 洞察(insight)在 SQLite 里, 进化资产(evolution)是文件式的 —— 两者都放到持久化卷,
+      # 才能一起备份/迁移 (否则容器重建时进化文件会丢)
+      - LCLONE_EVO_DIR=/data/evolutions
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/data          # 记忆数据持久化在这里, 记得定期备份
+      - ./data:/data          # 记忆 + 进化资产持久化在这里, 记得定期备份整个 data/

@@ -34,7 +34,7 @@ lclone setup [--provider deepseek] [--api-key xx] [--yes] [--no-seed]           
 lclone integrate [--target skill|dsh|claude|codex|commit|all]                            # 接入 AI 工具(交互式选 target)
 lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes] [--no-seed]     # = setup + integrate
 lclone doctor [--check-llm] [--backend] [--integration]                                  # 自检(默认前后端分段展示)
-lclone backup [--dest backups]                                              # SQLite 在线快照备份
+lclone backup [--dest backups]                                              # 大脑快照备份 (SQLite + 进化资产)
 lclone auth create <name> | list | revoke <name|--id N> | test <url> --token <tok>  # 访问令牌管理
 ```
 

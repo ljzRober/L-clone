@@ -36,6 +36,14 @@ docker compose up -d
 
 数据持久化在 `./data/lclone.db`, 容器重启不丢失。
 
+**进化资产(evolution)是文件式的**, compose 把 `LCLONE_EVO_DIR` 指到了 `/data/evolutions`
+(同一个持久化卷), 否则容器重建时进化文件会丢。所以**备份要覆盖整个 `data/` 目录**, 而不只是那个 db 文件:
+
+```bash
+docker exec lclone python -m lclone backup --dest /data/backups   # DB + 进化资产一次快照
+# 或直接在宿主机打包: tar czf lclone-data-$(date +%F).tgz data/
+```
+
 > 服务器上**务必设置 `LCLONE_API_KEY`**, 否则任何能访问 8000 端口的人都能读写你的记忆。
 
 ## MCP over HTTP（agent 远程接入）
