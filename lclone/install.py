@@ -190,8 +190,13 @@ def setup(provider: Optional[str] = None, api_key: Optional[str] = None,
     if no_seed:
         lines.append("种子内容: 已按 --no-seed 跳过")
     else:
+        from . import evolutions as evo_mod
         from . import seed as seed_mod
         try:
+            # 先把既有文件式资产摄入为 v1, 再种种子 (种子对已存在的名字不覆盖)
+            migrated = evo_mod.migrate_cache_files(conn)
+            if migrated:
+                lines.append(f"存量进化资产已摄入为 v1: {len(migrated)} 个")
             lines.append(seed_mod.render(seed_mod.apply(conn)))
         except Exception as e:  # noqa: BLE001 - 任何失败都只降级为提示
             lines.append(f"⚠️ 种子内容: 跳过 (种入失败: {e})")

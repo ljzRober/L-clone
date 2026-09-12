@@ -14,6 +14,7 @@ from typing import Optional
 from . import chat as chat_mod
 from . import config
 from . import db as db_mod
+from . import evolutions as evo_mod
 from . import llm
 from . import memory as mem_mod
 from . import projects as proj_mod
@@ -78,6 +79,21 @@ class ProjectIn(BaseModel):
     name: str
     path: str = ""
     charter: str = ""
+
+
+class EvoPublishIn(BaseModel):
+    name: str
+    content: Optional[str] = None
+    kind: str = ""
+    project_id: Optional[int] = None
+    message: str = ""
+    ref: str = ""
+    source_ref: str = ""
+
+
+class EvoRollbackIn(BaseModel):
+    name: str
+    version: int
 
 
 # ================================================================ FastAPI
@@ -226,16 +242,67 @@ def create_app(db_path: Optional[str] = None):
         return {"items": [dict(r) for r in items]}
 
     @app.get("/api/evolutions")
-    def evolutions(name: Optional[str] = None):
-        """进化资产 (文件式): 返回 ~/.lclone/evolutions/ 的文件目录树 (含 content/size/mtime)。"""
+    def evolutions(name: Optional[str] = None,
+                   conn: sqlite3.Connection = Depends(get_db)):
+        """进化资产目录树 (含 content/size/mtime)。
+
+        响应形状**保持不变** (前端零改动), 但底层已从"扫目录"换成"读版本索引 + blob":
+        每个条目额外带 version/hash/kind/untracked, 便于看板展示版本与未收录文件。
+        """
         def add_content(node):
             if node.get("is_dir"):
                 node["children"] = [add_content(c) for c in node.get("children", [])]
             else:
-                node["content"] = mem_mod.read_evolution_file(node["name"]) or ""
+                node["content"] = mem_mod.read_evolution_file(node["name"], conn) or ""
             return node
-        items = [add_content(f) for f in mem_mod.list_evolution_files()]
+        items = [add_content(f) for f in mem_mod.list_evolution_files(conn)]
         return {"items": items}
+
+    # ------------------------------------------------ 进化资产: 版本化存储 (服务器权威)
+    @app.get("/api/evolution/index")
+    def evo_index(conn: sqlite3.Connection = Depends(get_db)):
+        """当前版本清单 (每个进化资产一行)。"""
+        return {"items": evo_mod.ls(conn)}
+
+    @app.get("/api/evolution/manifest")
+    def evo_manifest(conn: sqlite3.Connection = Depends(get_db)):
+        """客户端同步清单: name → {version, hash, size, kind, project_id}。"""
+        return {"items": evo_mod.manifest_index(conn)}
+
+    @app.get("/api/evolution/content")
+    def evo_content(name: str, version: Optional[int] = None,
+                    conn: sqlite3.Connection = Depends(get_db)):
+        """取某版本的原文 (version 省略取当前版本)。"""
+        row = evo_mod.resolve(conn, name, version)
+        if row is None:
+            raise HTTPException(404, f"进化资产不存在: {name}")
+        return {"name": row["name"], "version": row["version"], "hash": row["hash"],
+                "content": row["content"], "ref": row["ref"]}
+
+    @app.get("/api/evolution/history")
+    def evo_history(name: str, conn: sqlite3.Connection = Depends(get_db)):
+        """版本历史 (新→旧)。"""
+        return {"items": evo_mod.history(conn, name)}
+
+    @app.post("/api/evolution/publish")
+    def evo_publish(body: EvoPublishIn, conn: sqlite3.Connection = Depends(get_db)):
+        """发布一版内容 (内容未变则不新增版本); ref 类只记引用。"""
+        try:
+            out = evo_mod.publish(conn, body.name, body.content, kind=body.kind,
+                                     project_id=body.project_id, ref=body.ref,
+                                     message=body.message, source_ref=body.source_ref)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, str(e))
+        return {"result": out}
+
+    @app.post("/api/evolution/rollback")
+    def evo_rollback(body: EvoRollbackIn, conn: sqlite3.Connection = Depends(get_db)):
+        """回滚当前指向到某个历史版本 (不改任何 blob)。"""
+        try:
+            out = evo_mod.rollback(conn, body.name, body.version)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"result": out}
 
     @app.get("/api/links")
     def links(conn: sqlite3.Connection = Depends(get_db)):

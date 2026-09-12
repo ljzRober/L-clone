@@ -14,8 +14,16 @@ lclone remember "内容" [--level insight] [--project id] [--reason 缘由] [--c
 lclone capture "本次内容" [--project id] [--title 标题] [--session-key id] [--global-fallback]
 lclone gate "文本"                                 # 准入闸门自测: 判定/命中/理由 (纯脚本, 不调 LLM)
 lclone seed [--force] [--dry-run]                  # 首次种子内容: 通用洞察 + 通用进化文件 (幂等)
-lclone evolution add <文件名> [--kind script|tool|command|model|other] [--content 内容] [--ref 路径] [--reason 缘由] [--project id]
-lclone evolution list [--project id] [--status]
+lclone evolution add <名> [--kind script|tool|command|model|other] [--content 内容] [--ref 路径] [--reason 说明] [--project id]
+lclone evolution list                                # 当前版本 / 哈希 / 大小
+lclone evolution pull <名…> | --all [--force]        # 服务器 → 本地缓存 (拒绝覆盖本地已改的文件)
+lclone evolution publish <名> | --all [--message 说明]  # 本地改动 → 新版本 (显式动作)
+lclone evolution status                              # in-sync/behind/dirty/missing/untracked
+lclone evolution history <名>                        # 版本历史 (新→旧)
+lclone evolution rollback <名> --to <版本号>          # 回滚 (只改指向, 不删内容, 可再回滚)
+lclone evolution content <名> [--version N]          # 打印某版本原文
+lclone evolution migrate                             # 存量文件摄入为 v1 (幂等)
+# 以上 evolution 子命令均支持 --local; 默认: 设了 LCLONE_WEB_URL 就走远端 HTTP, 否则用本地 DB
 lclone review [--id N --action keep|edit|delete|promote --edit-new "…"] [--all keep|delete]
 lclone recall "查询" [--project id] [--k 5] [--no-follow]
 lclone bootstrap ["话题"] [--project id] [--k 5]   # 会话启动引导: charter+全局记忆+按话题召回+待确认洞察
@@ -128,7 +136,8 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 | `LCLONE_API_KEY` | — | 引导用鉴权 key(设了后 `/api/*` 与 `/mcp` 需带 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`;留空且库中无 token=本地免鉴权)。另可用 `lclone auth` 发放多把可吊销 token |
 | `LCLONE_HOME` | `~` | `doctor`/`install` 查找 skill 与触发配置的家目录 |
 | `LCLONE_CMD` | `lclone` | DSH 插件调用的 lclone 命令(可指到 `.venv/bin/python -m lclone`) |
-| `LCLONE_EVO_DIR` | `~/.lclone/evolutions` | 进化资产目录(文件式, 可用 `~` 展开) |
+| `LCLONE_EVO_DIR` | `~/.lclone/evolutions` | 进化资产**本地缓存**目录(可复现, 权威在服务器版本库) |
+| `LCLONE_EVO_BLOB_DIR` | `<DB 目录>/evolution-blobs` | 进化资产**内容寻址库**(权威内容; 随 `BRAIN_DB_PATH` 走) |
 | `DSH_SESSION_ID` | — | 外部会话 id, `capture` 用它做会话聚合(DSH 插件自动注入) |
 
 ## 访问令牌管理 (`lclone auth`)
@@ -192,7 +201,13 @@ python -m lclone web
 | POST | `/api/capture` | 自动捕获 `{text, project_id?, title?}` |
 | GET | `/api/pending` | 待确认洞察列表 `{items}` |
 | GET | `/api/memories` | 列出洞察 `?project_id&level&status&limit&layer` |
-| GET | `/api/evolutions` | 进化资产(文件式): `~/.lclone/evolutions/` 目录树(含 content/size/mtime) |
+| GET | `/api/evolutions` | 进化资产目录树(含 content/size/mtime; 形状不变, 底层读版本索引) |
+| GET | `/api/evolution/index` | 进化资产当前版本清单 `{items}` |
+| GET | `/api/evolution/manifest` | 客户端同步清单 `name → {version, hash, size, kind, project_id}` |
+| GET | `/api/evolution/content` | 取某版本原文 `?name&version?`(省略 version=当前版本) |
+| GET | `/api/evolution/history` | 版本历史 `?name`(新→旧) |
+| POST | `/api/evolution/publish` | 发布一版 `{name, content?, kind?, project_id?, ref?, message?}`(内容与元数据都没变则不新增版本) |
+| POST | `/api/evolution/rollback` | 回滚当前指向 `{name, version}`(只改指向, 不删内容) |
 | GET | `/api/links` | 洞察链接表(架构图连线用) |
 | POST | `/api/review` | 确认草稿 `{id, action: keep/edit/delete, content?}` |
 | POST | `/api/memories/{mid}/promote` | 上升: 项目洞察 → 全局层 |
@@ -214,5 +229,6 @@ python -m lclone web
 ```
 remember / capture / recall / bootstrap / promote / demote
 suggest / projects / review / ask / organize
-evolution_add / evolution_list / evolution_update / conflicts
+evolution_add(发布一版) / evolution_list / evolution_update(新增一版)
+evolution_history / evolution_rollback / evolution_content / conflicts
 ```

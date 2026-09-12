@@ -9,6 +9,7 @@ import sys
 from . import chat as chat_mod
 from . import config
 from . import db as db_mod
+from . import evolutions
 from . import llm
 from . import memory as mem_mod
 from . import presets
@@ -142,24 +143,172 @@ def cmd_capture(args) -> None:
             print(f"(洞察进待确认 #{decisions}, 运行 lclone review 确认)")
 
 
-def cmd_evolution_add(args) -> None:
+def _evo_ctx(args):
+    """进化资产操作的「大脑在哪」路由: 设了 LCLONE_WEB_URL → HTTP(不碰本地 DB); 否则本地 DB。
+
+    与 DSH 插件的既有约定一致。`--local` 可强制走本地 (离线/测试用)。
+    """
+    url = "" if getattr(args, "local", False) else (config.get("LCLONE_WEB_URL") or "").strip()
+    if url:
+        backend = evolutions.HttpBackend(
+            url, token=config.get("LCLONE_API_KEY") or "")
+        print(f"(大脑: {url})")
+        return backend, None
     conn = _conn(args)
-    pid = _resolve_project(conn, args.project) if args.project else None
-    if pid is None and args.project is None:
-        status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
-    if not args.content:
-        raise SystemExit("evolution 需要 --content (进化文件内容; 或直接写文件到 ~/.lclone/evolutions/)")
-    ev = mem_mod.create_evolution(
-        conn, name=args.name, kind=args.kind, content=args.content,
-        ref=args.ref, reason=args.reason)
+    return evolutions.LocalBackend(conn), conn
+
+
+def _git_toplevel(cwd=None) -> str:
+    """本机仓库根 (远端大脑下用来解析归属; 服务端看不到本机路径)。"""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                           cwd=cwd or None, capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def cmd_evolution_add(args) -> None:
+    backend, conn = _evo_ctx(args)
+    if not args.content and not args.ref:
+        raise SystemExit("evolution 需要 --content (内容) 或 --ref (项目内脚本路径)")
+    pid = None
+    if conn is not None:
+        pid = _resolve_project(conn, args.project) if args.project else None
+        if pid is None and args.project is None:
+            status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
+    elif isinstance(backend, evolutions.HttpBackend):
+        # 远端: 归属在客户端解析后随请求上报 —— 否则会静默落全局层
+        pid = backend.find_project(ref=args.project, repo_path=_git_toplevel(args.cwd))
+    try:
+        out = backend.publish(name=args.name, content=args.content, kind=args.kind,
+                              ref=args.ref, message=args.reason, project_id=pid)
+    except ValueError as e:
+        raise SystemExit(str(e))
     proj = "全局层" if pid is None else f"项目 #{pid}"
-    print(f"已沉淀进化资产 {ev} [{proj}]")
+    tail = " (内容与元数据都未变, 未新增版本)" if not out.get("changed") else ""
+    print(f"已沉淀进化资产 {out['name']} v{out['version']} [{proj}]{tail}")
+    if conn is not None and out["hash"]:
+        evolutions.materialize(conn, out["name"], out["version"])
+
 
 def cmd_evolution_list(args) -> None:
+    backend, _ = _evo_ctx(args)
+    items = backend.index()
+    for e in items:
+        pl = "全局层" if not e.get("project_id") else f"项目 {e['project_id']}"
+        ref = f" -> {e['ref']}" if e.get("ref") else ""
+        print(f"{e['name']: <30} v{e['version']:<4} {(e['hash'] or '')[:8]: <10} "
+              f"{e['size']:>6}B  {e['created_at'][:16]}  [{pl}]{ref}")
+    # 本地有、服务器没有的文件也要列出来 —— 否则升级/首次使用时 `list` 显示"暂无",
+    # 用户会以为文件丢了 (看板那边是能看到的)
+    untracked = [r["name"] for r in evolutions.status(backend.manifest())
+                 if r["state"] == "untracked"]
+    if untracked:
+        print(f"(本地未收录 {len(untracked)} 个: " + "、".join(untracked)
+              + " —— 用 lclone evolution publish 上传, 或在服务器上 migrate)")
+    if not items and not untracked:
+        print("(暂无进化资产)")
+
+
+def cmd_evolution_pull(args) -> None:
+    backend, _ = _evo_ctx(args)
+    names = list(args.names or [])
+    if not names and not args.all:
+        raise SystemExit("指定名字, 或加 --all 拉取全部")
+    res = evolutions.pull(backend, names=names, all_=args.all, force=args.force)
+    for k, label in (("written", "已拉取"), ("up_to_date", "已是最新"),
+                     ("skipped_dirty", "本地已改, 拒绝覆盖"),
+                     ("hash_mismatch", "校验失败, 未落盘 (服务器内容不可信)"),
+                     ("missing_remote", "服务器没有")):
+        if res.get(k):
+            print(f"{label}: " + ", ".join(res[k]))
+    if res.get("skipped_dirty"):
+        print("(这些文件本地改过; 想覆盖加 --force, 想保留请先 publish)")
+
+
+def cmd_evolution_status(args) -> None:
+    backend, _ = _evo_ctx(args)
+    rows = evolutions.status(backend.manifest())
+    if not rows:
+        print("(没有进化资产)")
+        return
+    for r in rows:
+        rv = f"v{r['remote_version']}" if r.get("remote_version") else "-"
+        lv = f"v{r['local_version']}" if r.get("local_version") else "-"
+        print(f"{r['state']: <10} {r['name']: <30} 本地={lv: <5} 服务器={rv}")
+
+
+def cmd_evolution_publish(args) -> None:
+    backend, _ = _evo_ctx(args)
+    if args.all:
+        res = evolutions.publish_all(backend, message=args.message)
+        for k, label in (("published", "已推送"), ("unchanged", "内容未变"),
+                         ("failed", "失败")):
+            if res.get(k):
+                names = [x.get("name") or x.get("error") for x in res[k]]
+                print(f"{label}: " + ", ".join(str(n) for n in names))
+        return
+    if not args.name:
+        raise SystemExit("指定名字, 或加 --all 推送全部 dirty/未收录文件")
+    try:
+        out = evolutions.publish_local(backend, args.name, message=args.message)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    tail = " (内容未变)" if not out.get("changed") else ""
+    print(f"已推送 {out['name']} → v{out['version']}{tail}")
+
+
+def cmd_evolution_history(args) -> None:
+    backend, _ = _evo_ctx(args)
+    rows = backend.history(args.name)
+    if not rows:
+        raise SystemExit(f"没有这个进化资产: {args.name}")
+    for r in rows:
+        print(f"v{r['version']:<4} {(r['hash'] or '(ref)'): <12} {r['size']:>6}B  "
+              f"{r['created_at'][:16]}  {r['message']}")
+
+
+def cmd_evolution_rollback(args) -> None:
+    backend, _ = _evo_ctx(args)
+    try:
+        out = backend.rollback(args.name, args.to)
+    except (ValueError, RuntimeError) as e:
+        raise SystemExit(str(e))
+    print(f"{out['name']} 已回滚到 v{out['version']} (内容未删除, 可再回滚回来)")
+
+
+def cmd_evolution_content(args) -> None:
+    backend, _ = _evo_ctx(args)
+    text = backend.content(args.name, args.version)
+    if text is None:
+        raise SystemExit(f"没有这个进化资产 (或它是 ref 类, 内容在项目仓库): {args.name}")
+    print(text, end="" if text.endswith("\n") else "\n")
+
+
+def cmd_evolution_migrate(args) -> None:
+    """把进化目录里的存量文件摄入为 v1 (只处理尚未进索引的文件)。
+
+    这是**服务端**操作: 要读的是大脑所在机器上的进化目录, 客户端看不到。远端大脑下
+    应当在大脑所在机器执行 (Docker: `docker exec lclone python -m lclone evolution migrate`)。
+    """
+    url = (config.get("LCLONE_WEB_URL") or "").strip()
+    if url and not getattr(args, "local", False):
+        raise SystemExit(
+            f"migrate 要在**大脑所在机器**上执行 (当前大脑是远端 {url})。\n"
+            f"  Docker 部署: docker exec lclone python -m lclone evolution migrate\n"
+            f"  服务器源码部署: 在服务器仓库目录执行 python -m lclone evolution migrate\n"
+            f"  (若确实要摄入**本机**的进化目录, 加 --local)")
     conn = _conn(args)
-    for e in mem_mod.list_evolution_files():
-        body = (mem_mod.read_evolution_file(e["name"]) or "").splitlines()[0] if mem_mod.read_evolution_file(e["name"]) else ""
-        print(f"{e['name'] : <28} {body[:50]}")
+    backend = evolutions.LocalBackend(conn)
+    out = evolutions.migrate_cache_files(conn)
+    if not out:
+        print("(没有需要摄入的存量文件)")
+        return
+    for r in out:
+        print(f"已摄入 {r['name']} → v{r['version']} ({r['hash'][:8]})")
+    print(f"共 {len(out)} 个; 现共有 {len(backend.index())} 个进化资产")
 
 
 def cmd_review(args) -> None:
@@ -284,7 +433,11 @@ def cmd_integrate(args) -> None:
 
 
 def cmd_backup(args) -> None:
-    """备份大脑: SQLite 快照 + 进化资产目录快照 (两处存储, 一次备份覆盖)。"""
+    """备份大脑: SQLite 快照 + 进化资产内容库快照。
+
+    洞察在 DB 里、进化资产的内容在内容寻址库(blob)里 —— 两处都要备, 才不是"只备份了一半"。
+    本地物化缓存 (`~/.lclone/evolutions/`) 是可复现的, 不进备份。
+    """
     from pathlib import Path
     import shutil
 
@@ -292,15 +445,15 @@ def cmd_backup(args) -> None:
 
     dest = db_mod.backup(db_path=args.db, dest_dir=args.dest)
     print(f"已备份到 {dest}")
-    # 进化资产是文件式的(不在 DB 里), 单独快照一份, 避免只备份了一半的大脑
-    evo = Path(mem_mod.evo_dir(create=False))
-    if evo.is_dir() and any(evo.iterdir()):
+    blobs = evolutions.blob_dir()
+    if blobs.is_dir() and any(blobs.rglob("*")):
         snap = Path(dest)
-        evo_dest = snap.with_name(snap.stem + ".evolutions")
-        if evo_dest.exists():
-            shutil.rmtree(evo_dest)
-        shutil.copytree(evo, evo_dest)
-        print(f"进化资产已备份到 {evo_dest}")
+        blob_dest = snap.with_name(snap.stem + ".blobs")
+        if blob_dest.exists():
+            shutil.rmtree(blob_dest)
+        shutil.copytree(blobs, blob_dest)
+        n = sum(1 for p in blob_dest.rglob("*") if p.is_file())
+        print(f"进化资产内容库已备份到 {blob_dest} ({n} 个对象)")
 
 
 def cmd_promote(args) -> None:
@@ -516,20 +669,74 @@ def build_parser() -> argparse.ArgumentParser:
                     help="后台静默捕获: 无 git 时落全局层而非报错 (DSH 插件用)")
     sc.set_defaults(func=cmd_capture)
 
-    sev = sub.add_parser("evolution", parents=[parent], help="进化资产 (可复用脚本/工具)")
+    sev = sub.add_parser("evolution", parents=[parent],
+                         help="进化资产: 服务器权威的版本化存储 + 本地只读缓存")
     sev_sub = sev.add_subparsers(dest="evolution_cmd", required=True)
-    sev_add = sev_sub.add_parser("add", parents=[parent], help="沉淀一个进化文件到 ~/.lclone/evolutions/ (文件名.类型)")
+
+    def _evo_common(sp):
+        sp.add_argument("--local", action="store_true",
+                        help="强制用本地 DB (默认: 设了 LCLONE_WEB_URL 就走远端 HTTP)")
+
+    sev_add = sev_sub.add_parser("add", parents=[parent],
+                                 help="沉淀一个进化资产 (发布一版内容; 内容未变则不新增版本)")
     sev_add.add_argument("name", help="文件名 (可带扩展名, 如 build-spec-map.sh; 缺省按 kind 补扩展名)")
     sev_add.add_argument("--kind", default="script", choices=["script", "tool", "command", "model", "other"])
-    sev_add.add_argument("--content", default="", help="进化文件内容 (写入 ~/.lclone/evolutions/)")
-    sev_add.add_argument("--ref", default="", help="项目内脚本路径 (内容留仓库, 不进 lclone)")
-    sev_add.add_argument("--reason", default="", help="为什么沉淀")
+    sev_add.add_argument("--content", default="", help="内容 (发布为一版)")
+    sev_add.add_argument("--ref", default="", help="项目内脚本路径 (内容留仓库, 只记引用)")
+    sev_add.add_argument("--reason", default="", help="为什么沉淀 (作为版本说明)")
     sev_add.add_argument("--project", default=None)
+    _evo_common(sev_add)
     sev_add.set_defaults(func=cmd_evolution_add)
-    sev_list = sev_sub.add_parser("list", parents=[parent], help="列出进化资产")
+
+    sev_list = sev_sub.add_parser("list", parents=[parent], help="列出进化资产 (含当前版本/哈希)")
     sev_list.add_argument("--project", default=None)
     sev_list.add_argument("--status", default=None)
+    _evo_common(sev_list)
     sev_list.set_defaults(func=cmd_evolution_list)
+
+    sev_pull = sev_sub.add_parser("pull", parents=[parent],
+                                  help="把服务器内容物化到本地缓存 (拒绝覆盖本地已改的文件)")
+    sev_pull.add_argument("names", nargs="*", help="要拉取的名字 (省略需加 --all)")
+    sev_pull.add_argument("--all", action="store_true", help="拉取全部")
+    sev_pull.add_argument("--force", action="store_true", help="覆盖本地已改的文件 (旧文件另存 .dirty.bak)")
+    _evo_common(sev_pull)
+    sev_pull.set_defaults(func=cmd_evolution_pull)
+
+    sev_st = sev_sub.add_parser("status", parents=[parent],
+                                help="本地缓存 vs 服务器: in-sync/behind/dirty/missing/untracked")
+    _evo_common(sev_st)
+    sev_st.set_defaults(func=cmd_evolution_status)
+
+    sev_pub = sev_sub.add_parser("publish", parents=[parent],
+                                 help="把本地改过的文件作为新版本推回服务器 (显式动作)")
+    sev_pub.add_argument("name", nargs="?", default=None)
+    sev_pub.add_argument("--all", action="store_true", help="推送全部 dirty / 未收录文件")
+    sev_pub.add_argument("--message", default="", help="版本说明")
+    _evo_common(sev_pub)
+    sev_pub.set_defaults(func=cmd_evolution_publish)
+
+    sev_hist = sev_sub.add_parser("history", parents=[parent], help="版本历史 (新→旧)")
+    sev_hist.add_argument("name")
+    _evo_common(sev_hist)
+    sev_hist.set_defaults(func=cmd_evolution_history)
+
+    sev_rb = sev_sub.add_parser("rollback", parents=[parent],
+                                help="回滚当前指向到某历史版本 (只改指向, 不删内容)")
+    sev_rb.add_argument("name")
+    sev_rb.add_argument("--to", type=int, required=True, help="目标版本号")
+    _evo_common(sev_rb)
+    sev_rb.set_defaults(func=cmd_evolution_rollback)
+
+    sev_ct = sev_sub.add_parser("content", parents=[parent], help="打印某版本原文")
+    sev_ct.add_argument("name")
+    sev_ct.add_argument("--version", type=int, default=None, help="版本号 (省略=当前版本)")
+    _evo_common(sev_ct)
+    sev_ct.set_defaults(func=cmd_evolution_content)
+
+    sev_mg = sev_sub.add_parser("migrate", parents=[parent],
+                                help="把进化目录里的存量文件摄入为 v1 (服务端操作; 只处理未进索引的)")
+    _evo_common(sev_mg)
+    sev_mg.set_defaults(func=cmd_evolution_migrate)
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")
     sv.add_argument("--id", type=int, default=None)

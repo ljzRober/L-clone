@@ -123,6 +123,33 @@ CREATE TABLE IF NOT EXISTS seed_state (
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 进化资产(evolution)的版本索引: 内容以 sha256 存放于 blob 目录 (见 lclone/evolutions.py),
+-- 这里只存索引元数据。evo_versions **只追加**(不可变), evo_current 是当前版本指针
+-- (回滚 = 改指针, blob 一动不动)。表名用 evo_* 前缀, 以避开 init() 对遗留 evolutions 表的清理。
+CREATE TABLE IF NOT EXISTS evo_versions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  hash       TEXT NOT NULL DEFAULT '',
+  size       INTEGER NOT NULL DEFAULT 0,
+  kind       TEXT NOT NULL DEFAULT 'other',
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  ref        TEXT NOT NULL DEFAULT '',
+  message    TEXT NOT NULL DEFAULT '',
+  source_ref TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(name, version)
+);
+
+CREATE TABLE IF NOT EXISTS evo_current (
+  name       TEXT PRIMARY KEY,
+  version    INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evo_versions_name ON evo_versions(name, version DESC);
+CREATE INDEX IF NOT EXISTS idx_evo_versions_hash ON evo_versions(hash);
+
 CREATE INDEX IF NOT EXISTS idx_memories_proj ON memories(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_proj ON sessions(project_id);
@@ -170,6 +197,8 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(session_key)")
     # 迁移: 进化资产改为文件式 (~/.lclone/evolutions/), 不再用 SQL 表
     # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
+    # 注意: 版本化存储用的是**新表名** evo_versions / evo_current (见 SCHEMA),
+    # 故意不复用这两个名字 —— 否则每次 init 都会把版本索引删掉。
     conn.execute("DROP TABLE IF EXISTS evolution_links")
     conn.execute("DROP TABLE IF EXISTS evolutions")
     tok = _fts_tokenizer(conn)

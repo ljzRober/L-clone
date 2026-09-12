@@ -36,12 +36,13 @@ docker compose up -d
 
 数据持久化在 `./data/lclone.db`, 容器重启不丢失。
 
-**进化资产(evolution)是文件式的**, compose 把 `LCLONE_EVO_DIR` 指到了 `/data/evolutions`
-(同一个持久化卷), 否则容器重建时进化文件会丢。所以**备份要覆盖整个 `data/` 目录**, 而不只是那个 db 文件:
+**进化资产(evolution)的内容库**默认跟着数据库走, 即 `/data/evolution-blobs/`(同一个持久化卷);
+容器内的 `~/.lclone/evolutions/` 只是**可复现的本地缓存**, 丢了 `lclone evolution pull --all` 就能重建。
+所以**备份要覆盖 DB 与内容库两处**, 一条命令即可:
 
 ```bash
-docker exec lclone python -m lclone backup --dest /data/backups   # DB + 进化资产一次快照
-# 或直接在宿主机打包: tar czf lclone-data-$(date +%F).tgz data/
+docker exec lclone python -m lclone backup --dest /data/backups   # DB + 内容库一次快照
+# 或直接在宿主机打包整个卷: tar czf lclone-data-$(date +%F).tgz data/
 ```
 
 > 服务器上**务必设置 `LCLONE_API_KEY`**, 否则任何能访问 8000 端口的人都能读写你的记忆。
@@ -55,7 +56,8 @@ Web 服务同时暴露 MCP 端点, Claude Code / Codex / DSH 等可远程读写�
 鉴权:   Authorization: Bearer <LCLONE_API_KEY>   或   X-API-Key: <key>
 工具:   remember / capture / recall / bootstrap / promote / demote
         suggest / projects / review / ask / organize
-        evolution_add / evolution_list / evolution_update / conflicts
+        evolution_add(发布一版) / evolution_list / evolution_update(新增一版)
+        evolution_history / evolution_rollback / evolution_content / conflicts
 ```
 
 配置示例(Claude Code 的 MCP server, 走 streamable-http):

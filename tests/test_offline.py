@@ -3,10 +3,12 @@
 运行: python tests/test_offline.py
 """
 
+import json
 import os
 import pathlib
 import sys
 import tempfile
+import urllib.request
 
 os.environ["BRAIN_LLM"] = "dummy"
 os.environ.pop("OPENAI_API_KEY", None)
@@ -32,7 +34,10 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 
 tmp = tempfile.mkdtemp(prefix="brain_test_")
 dbp = os.path.join(tmp, "t.db")
-os.environ["LCLONE_EVO_DIR"] = os.path.join(tmp, "evo")  # 进化文件目录 (文件式, 指向临时目录)
+os.environ["LCLONE_EVO_DIR"] = os.path.join(tmp, "evo")  # 本地物化缓存目录 (指向临时目录)
+os.environ["LCLONE_EVO_BLOB_DIR"] = os.path.join(tmp, "blobs")  # 内容寻址库 (临时)
+# 离线测试必须确定性地走本地 DB —— 开发机的 shell 可能 export 了远端大脑地址
+os.environ.pop("LCLONE_WEB_URL", None)
 demo_root = ROOT / "examples" / "demo_project"
 
 conn = db_mod.init(dbp)
@@ -782,11 +787,355 @@ _bk_buf = io.StringIO()
 with contextlib.redirect_stdout(_bk_buf):
     cli.main(["backup", "--db", dbp, "--dest", _bk_dest])
 _bk_dbs = sorted(pathlib.Path(_bk_dest).glob("lclone-*.db"))
-_bk_evos = sorted(pathlib.Path(_bk_dest).glob("lclone-*.evolutions"))
-check("159 备份同时覆盖 DB 与进化资产",
-      len(_bk_dbs) == 1 and len(_bk_evos) == 1 and _bk_evos[0].is_dir()
-      and any(_bk_evos[0].iterdir()),
+_bk_blobs = sorted(pathlib.Path(_bk_dest).glob("lclone-*.blobs"))
+check("159 备份同时覆盖 DB 与进化资产内容库",
+      len(_bk_dbs) == 1 and len(_bk_blobs) == 1 and _bk_blobs[0].is_dir()
+      and any(p.is_file() for p in _bk_blobs[0].rglob("*")),
       _bk_buf.getvalue().strip().replace("\n", " | ")[:110])
+
+# ---- 进化资产: 服务器权威的内容寻址版本化存储 ----
+from lclone import evolutions as evo_store  # noqa: E402
+
+_c0 = evo_store.blob_count()
+_p1 = evo_store.publish(conn, "ver-demo.sh", "echo v1", message="首版")
+check("160 publish 建 v1", _p1["version"] == 1 and _p1["changed"] and _p1["hash"],
+      str(_p1))
+_p1b = evo_store.publish(conn, "ver-demo.sh", "echo v1")
+check("161 publish 幂等 (同内容不新增版本)",
+      _p1b["version"] == 1 and _p1b["changed"] is False, str(_p1b))
+check("162 同内容只存一份 blob (内容寻址去重)",
+      evo_store.blob_count() == _c0 + 1, f"{_c0} -> {evo_store.blob_count()}")
+
+_p2 = evo_store.publish(conn, "ver-demo.sh", "echo v2", message="改一版")
+check("163 改内容 → v2", _p2["version"] == 2 and _p2["changed"], str(_p2))
+_h = evo_store.history(conn, "ver-demo.sh")
+check("164 版本历史只追加 (新→旧)", [h["version"] for h in _h] == [2, 1], str(_h))
+check("165 旧版本内容仍可取回",
+      evo_store.resolve(conn, "ver-demo.sh", 1)["content"] == "echo v1")
+_c_before_rb = evo_store.blob_count()
+_rb = evo_store.rollback(conn, "ver-demo.sh", 1)
+check("166 回滚只改指向, 不动 blob",
+      evo_store.resolve(conn, "ver-demo.sh")["content"] == "echo v1"
+      and evo_store.blob_count() == _c_before_rb, str(_rb["version"]))
+_rb_err = False
+try:
+    evo_store.rollback(conn, "ver-demo.sh", 99)
+except ValueError:
+    _rb_err = True
+check("167 回滚到不存在的版本报错", _rb_err)
+
+_p_ref = evo_store.publish(conn, "in-repo.sh", None, ref="scripts/foo.sh", kind="script")
+check("168 ref 类只记引用 (hash 空 / 不进 manifest)",
+      _p_ref["hash"] == "" and "in-repo.sh" not in evo_store.manifest_index(conn),
+      str(_p_ref))
+check("169 ref 类 resolve 返回指针而非内容",
+      evo_store.resolve(conn, "in-repo.sh")["content"] is None)
+
+# ---- 本地只读缓存: pull / status / publish ----
+_backend = evo_store.LocalBackend(conn)
+_res = evo_store.pull(_backend, all_=True)
+check("170 pull --all 物化到本地缓存 + 写 manifest",
+      "ver-demo.sh" in _res["written"]
+      and evo_store.manifest_path().is_file()
+      and (evo_store.cache_dir() / "ver-demo.sh").is_file(),
+      str(_res["written"])[:80])
+check("171 再 pull 无变化 → up_to_date",
+      "ver-demo.sh" in evo_store.pull(_backend, all_=True)["up_to_date"])
+
+_cache_file = evo_store.cache_dir() / "ver-demo.sh"
+_before_dirty = _cache_file.read_text(encoding="utf-8")
+_cache_file.write_text("echo 我手改的", encoding="utf-8")
+_st = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
+check("172 本地改过 → status=dirty", _st.get("ver-demo.sh") == "dirty", str(_st.get("ver-demo.sh")))
+_dres = evo_store.pull(_backend, ["ver-demo.sh"])
+check("173 pull 拒绝覆盖 dirty 文件",
+      _dres["skipped_dirty"] == ["ver-demo.sh"]
+      and _cache_file.read_text(encoding="utf-8") == "echo 我手改的", str(_dres))
+_fres = evo_store.pull(_backend, ["ver-demo.sh"], force=True)
+check("174 --force 才覆盖 (旧文件另存 .dirty.bak)",
+      _fres["written"] == ["ver-demo.sh"]
+      and _cache_file.read_text(encoding="utf-8") == "echo v1"
+      and (_cache_file.with_name(_cache_file.name + ".dirty.bak")).is_file(),
+      str(_fres))
+
+_cache_file.write_text("echo 从本地推上去的新内容", encoding="utf-8")
+_pub = evo_store.publish_local(_backend, "ver-demo.sh", message="从本地推")
+check("175 publish_local 推新版本 v3", _pub["version"] == 3 and _pub["changed"], str(_pub))
+_st2 = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
+check("176 推送后回到 in-sync", _st2.get("ver-demo.sh") == "in-sync", str(_st2.get("ver-demo.sh")))
+
+_orphan = evo_store.cache_dir() / "hand-made.md"
+_orphan.write_text("本地手写的资产", encoding="utf-8")
+_st3 = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
+check("177 本地有服务器没有 → untracked", _st3.get("hand-made.md") == "untracked", str(_st3))
+_allres = evo_store.publish_all(_backend, message="批量推")
+check("178 publish --all 推送 dirty/untracked",
+      "hand-made.md" in [x["name"] for x in _allres["published"]], str(_allres))
+
+_mig = evo_store.cache_dir() / "legacy-tool.py"
+_mig.write_text("print('legacy')", encoding="utf-8")
+_mig_out = evo_store.migrate_cache_files(conn)
+check("179 migrate 把存量文件摄入为 v1",
+      [m["name"] for m in _mig_out] == ["legacy-tool.py"]
+      and evo_store.current(conn, "legacy-tool.py")["version"] == 1, str(_mig_out))
+check("180 migrate 幂等 (已收录的不再处理)",
+      evo_store.migrate_cache_files(conn) == [])
+
+# ---- CLI: evolution 子命令 (本地) ----
+_cli_evo = io.StringIO()
+with contextlib.redirect_stdout(_cli_evo):
+    cli.main(["evolution", "history", "ver-demo.sh", "--local", "--db", dbp])
+check("181 CLI evolution history", "v3" in _cli_evo.getvalue()
+      and "v1" in _cli_evo.getvalue(), _cli_evo.getvalue()[:60])
+_cli_evo = io.StringIO()
+with contextlib.redirect_stdout(_cli_evo):
+    cli.main(["evolution", "status", "--local", "--db", dbp])
+check("182 CLI evolution status", "in-sync" in _cli_evo.getvalue(),
+      _cli_evo.getvalue()[:60])
+_cli_evo = io.StringIO()
+with contextlib.redirect_stdout(_cli_evo):
+    cli.main(["evolution", "rollback", "ver-demo.sh", "--to", "1", "--local", "--db", dbp])
+check("183 CLI evolution rollback", "已回滚到 v1" in _cli_evo.getvalue(),
+      _cli_evo.getvalue()[:60])
+
+# ---- 远端路由: 设了 LCLONE_WEB_URL 就走 HTTP ----
+_http_buf = io.StringIO()
+_prev_env = {k: os.environ.get(k) for k in ("LCLONE_WEB_URL", "LCLONE_API_KEY")}
+os.environ["LCLONE_WEB_URL"] = "http://brain.example:8000"
+os.environ["LCLONE_API_KEY"] = "tok-123"
+cfg_mod._loaded = False
+try:
+    with contextlib.redirect_stdout(_http_buf):
+        _bk2, _cn2 = cli._evo_ctx(type("A", (), {"local": False, "db": dbp})())
+finally:
+    for _k, _v in _prev_env.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+    cfg_mod._loaded = False
+check("184 设了 LCLONE_WEB_URL → 选 HttpBackend 且不碰本地 DB",
+      isinstance(_bk2, evo_store.HttpBackend) and _cn2 is None
+      and "brain.example" in _http_buf.getvalue(),
+      _http_buf.getvalue().strip()[:60])
+
+# ---- HttpBackend 走 REST + 带鉴权头 (stub 掉 urlopen) ----
+_seen = {}
+
+
+class _FakeResp:
+    def __init__(self, body):
+        self._body = body.encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_urlopen(req, timeout=None):
+    _seen["url"] = req.full_url
+    _seen["auth"] = req.get_header("Authorization")
+    if "/api/evolution/manifest" in req.full_url:
+        return _FakeResp(json.dumps({"items": {"x.sh": {"version": 2, "hash": "h2",
+                                                        "size": 3, "kind": "script",
+                                                        "project_id": None}}}))
+    if "/api/evolution/content" in req.full_url:
+        return _FakeResp(json.dumps({"content": "echo x", "hash": "h2"}))
+    if "/api/evolution/index" in req.full_url:
+        return _FakeResp(json.dumps({"items": []}))
+    return _FakeResp("{}")
+
+
+_orig_urlopen = urllib.request.urlopen
+urllib.request.urlopen = _fake_urlopen
+try:
+    _hb = evo_store.HttpBackend("http://brain.example:8000", "tok-xyz")
+    _man = _hb.manifest()
+    _cont = _hb.content("x.sh", 2)
+finally:
+    urllib.request.urlopen = _orig_urlopen
+check("185 HttpBackend 解析 manifest/content",
+      _man["x.sh"]["version"] == 2 and _cont == "echo x", f"{_man}")
+check("186 HttpBackend 带 Bearer 鉴权头",
+      _seen.get("auth") == "Bearer tok-xyz", str(_seen.get("auth")))
+
+# ---- REST: /api/evolution/* + /api/evolutions 形状不变 ----
+try:
+    from fastapi.testclient import TestClient
+    _web_dbp = os.path.join(tempfile.mkdtemp(prefix="evoapi_"), "w.db")
+    from lclone import web as _web_mod
+    _tc = TestClient(_web_mod.create_app(_web_dbp))
+    check("187 /api/evolution/publish 建 v1",
+          _tc.post("/api/evolution/publish",
+                   json={"name": "api.sh", "content": "echo api"}).json()
+          ["result"]["version"] == 1)
+    check("188 /api/evolution/publish 幂等",
+          _tc.post("/api/evolution/publish",
+                   json={"name": "api.sh", "content": "echo api"}).json()
+          ["result"]["changed"] is False)
+    _tc.post("/api/evolution/publish", json={"name": "api.sh", "content": "echo api2"})
+    check("189 /api/evolution/history 两版",
+          [h["version"] for h in
+           _tc.get("/api/evolution/history?name=api.sh").json()["items"]] == [2, 1])
+    check("190 /api/evolution/rollback",
+          _tc.post("/api/evolution/rollback",
+                   json={"name": "api.sh", "version": 1}).json()["result"]["version"] == 1)
+    _evo_items = _tc.get("/api/evolutions").json()["items"]
+    _old_keys = {"name", "ext", "size", "mtime", "is_dir", "children", "content"}
+    check("191 /api/evolutions 响应形状不变 (前端零改动)",
+          _evo_items and _old_keys <= set(_evo_items[0].keys())
+          and _evo_items[0]["content"] == "echo api",
+          str(sorted(_evo_items[0].keys())))
+except ImportError as e:  # 无 fastapi 环境跳过
+    print(f"SKIP 187-191 (缺依赖: {e})")
+
+# ---- 审查修复的回归用例 ----
+_bad_content = "echo v1"
+_bad_hash = evo_store.sha256_text(_bad_content)
+evo_store.publish(conn, "heal.sh", _bad_content)
+_bp = evo_store._blob_path(_bad_hash)
+_bp.write_text("被篡改的内容", encoding="utf-8")
+check("192 损坏内容读为缺失 (不返回被篡改内容)",
+      evo_store.resolve(conn, "heal.sh")["content"] is None)
+evo_store.publish(conn, "heal.sh", _bad_content)
+check("193 再次发布同一内容 → 自愈恢复可读",
+      evo_store.resolve(conn, "heal.sh")["content"] == _bad_content)
+
+
+class _LieBackend(evo_store.LocalBackend):
+    """模拟"传回来的内容与清单哈希不符"的后端。"""
+
+    def content(self, name, version=None):
+        return "内容被中间人改过"
+
+
+_orig_blob = evo_store.cache_dir() / "lie.sh"
+_orig_blob.write_text("本地内容(与服务器不同)", encoding="utf-8")
+evo_store.publish(conn, "lie.sh", "远程内容")
+_lie = evo_store.pull(_LieBackend(conn), ["lie.sh"], force=True)
+check("194 pull 校验哈希失败 → 不落盘且不覆盖本地",
+      _lie["hash_mismatch"] == ["lie.sh"]
+      and _orig_blob.read_text(encoding="utf-8") == "本地内容(与服务器不同)", str(_lie))
+
+_m1 = evo_store.publish(conn, "meta.sh", "echo meta", kind="script")
+_m2 = evo_store.publish(conn, "meta.sh", "echo meta", kind="tool")
+check("195 内容不变但元数据变了 → 记录新版本",
+      _m2["changed"] and _m2["version"] == _m1["version"] + 1, str(_m2))
+_m3 = evo_store.publish(conn, "meta.sh", "echo meta", kind="tool")
+check("196 内容与元数据都没变 → 幂等", _m3["changed"] is False, str(_m3))
+
+(evo_store.cache_dir() / "noext").write_text("echo noext", encoding="utf-8")
+_noext = evo_store.publish_local(_backend, "noext")
+_st_noext = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
+check("197 无扩展名发布后按归一化名记账 (无幽灵 missing)",
+      _noext["name"] == "noext.txt" and _st_noext.get("noext.txt") == "in-sync"
+      and "noext.txt" not in [k for k, v in _st_noext.items() if v == "missing"],
+      f"{_noext['name']} {_st_noext.get('noext.txt')}")
+
+check("198 .dirty.bak 不算进化资产",
+      all(not n.endswith(".dirty.bak") for n in evo_store._local_files())
+      and not any("dirty.bak" in x["name"] for x in
+                  evo_store.publish_all(_backend)["published"]))
+
+evo_store.publish(conn, "behind.sh", "echo b1")
+evo_store.publish(conn, "behind.sh", "echo b2")
+evo_store.pull(_backend, ["behind.sh"])
+evo_store.rollback(conn, "behind.sh", 1)
+_st_b = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
+check("199 回滚后干净的本地报 behind (与 pull 允许覆盖一致)",
+      _st_b.get("behind.sh") == "behind", str(_st_b.get("behind.sh")))
+check("200 publish --all 不会把回滚悄悄推回去",
+      "behind.sh" not in [x["name"] for x in evo_store.publish_all(_backend)["published"]])
+
+_ref_conflict = False
+try:
+    evo_store.publish(conn, "both.sh", "内容", ref="scripts/both.sh")
+except ValueError:
+    _ref_conflict = True
+check("201 ref 与 content 不能同时给", _ref_conflict)
+
+# upgrade 场景: 文件在、索引空 —— list 也要能看到 (否则用户以为文件丢了)
+_up = tempfile.mkdtemp(prefix="upg_")
+_up_db = os.path.join(_up, "up.db")
+_up_conn = db_mod.init(_up_db)
+_prev_evo_dir = os.environ.get("LCLONE_EVO_DIR")
+_prev_blob_dir = os.environ.get("LCLONE_EVO_BLOB_DIR")
+os.environ["LCLONE_EVO_DIR"] = os.path.join(_up, "evo")
+os.environ["LCLONE_EVO_BLOB_DIR"] = os.path.join(_up, "blobs")
+try:
+    pathlib.Path(os.environ["LCLONE_EVO_DIR"]).mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "old-asset.sh").write_text(
+        "echo old", encoding="utf-8")
+    _lbuf = io.StringIO()
+    with contextlib.redirect_stdout(_lbuf):
+        cli.main(["evolution", "list", "--local", "--db", _up_db])
+    _pre = _lbuf.getvalue()
+    _lbuf = io.StringIO()
+    with contextlib.redirect_stdout(_lbuf):
+        cli.main(["evolution", "migrate", "--local", "--db", _up_db])
+    _mbuf = _lbuf.getvalue()
+    _post = evo_store.current(_up_conn, "old-asset.sh")
+finally:
+    if _prev_evo_dir is None:
+        os.environ.pop("LCLONE_EVO_DIR", None)
+    else:
+        os.environ["LCLONE_EVO_DIR"] = _prev_evo_dir
+    if _prev_blob_dir is None:
+        os.environ.pop("LCLONE_EVO_BLOB_DIR", None)
+    else:
+        os.environ["LCLONE_EVO_BLOB_DIR"] = _prev_blob_dir
+check("202 索引为空时 list 仍列出本地未收录文件",
+      "old-asset.sh" in _pre and "未收录" in _pre, _pre.strip()[:80])
+check("203 升级路径: migrate 把既有文件摄入为 v1",
+      _post is not None and _post["version"] == 1 and "v1" in _mbuf, _mbuf.strip()[:60])
+
+# ---- insight → evolution 链接: 引用真正写进洞察内容, 召回能顺边带出 ----
+_lk_ins = mem_mod.remember(conn, "要点：用统一脚本跑 spec 地图。\n归属：无",
+                           level="insight", project_id=pid, confirmed=True)
+evo_store.publish(conn, "link-demo.sh", "echo linked")
+mem_mod.link_insight_to_evolution(conn, _lk_ins, "link-demo.sh")
+_lk_content = conn.execute("SELECT content FROM memories WHERE id=?",
+                           (_lk_ins,)).fetchone()["content"]
+check("204 链接写入 [[evo:...]] 引用",
+      "[[evo:link-demo.sh]]" in _lk_content, _lk_content[-48:])
+mem_mod.link_insight_to_evolution(conn, _lk_ins, "link-demo.sh")
+_lk2 = conn.execute("SELECT content FROM memories WHERE id=?",
+                    (_lk_ins,)).fetchone()["content"]
+check("205 重复链接幂等 (不重复追加)", _lk2.count("[[evo:link-demo.sh]]") == 1)
+check("206 链接后可顺边带出资产",
+      any(e["name"] == "link-demo.sh"
+          for e in mem_mod.evolutions_for_insight(conn, _lk_ins)))
+_lk_err = False
+try:
+    mem_mod.link_insight_to_evolution(conn, 99999999, "link-demo.sh")
+except ValueError:
+    _lk_err = True
+check("207 链接不存在的 insight 报错", _lk_err)
+
+# MCP 的 insight 参数真的接线 (call_tool 走自己的连接, 临时指向测试库)
+_lk_mcp = mem_mod.remember(conn, "要点：MCP 链接测试。\n归属：无",
+                           level="insight", project_id=pid, confirmed=True)
+_prev_bdp = os.environ.get("BRAIN_DB_PATH")
+os.environ["BRAIN_DB_PATH"] = dbp
+try:
+    _mcp_out = mcp_srv.call_tool("evolution_add", {
+        "name": "mcp-link.sh", "content": "echo mcp",
+        "project": "global", "insight": [_lk_mcp]})
+finally:
+    if _prev_bdp is None:
+        os.environ.pop("BRAIN_DB_PATH", None)
+    else:
+        os.environ["BRAIN_DB_PATH"] = _prev_bdp
+_lk_mcp_content = conn.execute("SELECT content FROM memories WHERE id=?",
+                               (_lk_mcp,)).fetchone()["content"]
+check("208 MCP evolution_add 的 insight 参数建立链接",
+      "[[evo:mcp-link.sh]]" in _lk_mcp_content and "已链接 insight" in _mcp_out,
+      _mcp_out.strip()[:70])
 
 print()
 if fails:

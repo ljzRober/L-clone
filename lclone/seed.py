@@ -19,6 +19,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from . import evolutions
 from . import llm
 from .db import pack_vec
 
@@ -64,6 +65,12 @@ def _evolution_files() -> List[Path]:
             seen.add(p.name)
             files.append(p)
     return files
+
+
+def _kind_of(src: Path) -> str:
+    """按扩展名反推 kind (种子文件的版本记录用)。"""
+    ext = src.suffix.lower().lstrip(".")
+    return {"sh": "script", "py": "tool", "md": "model"}.get(ext, "other")
 
 
 def available() -> bool:
@@ -126,28 +133,33 @@ def apply(conn: sqlite3.Connection, force: bool = False,
         )
         _mark(conn, state_key)
 
-    # ---- 进化文件 (已存在则不覆盖) ----
-    if not dry_run:
-        mem_mod.evo_dir()  # 真正要写时才建目录
-    evo_root = Path(mem_mod.evo_dir(create=False))
+    # ---- 进化资产 (走版本化发布; 已存在则不覆盖) ----
+    evo_root = evolutions.cache_dir(create=not dry_run)
     for src in _evolution_files():
         name = src.name
         state_key = f"evolution:{name}"
         target = evo_root / name
-        if _seeded(conn, state_key) and not force:
-            report["evolutions_skipped"].append(name)
-            continue
-        if target.exists() and not force:
+        cur = evolutions.current(conn, name)
+        # 已在索引里 或 本地已有同名文件 (未收录) → 不动 (尊重用户已有的资产)
+        if not force and (cur is not None or target.exists()):
             report["evolutions_skipped"].append(name)
             if not dry_run:
                 _mark(conn, state_key)
             continue
+        if _seeded(conn, state_key) and not force:
+            report["evolutions_skipped"].append(name)
+            continue
         report["evolutions_added"].append(name)
         if dry_run:
             continue
-        target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        out = evolutions.publish(conn, name, src.read_text(encoding="utf-8"),
+                                 message="首次种子内容", kind=_kind_of(src),
+                                 source_ref=f"seed:v{SEED_VERSION}:{name}")
+        evolutions.materialize(conn, name, out["version"])
         if src.suffix == ".sh":
-            target.chmod(0o755)
+            materialized = evolutions.cache_dir() / name
+            if materialized.is_file():
+                materialized.chmod(0o755)
         _mark(conn, state_key)
 
     if not dry_run:

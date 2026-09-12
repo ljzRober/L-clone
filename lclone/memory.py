@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import db as db_mod
+from . import evolutions
 from . import gate
 from . import llm
 from .db import pack_vec, unpack_vec
@@ -377,107 +378,133 @@ def set_status(conn: sqlite3.Connection, memory_id: int, status: str) -> None:
     conn.commit()
 
 
-# ---------------------------------------------------------------- 进化资产 (evolution) —— 文件式
-# 进化资产 = ~/.lclone/evolutions/ 下的文件 (filename.ext), insight 用 [[evo:name.ext]] 指向。
-# 项目构建需要的脚本进仓库; 项目无关的工具/模型/模板放记忆区 (~/.lclone/evolutions)。不入 SQL 表。
+# ---------------------------------------------------------------- 进化资产 (evolution)
+# 服务器唯一权威的**版本化内容寻址存储**; 本地 ~/.lclone/evolutions/ 只是只读缓存。
+# 实现全在 lclone/evolutions.py; 这里保留既有公开函数作为薄委托 (调用方与测试不受影响)。
 EVO_REF_RE = re.compile(r"\[\[evo:([^\]\n]+)\]\]")
-_KIND_EXT = {"script": "sh", "tool": "py", "command": "sh", "model": "md", "other": "txt"}
 
 
 def evo_dir(create: bool = True) -> str:
-    """进化文件目录 (记忆区, 全局)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。
-
-    create=False 时只解析路径、不建目录 (供 --dry-run 之类的只读检查用)。
-    """
-    d = Path(os.environ.get("LCLONE_EVO_DIR") or (Path.home() / ".lclone" / "evolutions"))
-    if create:
-        d.mkdir(parents=True, exist_ok=True)
-    return str(d)
+    """本地物化缓存目录 (记忆区, 全局)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。"""
+    return str(evolutions.cache_dir(create=create))
 
 
 def _evo_path(name: str) -> Path:
     # 只允许文件名, 防止穿越
-    safe = Path(name).name
-    return Path(evo_dir()) / safe
+    return evolutions.cache_dir() / Path(name).name
 
 
 def _ensure_ext(name: str, kind: str) -> str:
-    base = name.rsplit("/", 1)[-1]
-    if "." in base and not base.startswith("."):
-        return name
-    return name + "." + _KIND_EXT.get(kind or "other", "txt")
+    return evolutions.ensure_ext(name, kind)
 
 
 def create_evolution(conn: sqlite3.Connection, name: str, kind: str = "script",
                      content: str = "", ref: str = "", reason: str = "",
                      project_id: Optional[int] = None, source_ref: str = "",
                      status: str = "active") -> str:
-    """沉淀一个进化文件到记忆区 (filesystem, 不入 SQL)。name 可带扩展名; 无则按 kind 兜底。
+    """沉淀一个进化资产 = 发布一版内容 (内容未变则不新增版本), 并物化到本地缓存。
 
-    返回写入的文件名。项目内脚本保持 ref (内容在仓库), 不改写本文件; 项目无关内容直接存文件。
+    返回文件名。项目内脚本传 ref (内容在仓库) 时只记引用、不写 blob。
     """
-    fname = _ensure_ext(name, kind)
-    _evo_path(fname).write_text(content or "", encoding="utf-8")
-    return fname
+    out = evolutions.publish(conn, name, None if ref else (content or ""), kind=kind,
+                             project_id=project_id, ref=ref, message=reason,
+                             source_ref=source_ref)
+    if out["hash"]:
+        evolutions.materialize(conn, out["name"], out["version"])
+    return out["name"]
 
 
 def update_evolution(conn: sqlite3.Connection, evolution_id: str,
                      content: Optional[str] = None, ref: Optional[str] = None,
                      status: Optional[str] = None, name: Optional[str] = None,
                      reason: Optional[str] = None, ext: Optional[str] = None) -> None:
-    """同步一个进化文件到最新版本 (脚本被改时调用)。evolution_id 为文件名。"""
-    p = _evo_path(str(evolution_id))
-    if content is not None and p.exists():
-        p.write_text(content, encoding="utf-8")
+    """同步一个进化文件到最新版本 (脚本被改时调用) —— append-only 地新增一版。"""
+    if content is None:
+        return
+    out = evolutions.publish(conn, str(evolution_id), content,
+                             message=reason or "update")
+    evolutions.materialize(conn, out["name"], out["version"])
 
 
 def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
                               evolution_id: str) -> None:
-    """insight → evolution 链接 = insight 内容里的 [[evo:文件名]]; 无 SQL 表, 此处为空操作。"""
-    pass
+    """建立 insight → evolution 链接: 在 insight 内容末尾补一句 `[[evo:文件名]]`。
+
+    链接的载体就是这段引用文本(没有额外 SQL 表): 召回命中该 insight 时会顺这条边把
+    进化资产一起带出。已有引用则不动; insight 不存在则报错。
+    """
+    row = conn.execute("SELECT content FROM memories WHERE id=?",
+                       (insight_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"记忆不存在: {insight_id}")
+    content = row["content"] or ""
+    ref = f"[[evo:{evolution_id}]]"
+    if ref in content:
+        return
+    new_content = content.rstrip() + "\n" + ref
+    emb = llm.embed_one(new_content)
+    conn.execute("UPDATE memories SET content=?, embedding=? WHERE id=?",
+                 (new_content, pack_vec(emb), insight_id))
+    _store_links(conn, insight_id, new_content)
+    conn.commit()
 
 
-def list_evolution_files() -> List[dict]:
-    """扫进化目录, 返回 [{name, ext, size, mtime, is_dir, children}] (文件目录 UI 用, 递归)。"""
+def _scan_cache_tree() -> List[dict]:
+    """兜底: 只扫本地缓存目录 (拿不到索引时用, 保持旧行为)。"""
     out = []
-    for p in sorted(Path(evo_dir()).iterdir()):
-        if p.is_dir():
-            out.append({"name": p.name, "ext": "", "size": 0, "mtime": "",
-                        "is_dir": True,
-                        "children": list_evolution_files_sub(p)})
-        elif p.is_file():
-            st = p.stat()
-            name = p.name
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            out.append({"name": name, "ext": ext, "size": st.st_size,
-                        "mtime": _fmt_mtime(st.st_mtime), "is_dir": False, "children": []})
+    d = evolutions.cache_dir(create=False)
+    if not d.is_dir():
+        return out
+    for p in sorted(d.iterdir()):
+        if p.is_file() and not p.name.startswith("."):
+            out.append({"name": p.name,
+                        "ext": p.name.rsplit(".", 1)[-1].lower() if "." in p.name else "",
+                        "size": p.stat().st_size,
+                        "mtime": evolutions._fmt_mtime(p.stat().st_mtime),
+                        "is_dir": False, "children": []})
     return out
+
+
+def list_evolution_files(conn: Optional[sqlite3.Connection] = None) -> List[dict]:
+    """目录 UI 用清单: 优先读版本索引 (含本地未收录文件); 无连接时退回扫目录。"""
+    if conn is not None:
+        try:
+            return evolutions.tree(conn)
+        except Exception:
+            pass
+    return _scan_cache_tree()
 
 
 def list_evolution_files_sub(d: Path) -> List[dict]:
-    out = []
-    for p in sorted(d.iterdir()):
-        if p.is_dir():
-            out.append({"name": p.name, "ext": "", "size": 0, "mtime": "",
-                        "is_dir": True, "children": list_evolution_files_sub(p)})
-        elif p.is_file():
-            st = p.stat()
-            name = p.name
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            out.append({"name": name, "ext": ext, "size": st.st_size,
-                        "mtime": _fmt_mtime(st.st_mtime), "is_dir": False, "children": []})
-    return out
+    """兼容保留 (旧递归接口); 版本化存储是扁平的, 不再有子目录。"""
+    return []
 
 
 def _fmt_mtime(ts: float) -> str:
-    import datetime
-    return datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+    return evolutions._fmt_mtime(ts)
 
 
-def read_evolution_file(name: str) -> Optional[str]:
-    p = _evo_path(name)
+def read_evolution_file(name: str,
+                        conn: Optional[sqlite3.Connection] = None) -> Optional[str]:
+    """读当前版本内容 (索引优先, 退回本地缓存文件)。ref 类返回指针说明。
+
+    无 conn 时**只读本地缓存文件, 不打开任何数据库** —— 开库本身就有副作用
+    (PRAGMA journal_mode 会写文件), 远端客户端更不该因此凭空生出本地库。
+    需要权威内容请传 conn。
+    """
+    if conn is not None:
+        try:
+            row = evolutions.resolve(conn, name)
+            if row is not None:
+                if row["content"] is not None:
+                    return row["content"]
+                if row.get("ref"):
+                    return f"# 内容在项目仓库: {row['ref']}\n"
+                # 索引里有但内容读不出来 (blob 缺失/损坏) → 继续尝试本地缓存副本
+        except Exception:
+            pass
     try:
-        return p.read_text(encoding="utf-8")
+        return (evolutions.cache_dir(create=False) / Path(name).name).read_text(encoding="utf-8")
     except Exception:
         return None
 
@@ -489,19 +516,19 @@ def evo_refs(content: str) -> List[str]:
 
 def list_evolutions(conn: sqlite3.Connection, project_id: Optional[int] = None,
                     status: Optional[str] = None, limit: int = 50) -> List[dict]:
-    """列出进化文件 (扫目录), 兼容旧签名 (忽略 conn/project/status)。"""
-    return list_evolution_files()
+    """列出进化文件 (读版本索引)。"""
+    return list_evolution_files(conn)
 
 
 def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[dict]:
-    """取某 insight 经 [[evo:...]] 指向的进化文件。"""
+    """取某 insight 经 [[evo:...]] 指向的进化文件 (读当前版本内容)。"""
     row = conn.execute("SELECT content FROM memories WHERE id=?",
                        (insight_id,)).fetchone()
     if not row:
         return []
     out = []
     for name in evo_refs(row["content"]):
-        c = read_evolution_file(name)
+        c = read_evolution_file(name, conn)
         if c is not None:
             out.append({"name": name, "ext": name.rsplit(".", 1)[-1].lower() if "." in name else "",
                         "content": c, "kind": "", "status": "active", "project_id": None})

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lclone import chat as chat_mod
 from lclone import config
 from lclone import db as db_mod
+from lclone import evolutions as evo_mod
 from lclone import memory as mem_mod
 from lclone import projects as proj_mod
 
@@ -194,16 +195,16 @@ TOOLS = [
     },
     {
         "name": "evolution_add",
-        "description": "沉淀一个进化资产 (可复用脚本/工具, 实践中生成, 改脚本时用 evolution_update 同步)。content=项目无关的脚本/工具内容(存记忆库); ref=项目内脚本路径(内容留仓库, 只留引用)。可传 insight 列表建立 insight→evolution 链接。",
+        "description": "沉淀一个进化资产 (可复用脚本/工具)。内容按 sha256 存入服务器内容寻址库并**发布一版** (内容未变则不新增版本, 幂等); ref=项目内脚本路径(内容留仓库, 只记引用不存内容)。可传 insight 列表建立 insight→evolution 链接。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "文件名 (可带扩展名, 如 build-spec-map.sh; 缺省按 kind 补扩展名)"},
                 "kind": {"type": "string", "enum": ["script", "tool", "command", "model", "other"],
                          "description": "默认 script, 决定缺省扩展名"},
-                "content": {"type": "string", "description": "进化文件内容 (写入 ~/.lclone/evolutions/<name>)"},
-                "ref": {"type": "string", "description": "项目内脚本路径 (内容留仓库; 此调用若给 content 则直接写文件)"},
-                "reason": {"type": "string", "description": "为什么沉淀"},
+                "content": {"type": "string", "description": "进化资产内容 (发布为一版)"},
+                "ref": {"type": "string", "description": "项目内脚本路径 (内容留仓库; 此时只记引用)"},
+                "reason": {"type": "string", "description": "为什么沉淀 (作为版本说明)"},
                 "insight": {"type": "array", "items": {"type": "integer"},
                             "description": "支撑此资产的 insight id 列表 (可多个)"},
                 "project": {"type": "string", "description": "项目名/id/global; 不传按 cwd git 自动判定"},
@@ -214,7 +215,7 @@ TOOLS = [
     },
     {
         "name": "evolution_list",
-        "description": "列出进化资产 (可复用脚本/工具), 支持按项目/状态过滤",
+        "description": "列出进化资产 (含当前版本号/哈希前 12 位/大小)",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -225,15 +226,48 @@ TOOLS = [
     },
     {
         "name": "evolution_update",
-        "description": "同步一个进化文件到最新版本 (脚本被改时调用, 复写 ~/.lclone/evolutions/<id>)",
+        "description": "同步一个进化资产到最新版本 (脚本被改时调用) —— append-only 地新增一版, 不覆盖历史",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "进化文件名 (如 build-spec-map.sh)"},
-                "content": {"type": "string", "description": "最新文件内容"},
-                "status": {"type": "string", "description": "active(在用) | stable(暂不再修改)"},
+                "id": {"type": "string", "description": "进化资产名 (如 build-spec-map.sh)"},
+                "content": {"type": "string", "description": "最新内容"},
+                "reason": {"type": "string", "description": "本次改动说明 (版本记录用)"},
             },
             "required": ["id"],
+        },
+    },
+    {
+        "name": "evolution_history",
+        "description": "查看某进化资产的版本历史 (新→旧, 含版本号/哈希/大小/说明/时间)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "进化资产名"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "evolution_rollback",
+        "description": "把某进化资产的当前版本回滚到指定历史版本 (只改指向, 不删任何内容, 可再回滚回来)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "进化资产名"},
+                "version": {"type": "integer", "description": "目标版本号"},
+            },
+            "required": ["name", "version"],
+        },
+    },
+    {
+        "name": "evolution_content",
+        "description": "取某进化资产某版本的原文 (version 省略取当前版本)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "进化资产名"},
+                "version": {"type": "integer", "description": "版本号 (省略=当前版本)"},
+            },
+            "required": ["name"],
         },
     },
     {
@@ -327,19 +361,34 @@ def call_tool(name: str, args: dict) -> str:
                 status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
                 if status == "no_git":
                     return _unattributed_msg()
-            if not args.get("content"):
-                return "错误: evolution 需要 --content (进化文件内容; 或直接写文件到 ~/.lclone/evolutions/)"
+            if not args.get("content") and not args.get("ref"):
+                return ("错误: evolution 需要 content (内容) 或 ref (项目内脚本路径); "
+                        "只记引用时传 ref")
             ev = mem_mod.create_evolution(
                 conn, name=args.get("name", ""), kind=args.get("kind", "script"),
                 content=args.get("content", ""), ref=args.get("ref", ""),
-                reason=args.get("reason", ""))
-            return f"已沉淀进化资产 {ev} [{'全局层' if pid is None else f'项目 #{pid}'}]"
+                reason=args.get("reason", ""), project_id=pid)
+            # insight 列表 → 在这些洞察里补 [[evo:...]] 引用 (链接的载体就是那句引用)
+            linked, missed = [], []
+            for iid in (args.get("insight") or []):
+                try:
+                    mem_mod.link_insight_to_evolution(conn, int(iid), ev)
+                    linked.append(int(iid))
+                except (ValueError, TypeError):
+                    missed.append(iid)
+            row = evo_mod.current(conn, ev)
+            tail = f"; 已链接 insight {linked}" if linked else ""
+            if missed:
+                tail += f"; 未找到 insight {missed}"
+            return (f"已沉淀进化资产 {ev} v{row['version'] if row else 1} "
+                    f"[{'全局层' if pid is None else f'项目 #{pid}'}]{tail}")
         if name == "evolution_list":
-            items = mem_mod.list_evolution_files()
+            items = mem_mod.list_evolution_files(conn)
             if not items:
-                return "(暂无进化资产, 目录 ~/.lclone/evolutions/)"
+                return "(暂无进化资产)"
             return "\n".join(
-                f"{e['name']}  <{'全局层'}>"
+                f"{e['name']}  v{e.get('version', 0)}  {e.get('hash', '')[:8]}"
+                f"  {e.get('size', 0)}B  <{'全局层' if not e.get('project_id') else '项目 ' + str(e['project_id'])}>"
                 for e in items
             )
         if name == "evolution_update":
@@ -347,8 +396,31 @@ def call_tool(name: str, args: dict) -> str:
             if isinstance(ev, int):
                 ev = str(ev)
             mem_mod.update_evolution(conn, ev, content=args.get("content"),
-                                     status=args.get("status"))
-            return f"进化资产 {ev} 已同步"
+                                     reason=args.get("reason"))
+            row = evo_mod.current(conn, ev)
+            return f"进化资产 {ev} 已同步为新版本 v{row['version'] if row else '?'}"
+        if name == "evolution_history":
+            rows = evo_mod.history(conn, str(args.get("name", "")))
+            if not rows:
+                return f"(没有这个进化资产: {args.get('name')})"
+            return "\n".join(
+                f"v{r['version']}  {r['hash'][:8] or '(ref)'}  {r['size']}B  "
+                f"{r['created_at']}  {r['message']}" for r in rows)
+        if name == "evolution_rollback":
+            try:
+                out = evo_mod.rollback(conn, str(args.get("name", "")),
+                                       int(args.get("version", 0)))
+            except (ValueError, TypeError) as e:
+                return f"回滚失败: {e}"
+            return f"进化资产 {out['name']} 已回滚到 v{out['version']}"
+        if name == "evolution_content":
+            row = evo_mod.resolve(conn, str(args.get("name", "")),
+                                  args.get("version"))
+            if row is None:
+                return f"(没有这个进化资产: {args.get('name')})"
+            if row["content"] is None:
+                return f"# 内容在项目仓库: {row['ref']}"
+            return f"# {row['name']} v{row['version']} ({row['hash'][:8]})\n{row['content']}"
         if name == "conflicts":
             pid = _resolve_project(conn, args.get("project"))
             items = mem_mod.find_conflicts(conn, project_id=pid)
