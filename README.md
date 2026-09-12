@@ -13,7 +13,7 @@
 - **Recall loop**: new sessions automatically recall related insights and answer "where did I leave off / what did we decide"
 - **Spec loop**: new proposals are checked against a project spec's boundary conditions, producing a ✅ pass / ⚠️ warn / ❌ fail report
 - **Write modes**: automatic capture (B, AI distills → you confirm) and active memory (C, your call); **insights take effect only after you approve them** — every entry is traceable to its source
-- **Evolution assets**: reusable scripts / tools / templates live in a **server-side versioned content-addressed store** (sha256-named, append-only, rollback-able); `~/.lclone/evolutions/` is only a reproducible **read-only cache** (`pull` / `publish` / `status`) that an insight points to with `[[evo:name.ext]]`
+- **Evolution assets**: reusable scripts / tools / templates live in a **server-side versioned content-addressed store** (sha256-named, append-only, rollback-able); `~/.lclone/evolution/` is only a reproducible **read-only cache** (`pull` / `publish` / `status`) that an insight points to with `[[evo:name.ext]]`
 - **Admission & organization**: a **deterministic admission gate** runs first (pure script, no LLM — the `skip` tier costs zero calls) and only accepts decisions / agreements / rules / lessons, judged on user turns with negation scoping; then code-enforced filtering of "what was done" (goes to git/spec, not the brain), **conflict detection** between insights, and an `organize` action that merges semantically-similar insights in one click
 - **Works out of the box**: the first `setup` seeds 4 generic insights plus generic evolution files (insight format model / admission standard / attribution conventions + example scripts) — idempotent, and deleted seeds are never re-added
 - **Two-axis vertical layering**: global → project; concrete work stays in the repo, the brain only tracks direction and decisions
@@ -46,7 +46,7 @@ flowchart TB
 
     subgraph 存储["Storage"]
         DB[("SQLite lclone.db<br/>projects / sessions / insights / specs_index<br/>threads / messages / memory_links / recall_log<br/>project_removals / memories_fts")]
-        EVO[("evolution-blobs/ + evo_versions (server-authoritative, versioned)<br/>~/.lclone/evolutions/ is just a read-only cache, linked by [[evo:name.ext]]")]
+        EVO[("data/evolution/ + evo_versions (server-authoritative, versioned)<br/>~/.lclone/evolution/ is just a read-only cache, linked by [[evo:name.ext]]")]
     end
 
     subgraph 模型["Model layer (cloud API, not self-hosted)"]

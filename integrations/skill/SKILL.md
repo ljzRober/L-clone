@@ -20,7 +20,8 @@ description: |
 | `bootstrap` | 会话启动引导：返回 charter + 全局层记忆 + 按话题召回 + 【待确认洞察】 | `query`（可选）、`project` |
 | `remember` | 主动记忆：用户已确认的洞察/边界/事实 | `content`（必填）、`project`（名/id/global）、`level=insight`、`confirmed`（boolean） |
 | `capture` | 自动捕获：提炼洞察（进待确认），返回结构化结果 | `text`（必填）、`project`、`cwd`、`session_key` |
-| `evolution_add` | 沉淀进化资产（可复用脚本/工具） | `name`、`content`/`ref`、`kind`、`reason`、`project` |
+| `evolution_add` | 沉淀进化资产（发布一版；内容未变不加版本） | `name`、`content`/`ref`、`kind`、`reason`、`insight`、`project` |
+| `evolution_history` / `evolution_rollback` / `evolution_content` | 版本历史 / 回滚到某版 / 取某版原文 | `name`、`version` |
 | `recall` | 回顾检索：按关键词召回、回答"定了什么" | `query`（必填）、`k` |
 | `promote` | 记忆上升：项目记忆→全局层 | `id` |
 | `demote` | 记忆下降：挂到指定项目 | `id`、`project` |
@@ -48,7 +49,7 @@ description: |
 5. **回答"上次定了什么 / 上次做到哪"**：`recall` 后用结果如实总结，记忆不足就明说，不编造。
 6. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
 7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），把内容提炼为**洞察(insight)**（原子化、自包含、四段卡），统一进待确认、经 `review` 生效；`BRAIN_LLM=dummy` 无法真正提炼富洞察，会退化为记录原文草稿（仍待确认）。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
-8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留**洞察**（选了什么方案/定了什么规则/学到什么经验教训，原子化富知识卡）与**进化资产**（可复用脚本/工具，`~/.lclone/evolutions/` 文件式，`[[evo:name.ext]]` 指向）。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
+8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留**洞察**（选了什么方案/定了什么规则/学到什么经验教训，原子化富知识卡）与**进化资产**（可复用脚本/工具/模板，**服务器版本化库为权威**、本地 `~/.lclone/evolution/` 只是可复现缓存，`[[evo:name.ext]]` 指向；用 `evolution_add` 发布新版本，改写用 `evolution_update`，回滚用 `evolution_rollback`）。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
 9. **自动调度 sp-spec（无需手动 /sp-spec）**：检测 sp-spec 是否已安装（`~/.agents/skills/sp-spec` 存在）。**有** → 会话中一旦进入构建性任务（改功能/修 bug/重构），默认**自动加载 sp-spec 并运行 quick 模式**（是否升级 full/debug 由 sp-spec 自决），不需要用户手动 `/sp-spec`。**无** → 仅在**首次**会话提醒一次用户安装 sp-spec：`https://github.com/ljzRober/sp-spec`，之后不再重复提醒（可在 lclone 写入一条"已提示安装 sp-spec"的全局记忆避免重复）。
 
 ## 大脑位置

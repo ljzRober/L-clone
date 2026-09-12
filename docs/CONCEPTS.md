@@ -83,12 +83,12 @@ L2 规划层   specs_index   项目内 spec 文件的索引 (权威内容在仓�
 **进化资产 = 可复用脚本 / 工具 / 模板**,实践某个具体事物时沉淀、会话中反复修改、不再修改即稳定。
 
 - **权威唯一:在服务器**。内容存进**版本化内容寻址库**:以 `sha256` 命名存放于
-  `<BRAIN_DB_PATH 所在目录>/evolution-blobs/<前2位>/<hash>`(`LCLONE_EVO_BLOB_DIR` 可覆盖)——
+  `<BRAIN_DB_PATH 所在目录>/evolution/blobs/<前2位>/<hash>`(`LCLONE_EVO_BLOB_DIR` 可覆盖)——
   同内容只存一份、不可篡改、改了就是新对象。版本索引在 SQL:`evo_versions` **只追加**、
   `evo_current` 存当前指针。**回滚 = 改指针,内容一动不动**。
   - 项目无关的通用脚本/工具 → 内容进内容库(索引的 `hash` 指向它);
   - 项目内脚本 → 只记路径引用(`ref`,内容留仓库、由 git 版本化,不进内容库)。
-- **本地只是只读缓存**:`~/.lclone/evolutions/` + `.lclone-manifest.json`。
+- **本地只是只读缓存**:`~/.lclone/evolution/` + `.lclone-manifest.json`。
   `pull` 按哈希校验后物化;**本地被改过的文件 pull 会拒绝覆盖**(报 `dirty`,`--force` 才覆盖);
   `status` 给出 `in-sync` / `behind` / `dirty` / `missing` / `untracked` 五态。
   删掉整个缓存目录再 `pull --all` 即可完全还原 —— 因为本地从来不是权威。
@@ -153,7 +153,7 @@ L2 规划层   specs_index   项目内 spec 文件的索引 (权威内容在仓�
 
 ## 9. 数据存储结构 (ER 图)
 
-> evolution 进化资产为**文件式**(`~/.lclone/evolutions/`),不在 SQL schema 内。
+> evolution 进化资产为**文件式**(`~/.lclone/evolution/`),不在 SQL schema 内。
 
 ```mermaid
 erDiagram
@@ -324,7 +324,7 @@ flowchart LR
     subgraph BRAIN["大脑 L-clone (记忆与监督)"]
         IDX["specs_index 格式无关索引"]
         INS["洞察记忆 (挂项目/全局)"]
-        EVO["进化资产 ~/.lclone/evolutions/ (文件)"]
+        EVO["进化资产 ~/.lclone/evolution/ (文件)"]
         SES["会话流水"]
         CH["charter 大方向"]
     end
@@ -376,7 +376,7 @@ L-clone 不重复造轮子, 站在已有开源生态之上, 借鉴其思想并�
 - CLI + Web 面板(记忆工作台 + 问答) + REST API
 - 两轴竖向分层: 全局层 → 项目 + 格式无关 spec 索引(已去掉 module 维度)
 - **洞察四段卡** + ingest 剥噪 + 准入过滤/自筛(代码强制)
-- **进化资产**(`~/.lclone/evolutions/` 文件式)+ `[[evo:]]` 链接
+- **进化资产**(`~/.lclone/evolution/` 文件式)+ `[[evo:]]` 链接
 - **MCP server**(stdio + HTTP `/mcp`),Claude Code / Codex / DSH 插件接入
 - **会话自动抽取**: hooks / 插件 → capture → 洞察待确认
 - **记忆链接** `[[m:N]]` + 召回跟随

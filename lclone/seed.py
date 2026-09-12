@@ -68,9 +68,8 @@ def _evolution_files() -> List[Path]:
 
 
 def _kind_of(src: Path) -> str:
-    """按扩展名反推 kind (种子文件的版本记录用)。"""
-    ext = src.suffix.lower().lstrip(".")
-    return {"sh": "script", "py": "tool", "md": "model"}.get(ext, "other")
+    """种子文件的 kind —— 与迁移摄入共用同一份扩展名规则。"""
+    return evolutions.kind_of_name(src.name)
 
 
 def available() -> bool:

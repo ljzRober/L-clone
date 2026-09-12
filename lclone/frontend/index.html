@@ -314,14 +314,14 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
 <div class="modal-bg" id="evo-exp">
   <div class="modal modal-lg evo-exp">
     <div class="modal-head">
-      <h3>进化文件</h3>
-      <span class="evo-path" id="evo-path">~/.lclone/evolutions/</span>
+      <h3>进化资产</h3>
+      <span class="evo-path" id="evo-path">服务器版本库</span>
       <span style="flex:1"></span>
       <button class="modal-x" onclick="closeEvoExp()" title="关闭">✕</button>
     </div>
     <div class="evo-body">
       <div class="evo-list" id="evo-list"></div>
-      <div class="evo-preview" id="evo-preview">点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span></div>
+      <div class="evo-preview" id="evo-preview">点击左侧条目查看内容<br><span style="color:var(--dim)">服务器版本库为权威；此处预览当前版本，改动用 lclone evolution publish。</span></div>
     </div>
   </div>
 </div>
@@ -681,6 +681,13 @@ let EVO_CONTENT = {};   // 文件名 -> 内容 (供预览)
 async function openEvoExplorer() {
   const r = await (await fetch('/api/evolutions')).json();
   const items = r.items || [];
+  // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
+  let meta = {};
+  try { meta = await (await fetch('/api/evolution/index')).json(); } catch (e) { meta = {}; }
+  const dirs = (meta && meta.dirs) || {};
+  $('evo-path').textContent = dirs.content
+    ? `服务器内容库 ${dirs.content} · ${items.length} 个资产（版本化，本地为只读缓存）`
+    : `服务器版本库 · ${items.length} 个资产`;
   EVO_CONTENT = {};
   const collect = (nodes) => {
     for (const n of nodes) {

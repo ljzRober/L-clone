@@ -200,7 +200,7 @@ def cmd_evolution_list(args) -> None:
         pl = "全局层" if not e.get("project_id") else f"项目 {e['project_id']}"
         ref = f" -> {e['ref']}" if e.get("ref") else ""
         print(f"{e['name']: <30} v{e['version']:<4} {(e['hash'] or '')[:8]: <10} "
-              f"{e['size']:>6}B  {e['created_at'][:16]}  [{pl}]{ref}")
+              f"{e['size']:>6}B  {e.get('kind', 'other'): <7} {e['created_at'][:16]}  [{pl}]{ref}")
     # 本地有、服务器没有的文件也要列出来 —— 否则升级/首次使用时 `list` 显示"暂无",
     # 用户会以为文件丢了 (看板那边是能看到的)
     untracked = [r["name"] for r in evolutions.status(backend.manifest())
@@ -309,6 +309,18 @@ def cmd_evolution_migrate(args) -> None:
     for r in out:
         print(f"已摄入 {r['name']} → v{r['version']} ({r['hash'][:8]})")
     print(f"共 {len(out)} 个; 现共有 {len(backend.index())} 个进化资产")
+
+
+def cmd_evolution_retype(args) -> None:
+    """补正类型元数据: 把 kind 仍是 other 但扩展名可推断的资产发布一版修正。"""
+    backend, _ = _evo_ctx(args)
+    out = evolutions.retype_default_kinds(backend)
+    if not out:
+        print("(没有需要补正类型的资产)")
+        return
+    for r in out:
+        tail = "" if r.get("changed") else " (内容未变, 仅元数据)"
+        print(f"{r['name']} → v{r['version']} kind={r['kind']}{tail}")
 
 
 def cmd_review(args) -> None:
@@ -436,7 +448,7 @@ def cmd_backup(args) -> None:
     """备份大脑: SQLite 快照 + 进化资产内容库快照。
 
     洞察在 DB 里、进化资产的内容在内容寻址库(blob)里 —— 两处都要备, 才不是"只备份了一半"。
-    本地物化缓存 (`~/.lclone/evolutions/`) 是可复现的, 不进备份。
+    本地物化缓存 (`~/.lclone/evolution/`) 是可复现的, 不进备份。
     """
     from pathlib import Path
     import shutil
@@ -737,6 +749,11 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="把进化目录里的存量文件摄入为 v1 (服务端操作; 只处理未进索引的)")
     _evo_common(sev_mg)
     sev_mg.set_defaults(func=cmd_evolution_migrate)
+
+    sev_rt = sev_sub.add_parser("retype", parents=[parent],
+                                help="补正类型元数据 (kind=other 但扩展名可推断的 → 发布一版修正)")
+    _evo_common(sev_rt)
+    sev_rt.set_defaults(func=cmd_evolution_retype)
 
     sv = sub.add_parser("review", parents=[parent], help="确认草稿记忆")
     sv.add_argument("--id", type=int, default=None)

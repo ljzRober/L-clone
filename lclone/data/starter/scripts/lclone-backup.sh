@@ -4,7 +4,7 @@
 # 用法:  ./lclone-backup.sh [保留份数]
 # 环境:  BRAIN_DB_PATH  数据库路径 (默认 lclone.db)
 #        LCLONE_BACKUP_DIR  备份目录 (默认 backups)
-#        LCLONE_EVO_DIR  进化资产目录 (默认 ~/.lclone/evolutions)
+#        LCLONE_EVO_DIR  进化资产本地缓存目录 (默认 ~/.lclone/evolution)
 set -euo pipefail
 
 KEEP="${1:-10}"

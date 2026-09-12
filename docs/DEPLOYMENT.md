@@ -36,8 +36,8 @@ docker compose up -d
 
 数据持久化在 `./data/lclone.db`, 容器重启不丢失。
 
-**进化资产(evolution)的内容库**默认跟着数据库走, 即 `/data/evolution-blobs/`(同一个持久化卷);
-容器内的 `~/.lclone/evolutions/` 只是**可复现的本地缓存**, 丢了 `lclone evolution pull --all` 就能重建。
+**进化资产(evolution)的内容库**默认跟着数据库走, 即 `/data/evolution/`(同一个持久化卷);
+容器内的 `~/.lclone/evolution/` 只是**可复现的本地缓存**, 丢了 `lclone evolution pull --all` 就能重建。
 所以**备份要覆盖 DB 与内容库两处**, 一条命令即可:
 
 ```bash

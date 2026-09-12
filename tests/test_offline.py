@@ -363,7 +363,7 @@ check("74 鉴权: 未设 key 恒通过", auth_mod.check({}) is True)
 bpath = db_mod.backup(db_path=dbp, dest_dir=os.path.join(tmp, "bak"))
 check("75 backup 生成快照", os.path.exists(bpath) and bpath.endswith(".db"))
 
-# ---- evolution 进化资产: 文件式 (~/.lclone/evolutions/), insight 用 [[evo:name.ext]] 指向 ----
+# ---- evolution 进化资产: 服务器版本库 + 本地只读缓存 (~/.lclone/evolution/), [[evo:name.ext]] 指向 ----
 ev = mem_mod.create_evolution(
     conn, name="build-spec-map", kind="script",
     content="bash <sp-spec>/scripts/build-spec-map.sh --repo-root \"$PWD\"",
@@ -1093,6 +1093,8 @@ check("202 索引为空时 list 仍列出本地未收录文件",
       "old-asset.sh" in _pre and "未收录" in _pre, _pre.strip()[:80])
 check("203 升级路径: migrate 把既有文件摄入为 v1",
       _post is not None and _post["version"] == 1 and "v1" in _mbuf, _mbuf.strip()[:60])
+check("203b migrate 按扩展名推断 kind (脚本/模型可区分)",
+      _post is not None and _post["kind"] == "script", str(_post and _post["kind"]))
 
 # ---- insight → evolution 链接: 引用真正写进洞察内容, 召回能顺边带出 ----
 _lk_ins = mem_mod.remember(conn, "要点：用统一脚本跑 spec 地图。\n归属：无",
@@ -1136,6 +1138,34 @@ _lk_mcp_content = conn.execute("SELECT content FROM memories WHERE id=?",
 check("208 MCP evolution_add 的 insight 参数建立链接",
       "[[evo:mcp-link.sh]]" in _lk_mcp_content and "已链接 insight" in _mcp_out,
       _mcp_out.strip()[:70])
+
+# ---- 命名收敛: 默认路径 + 类型补正 ----
+_prev_dirs = {k: os.environ.get(k) for k in ("LCLONE_EVO_DIR", "LCLONE_EVO_BLOB_DIR")}
+os.environ.pop("LCLONE_EVO_DIR", None)
+os.environ.pop("LCLONE_EVO_BLOB_DIR", None)
+try:
+    _def_cache = evo_store.cache_dir(create=False)
+    _def_blob = evo_store.blob_dir()
+finally:
+    for _k, _v in _prev_dirs.items():
+        if _v is not None:
+            os.environ[_k] = _v
+check("209 默认路径收敛为单数 evolution",
+      _def_cache == pathlib.Path.home() / ".lclone" / "evolution"
+      and _def_blob.name == "blobs" and _def_blob.parent.name == "evolution",
+      f"{_def_cache} | {_def_blob}")
+
+# 类型补正: kind=other 但扩展名可推断 → 发布一版修正 (保留历史)
+evo_store.publish(conn, "rt.sh", "echo rt")          # kind 缺省 = other
+_rt_out = evo_store.retype_default_kinds(_backend)
+_rt_row = evo_store.current(conn, "rt.sh")
+_rt_hist = evo_store.history(conn, "rt.sh")
+check("210 retype 把 other 补正为 script 且保留历史",
+      _rt_row["kind"] == "script" and [h["version"] for h in _rt_hist] == [2, 1]
+      and any(x["name"] == "rt.sh" for x in _rt_out),
+      f"kind={_rt_row['kind']} hist={[h['version'] for h in _rt_hist]}")
+check("211 retype 幂等 (已正确的资产不再动作)",
+      not any(x["name"] == "rt.sh" for x in evo_store.retype_default_kinds(_backend)))
 
 print()
 if fails:

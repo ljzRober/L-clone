@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS memories (
   confirmed_at TEXT
 );
 
--- 进化资产(evolution) = ~/.lclone/evolutions/ 下的文件 (不入 SQL 表);
+-- 进化资产(evolution): 内容在进化资产库(见 lclone/evolutions.py), 本地 ~/.lclone/evolution/ 只是缓存;
 -- insight 用 [[evo:name.ext]] 指向。项目内脚本进仓库, 项目无关工具/模型/模板放记忆区。
 
 -- L2 层: 项目内 spec 文件的索引 (格式无关: openspec / adr / markdown / other)
@@ -195,7 +195,7 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
     # 索引: sessions(session_key) 需在列补齐后建 (兼容旧库; messages(thread_id) 已在 SCHEMA)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(session_key)")
-    # 迁移: 进化资产改为文件式 (~/.lclone/evolutions/), 不再用 SQL 表
+    # 迁移: 进化资产曾改为文件式 (~/.lclone/evolution/), 不再用这两张旧表
     # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
     # 注意: 版本化存储用的是**新表名** evo_versions / evo_current (见 SCHEMA),
     # 故意不复用这两个名字 —— 否则每次 init 都会把版本索引删掉。

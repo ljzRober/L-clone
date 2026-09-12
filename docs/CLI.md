@@ -23,6 +23,7 @@ lclone evolution history <名>                        # 版本历史 (新→旧)
 lclone evolution rollback <名> --to <版本号>          # 回滚 (只改指向, 不删内容, 可再回滚)
 lclone evolution content <名> [--version N]          # 打印某版本原文
 lclone evolution migrate                             # 存量文件摄入为 v1 (幂等)
+lclone evolution retype                              # 补正类型元数据 (kind 推断)
 # 以上 evolution 子命令均支持 --local; 默认: 设了 LCLONE_WEB_URL 就走远端 HTTP, 否则用本地 DB
 lclone review [--id N --action keep|edit|delete|promote --edit-new "…"] [--all keep|delete]
 lclone recall "查询" [--project id] [--k 5] [--no-follow]
@@ -91,7 +92,7 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 - **项目墓碑**: `proj rm` 不删行不加状态, 只登记移除事件。移除后项目从列表消失、其洞察**停止加载**,
   但数据保留, `proj restore <id|name>` 可复活。
 - **洞察链接**: 内容里写 `[[m:12]]` 即链接到洞察 #12 (跨项目/跨层级均可)。召回命中时自动把被链接洞察一起带出 (一层、限量), `recall --no-follow` 可关闭。
-- **进化资产**: 用 `evolution add` 把可复用脚本/工具沉淀为 `~/.lclone/evolutions/` 下的文件;洞察用 `[[evo:name.ext]]` 指向它。项目内脚本用 `--ref` 只存路径(内容留仓库)。
+- **进化资产**: 用 `evolution add` 把可复用脚本/工具/模板**发布到服务器版本库**(内容寻址、可回滚);本地 `~/.lclone/evolution/` 只是可复现缓存,`pull`/`publish` 同步。洞察用 `[[evo:name.ext]]` 指向它;项目内脚本用 `--ref` 只存路径(内容留仓库)。
 - **整理合并**: `organize` 让 LLM 把"语义相近、说的是同一件事"的洞察合并成一条综合描述;硬约束为**同项目 + 同等级**才能合并, 跨区域由代码校验拒绝。
 - **矛盾检测**: `conflicts` 找疑似互相矛盾/规则改版的 active 洞察对, 由 LLM 判定;只提示, 不自动改。
 - **删除提示**: `suggest` 用算法扫描候选 (疑似重复/长期未确认草稿/长期未召回/已移除项目记忆), 每条给出删除命令; **删除始终由你手动执行**。
@@ -136,8 +137,8 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 | `LCLONE_API_KEY` | — | 引导用鉴权 key(设了后 `/api/*` 与 `/mcp` 需带 `Authorization: Bearer <key>` 或 `X-API-Key: <key>`;留空且库中无 token=本地免鉴权)。另可用 `lclone auth` 发放多把可吊销 token |
 | `LCLONE_HOME` | `~` | `doctor`/`install` 查找 skill 与触发配置的家目录 |
 | `LCLONE_CMD` | `lclone` | DSH 插件调用的 lclone 命令(可指到 `.venv/bin/python -m lclone`) |
-| `LCLONE_EVO_DIR` | `~/.lclone/evolutions` | 进化资产**本地缓存**目录(可复现, 权威在服务器版本库) |
-| `LCLONE_EVO_BLOB_DIR` | `<DB 目录>/evolution-blobs` | 进化资产**内容寻址库**(权威内容; 随 `BRAIN_DB_PATH` 走) |
+| `LCLONE_EVO_DIR` | `~/.lclone/evolution` | 进化资产**本地缓存**目录(可复现, 权威在服务器版本库) |
+| `LCLONE_EVO_BLOB_DIR` | `<DB 目录>/evolution/blobs` | 进化资产**内容寻址库**(权威内容; 随 `BRAIN_DB_PATH` 走) |
 | `DSH_SESSION_ID` | — | 外部会话 id, `capture` 用它做会话聚合(DSH 插件自动注入) |
 
 ## 访问令牌管理 (`lclone auth`)
@@ -177,7 +178,7 @@ python -m lclone web
 - **层级树**:左侧「全局层 → 项目」两轴, 点选节点即过滤右侧架构图。
 - **架构图**:右侧按「全局 / 项目」两层渲染, 洞察卡片网格分页;洞察间 `[[m:N]]` 链接画成连线。
 - **上升/下降**:打开洞察详情, 在「归属」下拉选目标层级(全局层或某项目), 点「移动到所选」即移动归属(项目 → 全局、全局 → 项目、项目间横搬)。
-- **进化资产**:在「进化」档位按 文件名.类型 展示 `~/.lclone/evolutions/` 下的文件(只读文本预览, 修改请改文件本身)。
+- **进化资产**:在「进化」档位按 文件名 展示**服务器版本库**的当前版本(只读文本预览; 改动请用 `lclone evolution publish`)。
 - **添加洞察**:右上角「＋ 添加记忆」弹窗, 选等级(洞察)、归属(全局/项目)。手动添加视为「当场已确认」, 洞察直接生效。
 - **待确认**:顶栏「待确认 N」按钮打开草稿列表, 逐条 保留/编辑/删除;数量每 30s 轮询刷新。
 - **整理**:工具栏「整理」让 LLM 把语义相近的洞察合并(不跨项目/等级)。

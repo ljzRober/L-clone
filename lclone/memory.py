@@ -379,7 +379,7 @@ def set_status(conn: sqlite3.Connection, memory_id: int, status: str) -> None:
 
 
 # ---------------------------------------------------------------- 进化资产 (evolution)
-# 服务器唯一权威的**版本化内容寻址存储**; 本地 ~/.lclone/evolutions/ 只是只读缓存。
+# 服务器唯一权威的**版本化内容寻址存储**; 本地 ~/.lclone/evolution/ 只是只读缓存。
 # 实现全在 lclone/evolutions.py; 这里保留既有公开函数作为薄委托 (调用方与测试不受影响)。
 EVO_REF_RE = re.compile(r"\[\[evo:([^\]\n]+)\]\]")
 

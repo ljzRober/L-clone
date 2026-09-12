@@ -1,9 +1,9 @@
 """进化资产(evolution): 服务器唯一权威的**版本化内容寻址存储** + 本地**只读缓存**。
 
 权威与介质
-  - 权威在**服务器**: 内容以 sha256 命名存放 (`<DB 目录>/evolution-blobs/<前2位>/<hash>`),
+  - 权威在**服务器**: 内容以 sha256 命名存放 (`<DB 目录>/evolution/blobs/<前2位>/<hash>`),
     不可变、天然去重; 版本索引在 SQL (`evo_versions` 只追加 + `evo_current` 当前指针)。
-  - 本地 `~/.lclone/evolutions/` 是**只读缓存**: 带 manifest、可随手删、pull 时按哈希校验、
+  - 本地 `~/.lclone/evolution/` 是**只读缓存**: 带 manifest、可随手删、pull 时按哈希校验、
     手改过的文件不会被静默覆盖; 改动走显式 `publish` 产生新版本。
   - 因此**不存在双向同步/合并冲突**: 本地永远不是权威。这是 npx/cacache 模型, 不是 git 模型
     (git 模型下本地是可写工作副本, 两边都可改 → 需要 push/pull/merge)。
@@ -45,7 +45,7 @@ def _now() -> str:
 # ---------------------------------------------------------------- 路径解析
 def cache_dir(create: bool = True) -> Path:
     """本地物化缓存目录 (只读缓存的落点)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。"""
-    d = Path(os.environ.get("LCLONE_EVO_DIR") or (Path.home() / ".lclone" / "evolutions"))
+    d = Path(os.environ.get("LCLONE_EVO_DIR") or (Path.home() / ".lclone" / "evolution"))
     if create:
         d.mkdir(parents=True, exist_ok=True)
     return d
@@ -54,11 +54,13 @@ def cache_dir(create: bool = True) -> Path:
 def blob_dir(create: bool = False) -> Path:
     """内容存储目录 (权威)。
 
-    默认跟着数据库走 (`<BRAIN_DB_PATH 所在目录>/evolution-blobs`) —— 这样"大脑在哪,
-    内容就在哪", 天生与 DB 落在同一个持久化卷与同一份备份里。LCLONE_EVO_BLOB_DIR 可覆盖。
+    默认跟着数据库走 (`<BRAIN_DB_PATH 所在目录>/evolution/blobs`) —— 这样"大脑在哪,
+    内容就在哪", 天生与 DB 落在同一个持久化卷与同一份备份里, 且服务器侧持久化结果
+    收敛为**一处** `data/evolution/` (与客户端缓存 `~/.lclone/evolution/` 同名)。
+    LCLONE_EVO_BLOB_DIR 可覆盖。
     """
     raw = (os.environ.get("LCLONE_EVO_BLOB_DIR") or "").strip()
-    d = Path(raw) if raw else Path(config.db_path()).parent / "evolution-blobs"
+    d = Path(raw) if raw else Path(config.db_path()).parent / "evolution" / "blobs"
     if create:
         d.mkdir(parents=True, exist_ok=True)
     return d
@@ -74,6 +76,16 @@ def ensure_ext(name: str, kind: str = "") -> str:
     if "." in base and not base.startswith("."):
         return base
     return base + "." + KIND_EXT.get(kind or DEFAULT_KIND, "txt")
+
+
+def kind_of_name(name: str) -> str:
+    """按扩展名推断 kind (script/tool/model/other)。
+
+    迁移摄入与种子种入共用同一份规则 —— 否则迁移进来的 md 规范会和脚本一样被标成
+    `other`, 元数据上分不出「可执行产物」与「模型/规范文档」。
+    """
+    ext = Path(str(name)).suffix.lower().lstrip(".")
+    return {"sh": "script", "py": "tool", "md": "model"}.get(ext, DEFAULT_KIND)
 
 
 def sha256_text(content: str) -> str:
@@ -645,7 +657,7 @@ def backend_for(conn: Optional[sqlite3.Connection] = None,
     return LocalBackend(conn)
 
 
-# ---------------------------------------------------------------- 存量迁移
+# ---------------------------------------------------------------- 存量迁移 / 元数据补正
 def migrate_cache_files(conn: sqlite3.Connection) -> List[dict]:
     """把缓存目录里**尚未进索引**的文件发布为 v1 (存量文件一次性摄入)。
 
@@ -661,6 +673,32 @@ def migrate_cache_files(conn: sqlite3.Connection) -> List[dict]:
             content = p.read_text(encoding="utf-8")
         except Exception:
             continue
-        r = publish(conn, name, content, message="存量文件摄入 (v1)")
+        r = publish(conn, name, content, kind=kind_of_name(name),
+                    message="存量文件摄入 (v1)")
         out.append(r)
+    return out
+
+
+def retype_default_kinds(backend) -> List[dict]:
+    """把 kind 仍是默认值、但扩展名能推断出更具体类型的资产补正类型。
+
+    典型场景: 早期 migrate 未推断 kind, 于是 `.md` 规范文档与 `.sh` 脚本都被标成
+    `other`, 元数据上分不出来。补正走**正常发布流程**(新增一版并在版本说明里写明),
+    不原地改历史 —— 与"evo_versions 只追加"的模型一致。
+    """
+    out: List[dict] = []
+    for row in backend.index():
+        if (row.get("kind") or DEFAULT_KIND) != DEFAULT_KIND:
+            continue
+        want = kind_of_name(row["name"])
+        if want == DEFAULT_KIND:
+            continue
+        content = backend.content(row["name"])
+        if content is None:  # ref 类没有内容, 跳过
+            continue
+        res = backend.publish(name=row["name"], content=content, kind=want,
+                              message=f"类型补正: {DEFAULT_KIND} → {want}")
+        out.append({"name": res.get("name", row["name"]),
+                    "version": res.get("version"), "kind": want,
+                    "changed": res.get("changed")})
     return out

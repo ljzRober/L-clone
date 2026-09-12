@@ -8,11 +8,9 @@ services:
     env_file: .env
     environment:
       - BRAIN_DB_PATH=/data/lclone.db
-      # 洞察在 SQLite、进化资产内容在 <DB 目录>/evolution-blobs/ —— 都在 /data 这个持久化卷上。
-      # LCLONE_EVO_DIR 只是本地物化缓存(可复现, 丢了 pull --all 就能重建); 放在卷上是为了
-      # 顺带保留历史文件式资产, 便于 `lclone evolution migrate` 一次性摄入。
-      - LCLONE_EVO_DIR=/data/evolutions
+      # 服务器侧持久化只有两处: /data/lclone.db (洞察) 与 /data/evolution/ (进化资产库, 内容寻址)。
+      # 容器内的 ~/.lclone/evolution/ 只是可复现的物化缓存, 不需要持久化也不需要挂载。
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/data          # 记忆 + 进化资产内容库持久化在这里, 记得定期备份整个 data/
+      - ./data:/data          # DB + 进化资产库都在这里, 备份整个 data/ 即可

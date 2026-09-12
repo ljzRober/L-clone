@@ -13,7 +13,7 @@
 - **回顾环**:新会话自动召回相关洞察,回答"我上次做到哪、定了什么"
 - **规范环**:新提议对照项目 spec 的边界条件,输出 ✅通过 / ⚠️警告 / ❌违反 检查报告
 - **写入方式**:自动捕获(B, AI 提炼→你确认)与主动记忆(C, 你说算);**洞察一律经你盖章才生效**,每条可追溯来源
-- **进化资产**:可复用的脚本/工具/模板存进**服务器侧版本化内容寻址库**(sha256 命名、只追加、可回滚),本地 `~/.lclone/evolutions/` 只是可复现的**只读缓存**(带 manifest,支持 `pull`/`publish`/`status`);洞察用 `[[evo:name.ext]]` 指向
+- **进化资产**:可复用的脚本/工具/模板存进**服务器侧版本化内容寻址库**(sha256 命名、只追加、可回滚),本地 `~/.lclone/evolution/` 只是可复现的**只读缓存**(带 manifest,支持 `pull`/`publish`/`status`);洞察用 `[[evo:name.ext]]` 指向
 - **准入与整理**:**确定性准入闸门**先判(纯脚本、不调 LLM,skip 档零调用)、只收"决策/约定/规则/教训",再看用户轮并遵循否定作用域;代码强制过滤"做了什么"(归 git/spec, 不进大脑)、**洞察矛盾检测**、`organize` 一键语义合并相近洞察
 - **开箱即用**:首次 `setup` 自动种入 4 条通用洞察 + 通用进化文件(洞察格式模型 / 记忆准入标准 / 会话归属约定 + 示例脚本),幂等且删掉不回灌
 - **两轴竖向分层**:全局层 → 项目;具体事务留在仓库,大脑只管方向和决策
@@ -47,7 +47,7 @@ flowchart TB
 
     subgraph 存储["存储层"]
         DB[("SQLite lclone.db<br/>projects / sessions / insights / specs_index<br/>threads / messages / memory_links / recall_log<br/>project_removals / memories_fts")]
-        EVO[("evolution-blobs/ + evo_versions (服务器权威, 版本化)<br/>~/.lclone/evolutions/ 只是只读缓存, 由 [[evo:name.ext]] 链接")]
+        EVO[("data/evolution/ + evo_versions (服务器权威, 版本化)<br/>~/.lclone/evolution/ 只是只读缓存, 由 [[evo:name.ext]] 链接")]
     end
 
     subgraph 模型["模型层 (云端 API, 不本地部署)"]

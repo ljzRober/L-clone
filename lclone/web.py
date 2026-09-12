@@ -261,8 +261,14 @@ def create_app(db_path: Optional[str] = None):
     # ------------------------------------------------ 进化资产: 版本化存储 (服务器权威)
     @app.get("/api/evolution/index")
     def evo_index(conn: sqlite3.Connection = Depends(get_db)):
-        """当前版本清单 (每个进化资产一行)。"""
-        return {"items": evo_mod.ls(conn)}
+        """当前版本清单 (每个进化资产一行) + 服务器侧目录。
+
+        `dirs` 是**服务器**的真实路径 —— 看板由服务器提供, 该显示服务器的库位置,
+        而不是写死一个客户端相对路径。
+        """
+        return {"items": evo_mod.ls(conn),
+                "dirs": {"content": str(evo_mod.blob_dir()),
+                         "cache": str(evo_mod.cache_dir(create=False))}}
 
     @app.get("/api/evolution/manifest")
     def evo_manifest(conn: sqlite3.Connection = Depends(get_db)):
