@@ -3,7 +3,9 @@
 *.db
 *.db-wal
 *.db-shm
-data/
+# 只忽略仓库根部的 data/ (Docker 卷); 锚定到根, 否则会连
+# lclone/data/starter/ (随包分发的种子内容) 一起忽略掉
+/data/
 __pycache__/
 *.pyc
 .venv/

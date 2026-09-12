@@ -199,7 +199,7 @@ dup_b = mem_mod.remember(conn, "完全相同的重复内容样本", level="insig
 _orig_extract2 = llm_mod.extract_memories
 llm_mod.extract_memories = lambda t, existing_modules=None: [{"level": "insight",
                                                                "content": "决定：一个从未确认的旧草稿", "confidence": 0.9}]
-mem_mod.capture(conn, "一个从未确认的旧草稿", project_id=pid)
+mem_mod.capture(conn, "决定了要保留这个从未确认的旧草稿", project_id=pid)
 llm_mod.extract_memories = _orig_extract2
 stale = conn.execute("SELECT MAX(id) mid FROM memories WHERE status='pending'"
                      ).fetchone()["mid"]
@@ -283,7 +283,7 @@ check("52 extract_memories 返回结构化条目",
       and all("level" in m and "content" in m for m in mem_items), str(mem_items))
 check("53 dummy 后端分类为 insight",
       mem_items and mem_items[0]["level"] == "insight", str(mem_items))
-cap_ids = mem_mod.capture(conn, "一条值得记的过程性事实", project_id=pid)
+cap_ids = mem_mod.capture(conn, "确定了一条值得记的过程性事实", project_id=pid)
 cap_levels = [conn.execute("SELECT level FROM memories WHERE id=?",
                            (i,)).fetchone()["level"] for i in cap_ids]
 check("54 capture 只产出 insight", "insight" in cap_levels and "note" not in cap_levels,
@@ -411,7 +411,7 @@ llm_mod.extract_memories = lambda t: [
     {"level": "note", "content": "一条过程性记录内容"},
     {"level": "insight", "content": "决定了归属方案"},
 ]
-ids_mod = mem_mod.capture(conn, "x", project_id=pid, session_key="modtest")
+ids_mod = mem_mod.capture(conn, "确定了模块轴的归属口径", project_id=pid, session_key="modtest")
 llm_mod.extract_memories = _orig3
 rows_mod = {r["level"] for r in conn.execute(
     "SELECT level FROM memories WHERE id IN (%s)"
@@ -549,6 +549,232 @@ check("117 CLI auth revoke 生效", "1" in _buf.getvalue(), _buf.getvalue()[:40]
 if _orig_key is not None:
     os.environ["LCLONE_API_KEY"] = _orig_key
     cfg_mod._loaded = False
+
+# ---- 确定性准入闸门 (gate): 脚本先判定, LLM 只兜底 ----
+from lclone import gate  # noqa: E402
+
+check("118 gate 短文本跳过", gate.classify("嗯 好的").kind == gate.SKIP)
+check("119 gate 疑问句跳过",
+      gate.classify("这个方案应该怎么改才比较合适呢？").kind == gate.SKIP,
+      gate.classify("这个方案应该怎么改才比较合适呢？").reason)
+check("120 gate 寒暄跳过", gate.classify("好的 谢谢").kind == gate.SKIP)
+check("121 gate 「做了什么」跳过",
+      gate.classify("修复了分页 bug 并重构了查询层").kind == gate.SKIP)
+check("122 gate 代码块剥离后过短跳过",
+      gate.classify("看下这个\n```\nprint(1)\n```\n").kind == gate.SKIP)
+_v123 = gate.classify("决定记忆统一用 SQLite 存")
+check("123 gate 决策命中候选",
+      _v123.kind == gate.CANDIDATE and "决定" in _v123.hits, str(_v123))
+check("124 gate 教训命中候选",
+      gate.classify("这次踩坑的原因在于没做归属判定，下次要先确认").kind == gate.CANDIDATE)
+check("125 gate 否定作用域不计命中",
+      gate.classify("这个不用统一，各家自己定就行，没有硬要求").kind == gate.UNCERTAIN,
+      str(gate.classify("这个不用统一，各家自己定就行，没有硬要求")))
+check("126 gate 显式「记住」旁路", gate.classify("记住：用 SQLite").kind == gate.CANDIDATE)
+check("127 gate 短决策句不被长度误杀",
+      gate.classify("决定统一口径").kind == gate.CANDIDATE)
+check("128 gate 无信号判不确定",
+      gate.classify("今天看了一下午的日志文件内容").kind == gate.UNCERTAIN)
+check("129 gate 只看用户轮",
+      gate.classify("用户：决定统一口径\n\n助手：好的，我修复了三个 bug 并重构了模块")
+      .kind == gate.CANDIDATE)
+check("130 gate 剥离助手轮噪声",
+      gate.classify("用户：这里随便写点什么内容都行，先放一放再说吧\n\n"
+                    "助手：修复了三个 bug，重构了查询层，迁移了表结构").kind == gate.UNCERTAIN,
+      str(gate.classify("用户：这里随便写点什么内容都行，先放一放再说吧\n\n"
+                        "助手：修复了三个 bug，重构了查询层，迁移了表结构")))
+
+# ---- capture 接入闸门: skip 不调 LLM / 诊断返回 / 上限 / 判重 ----
+_calls = {"n": 0}
+_orig_ex_g = llm_mod.extract_memories
+
+
+def _count_ex(t):
+    _calls["n"] += 1
+    return _orig_ex_g(t)
+
+
+llm_mod.extract_memories = _count_ex
+_skip_ids = mem_mod.capture(conn, "修复了分页 bug 并重构了查询层", project_id=pid)
+llm_mod.extract_memories = _orig_ex_g
+check("131 gate skip 时完全不调 LLM",
+      _skip_ids == [] and _calls["n"] == 0, f"calls={_calls['n']}")
+
+_rep = mem_mod.capture_report(conn, "决定了记忆统一用 SQLite 存", project_id=pid)
+check("132 capture_report 带闸门诊断",
+      _rep["gate"]["kind"] == "candidate" and _rep["ids"], str(_rep))
+_rep2 = mem_mod.capture_report(conn, "今天看了一下午的日志文件内容", project_id=pid)
+check("133 uncertain 档经 LLM 判定后仍可成卡",
+      _rep2["gate"]["kind"] == "uncertain", str(_rep2["gate"]))
+
+_orig_ex_cap = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t: [
+    {"level": "insight", "content": f"决定统一口径第 {i} 版"} for i in range(5)]
+_cap_ids = mem_mod.capture(conn, "决定统一口径五条一起来", project_id=pid)
+llm_mod.extract_memories = _orig_ex_cap
+check("134 单轮成卡上限 2 条", len(_cap_ids) == 2, f"{len(_cap_ids)} 条")
+
+check("135 归一化判重键忽略标点空白",
+      mem_mod._norm_for_dup("决定了 凭证统一走网关鉴权。")
+      == mem_mod._norm_for_dup("决定了凭证统一走网关鉴权"))
+_dup1 = mem_mod.capture(conn, "决定了凭证统一走网关鉴权", project_id=pid)
+_dup2 = mem_mod.capture(conn, "决定了凭证统一走网关鉴权。", project_id=pid)
+check("136 归一化文本判重拦截重复捕获",
+      len(_dup1) == 1 and _dup2 == [], f"{_dup1} / {_dup2}")
+
+# ---- 首次种子内容: 幂等 + 不回灌 + 不覆盖用户改过的进化文件 ----
+from lclone import seed as seed_mod  # noqa: E402
+
+_r1 = seed_mod.apply(conn)
+check("137 seed 种入通用洞察", len(_r1["insights_added"]) == 4, str(_r1["insights_added"]))
+_seed_n = conn.execute(
+    "SELECT COUNT(*) c FROM memories WHERE source_type='seed'"
+    " AND status='active' AND project_id IS NULL"
+).fetchone()["c"]
+check("138 种子洞察落全局层且直接生效", _seed_n == 4, f"{_seed_n} 条")
+check("139 种子进化文件已写入",
+      len(_r1["evolutions_added"]) == 5
+      and (pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "洞察格式模型.md").exists(),
+      str(_r1["evolutions_added"]))
+_r2 = seed_mod.apply(conn)
+check("140 seed 幂等 (重复调用不重复种)",
+      _r2["insights_added"] == [] and _r2["evolutions_added"] == [], str(_r2))
+
+conn.execute("DELETE FROM memories WHERE source_type='seed' AND content LIKE '%删除纪律%'")
+conn.commit()
+_r3 = seed_mod.apply(conn)
+check("141 用户删掉的种子洞察不回灌",
+      "删除纪律" in _r3["insights_skipped"], str(_r3["insights_skipped"]))
+
+_user_evo = pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "记忆准入标准.md"
+_user_evo.write_text("我改过的内容", encoding="utf-8")
+seed_mod.apply(conn, force=False)
+check("142 不覆盖用户改过的进化文件", _user_evo.read_text(encoding="utf-8") == "我改过的内容")
+seed_mod.apply(conn, force=True)
+check("143 --force 才覆盖进化文件", "记忆准入标准" in _user_evo.read_text(encoding="utf-8"))
+
+# ---- CLI: gate / seed ----
+_gbuf = io.StringIO()
+with contextlib.redirect_stdout(_gbuf):
+    cli.main(["gate", "决定统一口径", "--db", dbp])
+check("144 CLI gate 输出判定与命中",
+      "candidate" in _gbuf.getvalue() and "决定" in _gbuf.getvalue(),
+      _gbuf.getvalue()[:60])
+_sbuf = io.StringIO()
+with contextlib.redirect_stdout(_sbuf):
+    cli.main(["seed", "--dry-run", "--db", dbp])
+check("145 CLI seed --dry-run 不写入",
+      "dry-run" in _sbuf.getvalue() or "已是最新" in _sbuf.getvalue(),
+      _sbuf.getvalue()[:80])
+
+# ---- gate 回归: 疑问句优先 / 词边界 / 泛词收紧 / 政策陈述 ----
+check("146 疑问句含信号词也跳过",
+      gate.classify("这个默认值要改吗？").kind == gate.SKIP,
+      str(gate.classify("这个默认值要改吗？")))
+check("147 「要不要」不再误命中「不要」",
+      "不要" not in gate.classify("不确定要不要统一").hits
+      and gate.classify("不确定要不要统一").kind == gate.SKIP,
+      str(gate.classify("不确定要不要统一")))
+_v148 = gate.classify("用 prefix 命名所有变量吧，保持可读")
+check("148 拉丁词按词边界 (prefix 不命中 fix)",
+      _v148.kind != gate.SKIP and "fix" not in _v148.hits, str(_v148))
+_v149 = gate.classify("开启 debug 模式看看日志输出")
+check("149 拉丁词按词边界 (debug 不命中 bug)",
+      _v149.kind != gate.SKIP and "bug" not in _v149.hits, str(_v149))
+check("150 拉丁词忽略大小写 (Fix 命中 fix)",
+      "fix" in gate.classify("Fix 了分页查询里的空指针问题").hits,
+      str(gate.classify("Fix 了分页查询里的空指针问题")))
+check("151 政策陈述不被「回滚」误杀",
+      gate.classify("回滚策略定为保留最近三个版本").kind == gate.CANDIDATE,
+      str(gate.classify("回滚策略定为保留最近三个版本")))
+check("152 泛词收紧 (原来 不再当教训信号)",
+      gate.classify("原来是这样啊，我懂了").kind == gate.SKIP,
+      str(gate.classify("原来是这样啊，我懂了")))
+check("153 否定豁免 (不错 不算否定)",
+      gate.classify("现在效果不错，统一按这个来").kind == gate.CANDIDATE,
+      str(gate.classify("现在效果不错，统一按这个来")))
+check("154 畸形角色标记回退原文",
+      bool(gate.user_turns("用户：助手：决定统一口径").strip()))
+check("154b 寒暄污染的弱教训信号不算数",
+      gate.classify("嗯嗯明白了，那下次注意").kind == gate.SKIP
+      and gate.classify("下次注意：迁移前先备份数据").kind == gate.CANDIDATE,
+      str(gate.classify("嗯嗯明白了，那下次注意")))
+# 正文里引用「用户：/助手：」不应把内容切碎 (真实 commit 正文就长这样)
+_quoted = ("commit: fix(memory): 收窄判定顺序\n\n"
+           "只看用户轮(按 用户：/助手： 切分)、疑问句优先\n"
+           "- 修复了 gate 的判定顺序, 重构了 classify")
+_vq = gate.classify(_quoted)
+check("154c 正文引用的角色标记不算角色切换",
+      _vq.kind == gate.SKIP and "修复" in _vq.hits, str(_vq))
+
+# ---- seed: dry-run 真不写 / --no-seed / 打包缺失守卫 ----
+check("155 种子包随包分发", seed_mod.available() is True,
+      str(seed_mod.starter_dir()))
+_dry_root = tempfile.mkdtemp(prefix="dryevo_")
+_orig_evo_dir = os.environ.get("LCLONE_EVO_DIR")
+os.environ["LCLONE_EVO_DIR"] = os.path.join(_dry_root, "evolutions")
+try:
+    _dry_conn = db_mod.init(os.path.join(tempfile.mkdtemp(), "dry.db"))
+    _drep = seed_mod.apply(_dry_conn, dry_run=True)
+    _dmem = _dry_conn.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
+    _dstate = _dry_conn.execute("SELECT COUNT(*) c FROM seed_state").fetchone()["c"]
+    _devo = os.path.exists(os.environ["LCLONE_EVO_DIR"])
+finally:
+    if _orig_evo_dir is None:
+        os.environ.pop("LCLONE_EVO_DIR", None)
+    else:
+        os.environ["LCLONE_EVO_DIR"] = _orig_evo_dir
+check("156 seed --dry-run 不写库/不建目录",
+      len(_drep["insights_added"]) == 4 and _dmem == 0 and _dstate == 0 and not _devo,
+      f"ins={len(_drep['insights_added'])} mem={_dmem} state={_dstate} evo={_devo}")
+
+_ns_root = tempfile.mkdtemp(prefix="noseed_")
+_ns_db = os.path.join(_ns_root, "ns.db")
+_orig_write_env = install_mod._write_env
+_orig_cwd2 = os.getcwd()
+install_mod._write_env = lambda provider, api_key, db_path: pathlib.Path(_ns_root) / ".env"
+_ns_buf = io.StringIO()
+try:
+    os.chdir(_ns_root)
+    with contextlib.redirect_stdout(_ns_buf):
+        _ns_rc = install_mod.setup(provider="dummy", yes=True, db_path=_ns_db, no_seed=True)
+finally:
+    os.chdir(_orig_cwd2)
+    install_mod._write_env = _orig_write_env
+_ns_conn = db_mod.init(_ns_db)
+_ns_seed = _ns_conn.execute(
+    "SELECT COUNT(*) c FROM memories WHERE source_type='seed'").fetchone()["c"]
+check("157 setup --no-seed 不种入种子",
+      _ns_rc == 0 and _ns_seed == 0 and "no-seed" in _ns_buf.getvalue(),
+      _ns_buf.getvalue()[-120:])
+
+# 种入需要 embedding: 无可用 key 时必须降级为提示, 不能把一键接入搞崩
+_nk_root = tempfile.mkdtemp(prefix="nokey_")
+_nk_db = os.path.join(_nk_root, "nk.db")
+_orig_llm_env = {k: os.environ.get(k) for k in ("BRAIN_LLM", "BRAIN_EMBED_BACKEND",
+                                                "OPENAI_API_KEY")}
+install_mod._write_env = lambda provider, api_key, db_path: pathlib.Path(_nk_root) / ".env"
+_nk_buf = io.StringIO()
+try:
+    os.environ["BRAIN_LLM"] = "api"
+    os.environ["BRAIN_EMBED_BACKEND"] = "api"
+    os.environ.pop("OPENAI_API_KEY", None)
+    cfg_mod._loaded = False
+    os.chdir(_nk_root)
+    with contextlib.redirect_stdout(_nk_buf):
+        _nk_rc = install_mod.setup(provider="openai", api_key="", yes=True, db_path=_nk_db)
+finally:
+    os.chdir(_orig_cwd2)
+    install_mod._write_env = _orig_write_env
+    for _k, _v in _orig_llm_env.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+    cfg_mod._loaded = False
+check("158 无可用 key 时种入失败只降级提示",
+      _nk_rc == 0 and "种子内容" in _nk_buf.getvalue() and "跳过" in _nk_buf.getvalue(),
+      _nk_buf.getvalue()[-160:])
 
 print()
 if fails:

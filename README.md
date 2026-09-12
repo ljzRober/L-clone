@@ -14,7 +14,8 @@
 - **Spec loop**: new proposals are checked against a project spec's boundary conditions, producing a ✅ pass / ⚠️ warn / ❌ fail report
 - **Write modes**: automatic capture (B, AI distills → you confirm) and active memory (C, your call); **insights take effect only after you approve them** — every entry is traceable to its source
 - **Evolution assets**: reusable scripts / tools live as **files** under `~/.lclone/evolutions/` (not in the DB); an insight points to one with `[[evo:name.ext]]`
-- **Admission & organization**: code-enforced filtering of "what was done" (goes to git/spec, not the brain), **conflict detection** between insights, and an `organize` action that merges semantically-similar insights in one click
+- **Admission & organization**: a **deterministic admission gate** runs first (pure script, no LLM — the `skip` tier costs zero calls) and only accepts decisions / agreements / rules / lessons, judged on user turns with negation scoping; then code-enforced filtering of "what was done" (goes to git/spec, not the brain), **conflict detection** between insights, and an `organize` action that merges semantically-similar insights in one click
+- **Works out of the box**: the first `setup` seeds 4 generic insights plus generic evolution files (insight format model / admission standard / attribution conventions + example scripts) — idempotent, and deleted seeds are never re-added
 - **Two-axis vertical layering**: global → project; concrete work stays in the repo, the brain only tracks direction and decisions
 - **Multi-client**: CLI + Web panel + REST API + MCP (Claude Code / Codex / DSH plugin), wired up via a single `install` wizard
 

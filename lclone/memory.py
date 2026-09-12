@@ -20,17 +20,16 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import db as db_mod
+from . import gate
 from . import llm
 from .db import pack_vec, unpack_vec
 
 LEVELS = ("insight",)
 
 # ---- 记忆准入条件 (代码强制, 不依赖模型意图) ----
-# 排除「做了什么」: 代码改动/接口/重构/bug 归 git & spec, 不进 lclone 记忆
-DID_MARKERS = (
-    "修复", "重构", "迁移", "回滚", "commit", "fix", "bug", "hotfix",
-    "refactor", "新增端点", "改接口", "实现了一个",
-)
+# 「做了什么」标记的**唯一来源**是 gate.py (准入标准的 SSOT), 这里只做别名,
+# 供 _filter_item 在 LLM 成卡之后再做一道兜底过滤。
+DID_MARKERS = gate.DID_MARKERS
 
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
@@ -145,8 +144,8 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
 
 
 def _has_marker(text: str, markers) -> bool:
-    t = (text or "").lower()
-    return any(m.lower() in t for m in markers)
+    """命中标记词 —— 直接复用 gate.hits, 保证与闸门同一套匹配语义 (词表 + 词边界)。"""
+    return bool(gate.hits(text, markers))
 
 
 def _filter_item(item: dict) -> Optional[dict]:
@@ -178,24 +177,93 @@ def _strip_ingest_noise(text: str) -> str:
     return t
 
 
+def _norm_for_dup(content: str) -> str:
+    """文本级判重键: 去掉空白与标点后的前 80 字。
+
+    与向量去重互补 —— 本地哈希向量 (BRAIN_EMBED_BACKEND=local) 对同义改写不敏感,
+    但"同一句话被反复捕获"必须确定性拦掉。
+    """
+    return re.sub(r"[\s\W_]+", "", content or "")[:80]
+
+
+def _is_text_duplicate(conn: sqlite3.Connection, content: str,
+                       project_id: Optional[int] = None,
+                       limit: int = 300) -> bool:
+    """同一归属内, 归一化文本相同的记忆视为重复 (active + pending 都查)。"""
+    key = _norm_for_dup(content)
+    if not key:
+        return False
+    q = ("SELECT content FROM memories WHERE status IN ('active','pending')")
+    params: list = []
+    if project_id is None:
+        q += " AND project_id IS NULL"
+    else:
+        q += " AND project_id=?"
+        params.append(project_id)
+    q += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    for r in conn.execute(q, params).fetchall():
+        if _norm_for_dup(r["content"]) == key:
+            return True
+    return False
+
+
 def capture(conn: sqlite3.Connection, text: str,
             project_id: Optional[int] = None, title: str = "",
             session_key: str = "") -> List[int]:
-    """自动捕获: LLM 提炼洞察 (insight)。note 通道已废弃, 由 evolution 承接。
+    """自动捕获 (兼容入口, 只返回写入的 id 列表)。
 
-    洞察(insight) → pending 草稿 (B 确认制, 防幻觉, 需 review 才生效)。
-    准入: 每条内容先过 _filter_item (排除「做了什么」/ 过短琐碎);
-    ingest 前先 _strip_ingest_noise 剥掉宿主注入的系统提示/上下文标签。
-    不再每轮无条件记录原始文本 (note-append 已废弃); 提炼为空则本条不落库。
+    需要闸门诊断信息 (命中规则/为何跳过) 时用 capture_report。
+    """
+    ids, _ = _capture_impl(conn, text, project_id=project_id, title=title,
+                           session_key=session_key)
+    return ids
+
+
+def capture_report(conn: sqlite3.Connection, text: str,
+                   project_id: Optional[int] = None, title: str = "",
+                   session_key: str = "") -> dict:
+    """带闸门诊断的捕获入口 (CLI / HTTP / MCP 用)。
+
+    返回 {"ids": [...], "gate": {"kind","hits","reason"}}。
+    """
+    ids, verdict = _capture_impl(conn, text, project_id=project_id, title=title,
+                                 session_key=session_key)
+    return {"ids": ids, "gate": verdict.to_dict()}
+
+
+def _capture_impl(conn: sqlite3.Connection, text: str,
+                  project_id: Optional[int] = None, title: str = "",
+                  session_key: str = ""):
+    """自动捕获的实现: 闸门分流 → (必要时) LLM 提炼 → 准入过滤 → pending。
+
+    闸门 (gate.py) 决定要不要碰 LLM:
+      skip       直接返回, 0 次 LLM 调用 (绝大多数轮次)
+      uncertain  先 llm.judge_insight 一次极便宜判定, 判否即返回
+      candidate  直接提炼
+    成卡之后: _filter_item (排除「做了什么」/过短) → 向量去重 → 文本级去重 →
+    单轮上限 gate.MAX_PER_CAPTURE。note 通道已废弃, 只产出 insight。
+    返回 (ids, verdict)。
     """
     text = _strip_ingest_noise(text)
     session_key = session_key or os.environ.get("DSH_SESSION_ID", "")
     session_id = _ensure_session(conn, project_id, title, text[:300], session_key)
+
+    verdict = gate.classify(text)
+    if verdict.kind == gate.SKIP:
+        conn.commit()
+        return [], verdict
+    if verdict.kind == gate.UNCERTAIN and not llm.judge_insight(text):
+        conn.commit()
+        return [], verdict
+
     items = llm.extract_memories(text)
     reason = f"来自会话 #{session_id}"
     ref = f"session:{session_id}"
     ids = []
     for raw in items or []:
+        if len(ids) >= gate.MAX_PER_CAPTURE:
+            break  # 单轮成卡上限 (确定性护栏)
         if (raw.get("level") or "").lower() != "insight":
             continue
         it = _filter_item(raw)
@@ -203,6 +271,8 @@ def capture(conn: sqlite3.Connection, text: str,
             continue
         content = (it.get("content") or "").strip()
         if not content:
+            continue
+        if _is_text_duplicate(conn, content, project_id):
             continue
         emb = llm.embed_one(content)
         # 洞察进草稿待确认 (B 类); 写入前去重
@@ -217,7 +287,7 @@ def capture(conn: sqlite3.Connection, text: str,
         _store_links(conn, cur.lastrowid, content)
         ids.append(cur.lastrowid)
     conn.commit()
-    return ids
+    return ids, verdict
 
 
 def pending_memories(conn: sqlite3.Connection) -> List[sqlite3.Row]:
@@ -314,10 +384,14 @@ EVO_REF_RE = re.compile(r"\[\[evo:([^\]\n]+)\]\]")
 _KIND_EXT = {"script": "sh", "tool": "py", "command": "sh", "model": "md", "other": "txt"}
 
 
-def evo_dir() -> str:
-    """进化文件目录 (记忆区, 全局)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。"""
+def evo_dir(create: bool = True) -> str:
+    """进化文件目录 (记忆区, 全局)。LCLONE_EVO_DIR 可覆盖 (测试/自定义用)。
+
+    create=False 时只解析路径、不建目录 (供 --dry-run 之类的只读检查用)。
+    """
     d = Path(os.environ.get("LCLONE_EVO_DIR") or (Path.home() / ".lclone" / "evolutions"))
-    d.mkdir(parents=True, exist_ok=True)
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return str(d)
 
 

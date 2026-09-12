@@ -125,10 +125,12 @@ def cmd_capture(args) -> None:
             where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
     else:
         where = f"项目 #{pid}" if pid is not None else "全局层"
-    ids = mem_mod.capture(conn, args.text, project_id=pid, title=args.title,
-                          session_key=args.session_key or "")
+    rep = mem_mod.capture_report(conn, args.text, project_id=pid, title=args.title,
+                                 session_key=args.session_key or "")
+    ids = rep["ids"]
+    g = rep["gate"]
     if not ids:
-        print("没有提炼出可记忆的内容 (可能没有洞察或值得记的事实, 或与已有记忆重复)")
+        print(f"没有写入记忆 (闸门判定: {g['kind']} — {g['reason']})")
     else:
         rows = conn.execute(
             "SELECT id, level FROM memories WHERE id IN (%s)"
@@ -251,14 +253,29 @@ def cmd_install(args) -> None:
     from . import install as install_mod
     raise SystemExit(install_mod.run(
         provider=args.provider, api_key=args.api_key,
-        target=args.target, yes=args.yes, db_path=args.db))
+        target=args.target, yes=args.yes, db_path=args.db,
+        no_seed=getattr(args, "no_seed", False)))
 
 
 def cmd_setup(args) -> None:
     from . import install as install_mod
     raise SystemExit(install_mod.setup(
         provider=args.provider, api_key=args.api_key,
-        yes=args.yes, db_path=args.db))
+        yes=args.yes, db_path=args.db, no_seed=getattr(args, "no_seed", False)))
+
+
+def cmd_seed(args) -> None:
+    """首次种子内容: 通用洞察 + 通用进化文件 (幂等; 删掉的不会自动回灌)。"""
+    from . import seed as seed_mod
+    conn = _conn(args)
+    report = seed_mod.apply(conn, force=args.force, dry_run=args.dry_run)
+    print(seed_mod.render(report, force=args.force, dry_run=args.dry_run))
+
+
+def cmd_gate(args) -> None:
+    """准入闸门自测: 打印判定/命中/理由 (纯脚本, 不调 LLM)。"""
+    from . import gate
+    print(gate.explain(args.text))
 
 
 def cmd_integrate(args) -> None:
@@ -540,6 +557,8 @@ def build_parser() -> argparse.ArgumentParser:
                     default=None, help="模型服务商 (默认交互选择)")
     ss.add_argument("--api-key", default=None)
     ss.add_argument("--yes", action="store_true", help="非交互, 用默认值")
+    ss.add_argument("--no-seed", action="store_true",
+                    help="跳过首次种子内容 (通用洞察 + 通用进化文件)")
     ss.set_defaults(func=cmd_setup)
 
     si = sub.add_parser("install", parents=[parent],
@@ -551,7 +570,21 @@ def build_parser() -> argparse.ArgumentParser:
     si.add_argument("--target", choices=["dsh", "claude", "codex", "commit", "all"],
                     default=None, help="集成哪些工具 (默认 all)")
     si.add_argument("--yes", action="store_true", help="非交互, 用默认值")
+    si.add_argument("--no-seed", action="store_true",
+                    help="跳过首次种子内容 (通用洞察 + 通用进化文件)")
     si.set_defaults(func=cmd_install)
+
+    ssd = sub.add_parser("seed", parents=[parent],
+                         help="种入通用洞察 + 通用进化文件 (幂等; 删掉的不会自动回灌)")
+    ssd.add_argument("--force", action="store_true",
+                     help="覆盖已存在的进化文件 / 补回缺失的种子洞察")
+    ssd.add_argument("--dry-run", action="store_true", help="只看会做什么, 不写入")
+    ssd.set_defaults(func=cmd_seed)
+
+    sgt = sub.add_parser("gate", parents=[parent],
+                         help="准入闸门自测: 打印某段文本的判定/命中/理由 (纯脚本, 不调 LLM)")
+    sgt.add_argument("text", help="要判定的文本 (可用 $'用户：...\\n助手：...' 传入多轮)")
+    sgt.set_defaults(func=cmd_gate)
 
     sig = sub.add_parser("integrate", parents=[parent],
                          help="接入 AI 工具前端: 装 skill + 配 hooks/插件 (不碰后端; 交互式选 target)")

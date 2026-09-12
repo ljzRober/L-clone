@@ -12,6 +12,8 @@ lclone proj add <name> [仓库路径] [--charter "大方向"] / list / sync / rm
 lclone log "一句话摘要" [--title 标题] [--project id]        # L0 流水
 lclone remember "内容" [--level insight] [--project id] [--reason 缘由] [--confirmed]
 lclone capture "本次内容" [--project id] [--title 标题] [--session-key id] [--global-fallback]
+lclone gate "文本"                                 # 准入闸门自测: 判定/命中/理由 (纯脚本, 不调 LLM)
+lclone seed [--force] [--dry-run]                  # 首次种子内容: 通用洞察 + 通用进化文件 (幂等)
 lclone evolution add <文件名> [--kind script|tool|command|model|other] [--content 内容] [--ref 路径] [--reason 缘由] [--project id]
 lclone evolution list [--project id] [--status]
 lclone review [--id N --action keep|edit|delete|promote --edit-new "…"] [--all keep|delete]
@@ -28,9 +30,9 @@ lclone supervise "新提议" --project id              # 规范环
 lclone ask "问题" [--project id] [--thread id] [--k 5] [--no-specs] [-v]
 lclone web [--host 0.0.0.0] [--port 8000]
 lclone serve start|stop|status|restart                                       # 管理 web 后台服务
-lclone setup [--provider deepseek] [--api-key xx] [--yes]                                # 部署后端: 空项目起步, 不注册项目
+lclone setup [--provider deepseek] [--api-key xx] [--yes] [--no-seed]                      # 部署后端: 空项目起步, 不注册项目
 lclone integrate [--target skill|dsh|claude|codex|commit|all]                            # 接入 AI 工具(交互式选 target)
-lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes]               # = setup + integrate
+lclone install [--provider deepseek] [--api-key xx] [--target all] [--yes] [--no-seed]     # = setup + integrate
 lclone doctor [--check-llm] [--backend] [--integration]                                  # 自检(默认前后端分段展示)
 lclone backup [--dest backups]                                              # SQLite 在线快照备份
 lclone auth create <name> | list | revoke <name|--id N> | test <url> --token <tok>  # 访问令牌管理
@@ -47,8 +49,12 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
   - `remember` 加 **`--confirmed`** 表示当场已确认、直接生效;
   - 若忘加 `--confirmed`,后续 `review` 再确认同样生效。
 - **no note 通道**:早期区分「决策(强确认)/记录(免确认)」两档,后统一为「洞察」一档;过程性事实并入进化资产 / git 侧。
-- **准入过滤(代码强制)**:描述"做了什么"(修复/重构/改接口/修 bug)的内容不进记忆,归 git 与 spec;
-  标注 insight 但无决策信号自动降级;过短(< 4 字)的琐碎记录丢弃。
+- **准入过滤(代码强制)**:自动捕获先过**确定性准入闸门**(`gate.py`,纯脚本、不调 LLM),把每轮文本判成
+  `skip`(0 次 LLM 调用)/ `candidate`(直接成卡)/ `uncertain`(先一次 1/0 判定)三档,只收「决策/约定/规则/教训」;
+  只看用户轮、遵循否定作用域、单轮最多 2 条。描述"做了什么"(修复/重构/改接口/修 bug)的内容不进记忆,归 git 与 spec;
+  过短(< 4 字)的琐碎记录丢弃;向量去重之外再做归一化文本去重。用 `lclone gate "<文本>"` 可自测判定。
+- **首次种子内容**:`lclone setup` 默认种入 4 条通用洞察 + 通用进化文件(幂等,删掉不回灌),`--no-seed` 跳过,
+  `lclone seed [--force] [--dry-run]` 单独重放。
 - **ingest 剥噪**:`capture` 前剥离宿主注入的标签块(`<system-reminder>`/`<private>`/`<claude-mem-context>`/`<available_skills>`/`<injected>`/`<context>`)。
 
 ## 接入的两条命令(务必分清)

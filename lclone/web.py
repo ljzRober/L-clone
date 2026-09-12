@@ -197,9 +197,9 @@ def create_app(db_path: Optional[str] = None):
                 if not body.global_fallback:
                     raise HTTPException(422, "未归属: 无 git 仓库")
                 pid = None
-        ids = mem_mod.capture(conn, body.text, project_id=pid, title=body.title,
-                              session_key=body.session_key or "")
-        return {"ids": ids}
+        rep = mem_mod.capture_report(conn, body.text, project_id=pid, title=body.title,
+                                     session_key=body.session_key or "")
+        return rep
 
     @app.get("/api/bootstrap")
     def bootstrap(cwd: str = "", query: str = "", k: int = 5,

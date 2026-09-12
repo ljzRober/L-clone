@@ -140,11 +140,12 @@ def configure_triggers(home: Path, target: str, root: Optional[Path]) -> List[st
 
 # ---------------------------------------------------------------- 后端: setup
 def setup(provider: Optional[str] = None, api_key: Optional[str] = None,
-          yes: bool = False, db_path: Optional[str] = None) -> int:
-    """部署后端(空项目起步): provider + key → .env → init DB → 后端自检。
+          yes: bool = False, db_path: Optional[str] = None,
+          no_seed: bool = False) -> int:
+    """部署后端(空项目起步): provider + key → .env → init DB → 种入通用内容 → 后端自检。
 
     不注册项目(项目用 lclone proj add 显式添加, 或 remember/capture 时按 git 懒注册)、
-    不装 skill、不配 hooks/插件(那些归 integrate)。
+    不装 skill、不配 hooks/插件(那些归 integrate)。no_seed=True 跳过首次种子内容。
 
     provider 选择: 已有 .env 时直接沿用, 不重复问; 否则交互式方向键单选菜单;
     --provider 显式指定时强制写入(覆盖)。
@@ -180,8 +181,20 @@ def setup(provider: Optional[str] = None, api_key: Optional[str] = None,
         config._load_dotenv()
 
     # 3. init DB (空库起步, 不注册任何项目)
-    db_mod.init(dbp)
+    conn = db_mod.init(dbp)
     lines.append(f"数据库 → {dbp}")
+
+    # 3.5 首次种子内容 (通用洞察 + 通用进化文件; 幂等, no_seed 可跳过)
+    # 种入要算 embedding, 没有可用 key 时会抛错 —— 那是 doctor 该报的 ❌,
+    # 不能让"一键接入"在这里崩掉 (非交互 --yes 场景尤其重要)。
+    if no_seed:
+        lines.append("种子内容: 已按 --no-seed 跳过")
+    else:
+        from . import seed as seed_mod
+        try:
+            lines.append(seed_mod.render(seed_mod.apply(conn)))
+        except Exception as e:  # noqa: BLE001 - 任何失败都只降级为提示
+            lines.append(f"⚠️ 种子内容: 跳过 (种入失败: {e})")
 
     # 4. 后端自检(不含项目/skill/hooks/插件)
     from . import doctor
@@ -238,9 +251,11 @@ def integrate(home: Optional[Path] = None, target: Optional[str] = None,
 # ---------------------------------------------------------------- 一键全流程(向后兼容)
 def run(provider: Optional[str] = None, api_key: Optional[str] = None,
         target: Optional[str] = None, yes: bool = False,
-        db_path: Optional[str] = None, home: Optional[Path] = None) -> int:
+        db_path: Optional[str] = None, home: Optional[Path] = None,
+        no_seed: bool = False) -> int:
     """install = setup + integrate。新用户一键走完; 只想部署后端用 setup, 只想接工具用 integrate。"""
-    rc = setup(provider=provider, api_key=api_key, yes=yes, db_path=db_path)
+    rc = setup(provider=provider, api_key=api_key, yes=yes, db_path=db_path,
+               no_seed=no_seed)
     if rc != 0:
         return rc
     print()

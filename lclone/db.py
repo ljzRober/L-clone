@@ -116,6 +116,13 @@ CREATE TABLE IF NOT EXISTS access_tokens (
   revoked_at   TEXT
 );
 
+-- 首次种子内容的状态: 种过即记, 即使用户事后删掉也不回灌
+-- (幂等 + 尊重用户删除; key 形如 insight:<slug> / evolution:<文件名>)
+CREATE TABLE IF NOT EXISTS seed_state (
+  key        TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_proj ON memories(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_proj ON sessions(project_id);

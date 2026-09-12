@@ -162,7 +162,11 @@ function runCapture(text, sessionKey, cwd, onDone) {
     if (pid) body.project_id = pid // 客户端解析出的归属, 后端直接采用
     log(`capture attribution: project=${pid || '(全局)'}${pname ? ' ' + pname : ''} (${why})`)
     lcloneRequester('POST', '/api/capture', body, (ok, json) => {
-      log('capture via http ' + (ok ? 'ok' : 'fail') + (json ? ' ' + JSON.stringify(json).slice(0, 160) : ''))
+      // 闸门诊断: 后端脚本先判 skip/candidate/uncertain, skip 不会调 LLM。
+      // 排查「为什么这轮没记下来」直接看这行 (值: skip/candidate/uncertain + 命中词/理由)。
+      const g = (json && json.gate) ? json.gate : null
+      const gs = g ? ` gate=${g.kind}${g.hits && g.hits.length ? '(' + g.hits.join('/') + ')' : ' (' + (g.reason || '') + ')'}` : ''
+      log('capture via http ' + (ok ? 'ok' : 'fail') + gs + (json ? ' ' + JSON.stringify(json).slice(0, 160) : ''))
       if (onDone) onDone()
     }, 30000)
   })

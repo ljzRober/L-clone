@@ -285,11 +285,15 @@ def call_tool(name: str, args: dict) -> str:
                 where = "全局层(个人区)"
             else:
                 where = f"项目 #{pid}"
-            ids = mem_mod.capture(conn, args["text"], project_id=pid,
-                                  title=args.get("title", ""),
-                                  session_key=args.get("session_key", ""))
+            rep = mem_mod.capture_report(conn, args["text"], project_id=pid,
+                                         title=args.get("title", ""),
+                                         session_key=args.get("session_key", ""))
+            ids = rep["ids"]
+            g = rep["gate"]
             if not ids:
-                return "未提炼出可记忆的内容 (内容里可能没有洞察或值得记的事实)"
+                return (f"未写入记忆 (准入闸门: {g['kind']} — {g['reason']})。"
+                        "闸门是脚本先判定, 只有候选/不确定才交 LLM 提炼; "
+                        "skip 表示这段内容不值得跨会话记 (做了什么归 git/spec)。")
             rows = conn.execute(
                 "SELECT id, level, content FROM memories WHERE id IN (%s)"
                 % ",".join("?" * len(ids)), ids

@@ -113,6 +113,29 @@ def chat_json(prompt: str, temperature: float = 0.2):
         return None
 
 
+def judge_insight(text: str) -> bool:
+    """闸门 uncertain 档的一次极便宜判定: 这段内容值得跨会话记住吗?
+
+    只要求回 1/0, 比整段提炼便宜得多 (闸门已用脚本挡掉绝大多数轮次, 这里是"判不准
+    才问 LLM"的兜底)。dummy 后端离线恒 True, 保证离线流程可跑通; LLM 不可用或
+    解析失败一律 False —— 宁可不记, 也不打扰用户。
+    """
+    if backend() == "dummy":
+        return True
+    prompt = (
+        "判断下面这段工作记录里有没有值得跨会话长期记住的「决策/约定/规则/教训」。\n"
+        "只回答 1 (有) 或 0 (没有), 不要输出任何其它字符。\n"
+        "注意: 描述「做了什么」(代码改动/修复/重构/新增/迁移) 一律算 0。\n\n"
+        "记录:\n" + (text or "")[:6000]
+    )
+    try:
+        raw = chat([{"role": "user", "content": prompt}], temperature=0.0)
+    except Exception:
+        return False
+    # 只认开头的 1 (允许 "1." / "1 有" 之类), 不把 "10" / "12" 当肯定
+    return re.match(r"^\s*1(?!\d)", raw or "") is not None
+
+
 def extract_memories(text: str) -> List[dict]:
     """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 只产出 insight。
 
@@ -145,7 +168,8 @@ def extract_memories(text: str) -> List[dict]:
         "  归属：<项目级写 src:xx 或 m:NN；全局写 无>\n"
         "多条之间用一行 `====` 分隔。只输出这些块, 不要其它解释。\n"
         "不要逐字转录对话/代码 (那是 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
-        "只提炼真正值得跨会话记住的; 宁可少提甚至不提; 没有就输出空。\n"
+        "准入只收四类: 决策 / 约定 / 规则 / 教训。一般事实、过程描述、进度汇报一律不提炼。\n"
+        "一次最多提炼 2 条; 宁可少提甚至不提; 没有就输出空。\n"
         "边界: 描述「做了什么」(代码改动/接口变化/重构/修 bug/新增端点) 一律不提炼 (归 git/spec);\n"
         "能写成带 WHEN/THEN 的 requirement 的契约也不提炼 (那是 spec)。\n"
         "输入以「用户：」/「助手：」标注; 仅用户提出、助手确认/落地/持续推进的选择才提炼为 insight。\n"
