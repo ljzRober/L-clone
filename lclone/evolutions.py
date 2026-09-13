@@ -379,6 +379,10 @@ def rename(conn: sqlite3.Connection, name: str, new_name: str,
 
     目标名字已是活跃资产时抛 `NameConflict` (墓碑目标名允许 —— publish 会复活它);
     `base_version` 是旧名字的乐观锁 (None = 不校验), 校验早于任何写。
+
+    当前版本的内容对象**缺失或损坏** (`get_blob` 返回 None) 时抛 `ValueError` ——
+    内容继承无法兑现, 拒绝改名以免静默产出空资产 (合法的空内容 hash 非空且读回 `""`,
+    不触发该守卫; ref 类无 blob, 同样不触发)。
     """
     _check_base_version(conn, name, base_version)
     cur = current(conn, name)
@@ -392,6 +396,8 @@ def rename(conn: sqlite3.Connection, name: str, new_name: str,
     if tgt is not None and not (tgt.get("deleted_at") or ""):
         raise NameConflict(new_fname)
     content = None if cur.get("ref") else get_blob(cur.get("hash") or "")
+    if content is None and not cur.get("ref"):
+        raise ValueError(f"内容缺失或损坏, 拒绝改名以免丢失内容: {name}")
     out = publish(conn, new_fname, content, kind=cur["kind"],
                   project_id=cur["project_id"], ref=cur.get("ref") or "",
                   message=message or f"改名自 {name}")

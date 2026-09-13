@@ -1467,6 +1467,76 @@ check("252 改名旧名受乐观锁保护 (陈旧 base_version 被拒)",
       and _rn_new in {x["name"] for x in evo_store.ls(conn)}
       and "rename-other.txt" not in {x["name"] for x in evo_store.ls(conn)})
 
+# ---- 253-259: 内容对象缺失/损坏时拒绝改名 (不静默产出空资产) + 守卫必须窄 ----
+_rc_src, _rc_dst = "rename-corrupt-src.txt", "rename-corrupt-dst.txt"
+_rc_body = "rename corrupt body"
+_rc_ver = evo_store.publish(conn, _rc_src, _rc_body)["version"]
+_rc_hash = evo_store.current(conn, _rc_src)["hash"]
+# 篡改磁盘上的内容对象 → 哈希不匹配, get_blob 按设计返回 None
+evo_store._blob_path(_rc_hash).write_text("tampered body", encoding="utf-8")
+_rc_missing = evo_store.get_blob(_rc_hash) is None
+try:
+    evo_store.rename(conn, _rc_src, _rc_dst, base_version=_rc_ver)
+    _rc_err = None
+except ValueError as e:
+    _rc_err = e
+check("253 内容对象损坏 (get_blob 返回 None) 时改名抛 ValueError",
+      _rc_missing and isinstance(_rc_err, ValueError)
+      and "拒绝改名" in str(_rc_err),
+      f"missing={_rc_missing} err={_rc_err!r}")
+check("254 被拒的改名不产生目标名字 (默认清单无, 且无新版本行)",
+      _rc_dst not in {x["name"] for x in evo_store.ls(conn)}
+      and conn.execute("SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+                       (_rc_dst,)).fetchone()["n"] == 0,
+      f"target_in_ls={_rc_dst in {x['name'] for x in evo_store.ls(conn)}}")
+_rc_cur = evo_store.current(conn, _rc_src)
+check("255 被拒的改名不半应用: 旧名仍活跃、墓碑未写、版本与历史不变",
+      _rc_src in {x["name"] for x in evo_store.ls(conn)}
+      and not (_rc_cur.get("deleted_at") or "")
+      and not (_rc_cur.get("renamed_to") or "")
+      and _rc_cur["version"] == _rc_ver
+      and [h["version"] for h in evo_store.history(conn, _rc_src)] == [_rc_ver],
+      f"deleted_at={_rc_cur.get('deleted_at')!r} renamed_to={_rc_cur.get('renamed_to')!r}"
+      f" version={_rc_cur['version']}")
+# 守卫必须窄: 合法空内容 (hash=sha256("")) 读回 "" 而非 None, 不得被拒
+_rc_e_src, _rc_e_dst = "rename-empty-src.txt", "rename-empty-dst.txt"
+_rc_e_ver = evo_store.publish(conn, _rc_e_src, "")["version"]
+_rc_e = evo_store.rename(conn, _rc_e_src, _rc_e_dst, base_version=_rc_e_ver)
+check("256 合法空内容改名仍成功 (空串 != 缺失, 守卫不误伤)",
+      _rc_e["changed"] is True
+      and evo_store.current(conn, _rc_e_dst)["hash"] == evo_store.sha256_text("")
+      and evo_store.resolve(conn, _rc_e_dst)["content"] == "",
+      f"{_rc_e}")
+# 守卫必须窄: ref 类无 blob, 走引用搬运而非读内容
+_rc_r_src, _rc_r_dst = "rename-ref-src.txt", "rename-ref-dst.txt"
+evo_store.publish(conn, _rc_r_src, None, ref="scripts/run.sh")
+_rc_r = evo_store.rename(conn, _rc_r_src, _rc_r_dst)
+check("257 ref 类改名仍走引用搬运 (无 blob, 守卫不误伤)",
+      _rc_r["changed"] is True
+      and evo_store.current(conn, _rc_r_dst)["ref"] == "scripts/run.sh"
+      and evo_store.current(conn, _rc_r_dst)["hash"] == ""
+      and evo_store.resolve(conn, _rc_r_dst)["content"] is None,
+      f"{_rc_r}")
+# 守卫位置之后的原有路径: 同名改名幂等 (守卫之前的早返回)
+_same = evo_store.rename(conn, _rn_new, _rn_new)
+check("258 同名改名仍幂等返回 changed=False (守卫之前的早返回不变)",
+      _same["changed"] is False
+      and _same["version"] == evo_store.current(conn, _rn_new)["version"]
+      and [h["version"] for h in evo_store.history(conn, _rn_new)] == [1],
+      f"{_same}")
+# 守卫不改变「墓碑目标名可作目的地」: 目标名续用自身历史 (历史不迁移的另一面)
+_rc_t_src, _rc_t_dst = _rn_new, "rename-tomb-dst.txt"
+evo_store.publish(conn, _rc_t_dst, "tomb dst body")
+evo_store.delete(conn, _rc_t_dst)
+_rc_t_hist = [h["version"] for h in evo_store.history(conn, _rc_t_dst)]
+_rc_t = evo_store.rename(conn, _rc_t_src, _rc_t_dst)
+check("259 墓碑目标名仍可作改名目的地 (续用自身历史, 墓碑被清)",
+      _rc_t["changed"] is True and _rc_t["version"] == max(_rc_t_hist) + 1
+      and [h["version"] for h in evo_store.history(conn, _rc_t_dst)]
+      == [max(_rc_t_hist) + 1] + _rc_t_hist
+      and not evo_store.current(conn, _rc_t_dst)["deleted_at"],
+      f"{_rc_t} hist={_rc_t_hist}")
+
 print()
 if fails:
     print("FAILED:", fails)
