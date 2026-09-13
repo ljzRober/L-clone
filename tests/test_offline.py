@@ -1292,6 +1292,46 @@ except ValueError:
     _unknown_ok = True
 check("230 删除未知名字抛 ValueError", _unknown_ok)
 
+# ---- 231-235: 墓碑名字不得经本地缓存行重现 (tree) / 迁移不得静默复活 ----
+# 复现条件: 一个已 materialize/pull 到本地缓存的名字被墓碑删除 —— 本地副本仍在盘上。
+_tomb_cache_name = "tomb-cached.txt"
+evo_store.publish(conn, _tomb_cache_name, "tomb cached body")
+evo_store.materialize(conn, _tomb_cache_name)
+check("231 墓碑前该名字在本地缓存目录里确有副本 (复现前提)",
+      (evo_store.cache_dir() / _tomb_cache_name).is_file(),
+      str(evo_store.cache_dir() / _tomb_cache_name))
+evo_store.delete(conn, _tomb_cache_name)
+check("232 有本地副本的墓碑名字不出现在默认 tree() (不得以 untracked 行重现)",
+      _tomb_cache_name not in {x["name"] for x in evo_store.tree(conn)},
+      str(sorted(x["name"] for x in evo_store.tree(conn)))[:200])
+_tomb_inc = [x for x in evo_store.tree(conn, include_deleted=True)
+             if x["name"] == _tomb_cache_name]
+_tomb_ls_inc = [x for x in evo_store.ls(conn, include_deleted=True)
+                if x["name"] == _tomb_cache_name]
+check("233 include_deleted=True 时该名字重新出现 (索引行而非 untracked 缓存行, ls 带墓碑字段)",
+      len(_tomb_inc) == 1 and _tomb_inc[0]["untracked"] is False
+      and _tomb_inc[0]["version"] > 0
+      and len(_tomb_ls_inc) == 1 and bool(_tomb_ls_inc[0].get("deleted_at")),
+      str(_tomb_inc))
+_tomb_ver_before = conn.execute(
+    "SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+    (_tomb_cache_name,)).fetchone()["n"]
+_mig_out2 = evo_store.migrate_cache_files(conn)
+check("234 migrate_cache_files 不复活墓碑名字 (不加版本 / 不清墓碑 / 仍在默认清单外)",
+      _tomb_cache_name not in [m["name"] for m in _mig_out2]
+      and _tomb_cache_name not in {x["name"] for x in evo_store.ls(conn)}
+      and bool(evo_store.current(conn, _tomb_cache_name)["deleted_at"])
+      and conn.execute("SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+                       (_tomb_cache_name,)).fetchone()["n"] == _tomb_ver_before,
+      f"mig={[m['name'] for m in _mig_out2]} ver={_tomb_ver_before}->"
+      f"{conn.execute('SELECT COUNT(*) AS n FROM evo_versions WHERE name=?', (_tomb_cache_name,)).fetchone()['n']}")
+# 没有本地副本的墓碑同样默认不可见、显式可见 (看板默认清单只认墓碑态)
+evo_store.delete(conn, _g_name)
+check("235 无本地副本的墓碑同样默认隐藏 / 显式可见",
+      _g_name not in {x["name"] for x in evo_store.tree(conn)}
+      and [x["name"] for x in evo_store.tree(conn, include_deleted=True)].count(_g_name) == 1,
+      str([x["name"] for x in evo_store.tree(conn, include_deleted=True)])[:200])
+
 print()
 if fails:
     print("FAILED:", fails)

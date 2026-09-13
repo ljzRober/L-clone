@@ -360,6 +360,11 @@ def tree(conn: sqlite3.Connection, include_deleted: bool = False) -> List[dict]:
     """
     out: List[dict] = []
     seen = set()
+    # 墓碑名字**一次算出**、在下面的本地缓存行里一并跳过: 已删除的资产可能仍在
+    # 缓存目录里有副本 (先前 pull / publish_local 留下的), 不跳过它就会被当成
+    # `untracked` 行重新出现在看板上, 与"删除后从默认看板消失"直接矛盾。
+    tombstoned = {r["name"] for r in ls(conn, include_deleted=True)
+                  if r.get("deleted_at")}
     for row in ls(conn, include_deleted=include_deleted):
         name = row["name"]
         seen.add(name)
@@ -371,7 +376,7 @@ def tree(conn: sqlite3.Connection, include_deleted: bool = False) -> List[dict]:
             "ref": row["ref"], "untracked": False,
         })
     for name in _local_files():
-        if name in seen:
+        if name in seen or name in tombstoned:
             continue
         p = cache_dir(create=False) / name
         try:
@@ -733,8 +738,12 @@ def migrate_cache_files(conn: sqlite3.Connection) -> List[dict]:
     """把缓存目录里**尚未进索引**的文件发布为 v1 (存量文件一次性摄入)。
 
     只处理本地缓存目录里的文件; 已在索引里的名字不动 (不覆盖、不自动升版)。
+
+    "已收录"必须**含墓碑名字**: 墓碑资产的本地副本可能仍在缓存目录里, 若把它当成
+    未收录文件重新 publish, 就会经 `publish()` 的复活路径静默清掉墓碑 (删除被撤销)
+    并追加一条同内容版本 —— 所以墓碑名字在这里也要跳过。
     """
-    known = {row["name"] for row in ls(conn)}
+    known = {row["name"] for row in ls(conn, include_deleted=True)}
     out: List[dict] = []
     for name in _local_files():
         if name in known:
