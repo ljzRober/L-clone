@@ -185,27 +185,40 @@ def current(conn: sqlite3.Connection, name: str) -> Optional[dict]:
 
 
 class VersionConflict(Exception):
-    """乐观锁冲突: 调用方 base_version 与服务器当前版本不一致。"""
+    """乐观锁冲突: 调用方 base_version 与服务器当前版本不一致 (或已被墓碑删除)。
+
+    `deleted=True` 表示版本号虽然与 base_version 相同, 但该名字在此期间被删除
+    (墓碑) —— 调用方读到的是"当时还活着"的视图, 因此同样是陈旧视图, 必须拒绝,
+    否则带 base_version 的写会静默复活被删资产 (lost update)。
+    """
 
     def __init__(self, name: str, base_version: Optional[int],
-                 current_version: Optional[int]):
+                 current_version: Optional[int], deleted: bool = False):
         self.name = name
         self.base_version = base_version
         self.current_version = current_version
+        self.deleted = deleted
         cur = f"v{current_version}" if current_version is not None else "不存在"
         super().__init__(
-            f"版本冲突: {name} 基于 v{base_version}, 服务器当前为 {cur}")
+            f"版本冲突: {name} 基于 v{base_version}, 服务器当前为 {cur}"
+            + (" (已被删除)" if deleted else ""))
 
 
 def _check_base_version(conn: sqlite3.Connection, name: str,
                         base_version: Optional[int]) -> None:
-    """乐观锁校验: base_version 为 None 表示不校验 (向后兼容)。"""
+    """乐观锁校验: base_version 为 None 表示不校验 (向后兼容)。
+
+    删除只打墓碑、**不新增版本**, 所以"版本号相同"不等于"视图未过期":
+    版本一致但当前是墓碑态时同样判冲突 (不复活被删资产)。
+    """
     if base_version is None:
         return
     row = current(conn, name)
     actual = row["version"] if row else None
     if actual != base_version:
         raise VersionConflict(name, base_version, actual)
+    if row and (row.get("deleted_at") or ""):
+        raise VersionConflict(name, base_version, actual, deleted=True)
 
 
 def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
@@ -216,7 +229,9 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
 
     ref 类 (项目内脚本, 内容在项目仓库) 只记引用、不写 blob —— hash 为空。
 
-    `base_version` 是乐观锁: 只在显式给出时校验 (None = 不校验, 既有调用方行为不变)。
+    `base_version` 是乐观锁: 只在显式给出时校验 (None = 不校验, 既有调用方行为不变;
+    不给 base_version 时对墓碑名字发布仍视为**重新激活**, 该路径是刻意保留的)。
+    版本号一致但名字已是墓碑态时也判冲突 —— 删除不产生新版本, 版本相同不代表视图未过期。
     校验**早于任何写**(含 `put_blob`) —— 冲突路径零副作用: 不加版本、不动当前指针、
     也不留下未引用的内容对象。
     """
@@ -319,6 +334,8 @@ def delete(conn: sqlite3.Connection, name: str,
 
     `base_version` 是乐观锁 (None = 不校验): 名字不存在时既有语义仍是 `ValueError`;
     但若同时给了 `base_version`, 当前版本为 None → 由校验抛 `VersionConflict`。
+    名字已是墓碑态且给了 `base_version` 时同样抛 `VersionConflict(deleted=True)`
+    (不带 `base_version` 的重复删除仍是幂等的 `changed=False`)。
     """
     cur = current(conn, name)
     _check_base_version(conn, name, base_version)

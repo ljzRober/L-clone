@@ -1380,6 +1380,40 @@ check("242 删除带正确 base_version 时放行",
       evo_store.delete(conn, _lk, base_version=_lk_v3)["changed"] is True
       and _lk not in {x["name"] for x in evo_store.ls(conn)})
 
+# ---- 243-245: 墓碑态下带 base_version 的写同样判冲突 (删除不产生新版本 → 版本号相同也代表视图过期) ----
+# 复现: A 读到 v1; B 删除(墓碑, 版本号仍是 v1); A 拿 base_version=1 发布 —— 版本比对会通过,
+# 若不额外判墓碑, A 的写会静默复活被删资产 (lost update)。这里要求判冲突且墓碑原样保留。
+_tb = "lock-tomb-demo.txt"
+evo_store.publish(conn, _tb, "tomb body one")
+_tb_v1 = evo_store.current(conn, _tb)["version"]
+evo_store.delete(conn, _tb)
+_tb_ver_after_del = evo_store.current(conn, _tb)["version"]
+try:
+    evo_store.publish(conn, _tb, "tomb body two", base_version=_tb_v1)
+    _tb_conflict_ok = False
+    _tb_conf = None
+except evo_store.VersionConflict as e:
+    _tb_conflict_ok = True
+    _tb_conf = e
+check("243 墓碑名字带 stale-but-equal base_version 写入抛 VersionConflict 且 deleted is True",
+      _tb_conflict_ok and _tb_conf is not None and _tb_conf.deleted is True
+      and _tb_conf.current_version == _tb_v1 == _tb_ver_after_del
+      and _tb_conf.base_version == _tb_v1,
+      f"{_tb_conf!r} deleted={getattr(_tb_conf, 'deleted', None)}")
+check("244 被拒的复活式写入不改变墓碑态 (仍在默认 ls 之外 / 不加版本 / 墓碑未清)",
+      _tb not in {x["name"] for x in evo_store.ls(conn)}
+      and bool(evo_store.current(conn, _tb)["deleted_at"])
+      and conn.execute("SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+                       (_tb,)).fetchone()["n"] == 1,
+      f"ls={sorted(x['name'] for x in evo_store.ls(conn))} "
+      f"deleted_at={evo_store.current(conn, _tb)['deleted_at']!r} "
+      f"versions={conn.execute('SELECT COUNT(*) AS n FROM evo_versions WHERE name=?', (_tb,)).fetchone()['n']}")
+check("245 不带 base_version 的 publish 仍能复活墓碑名字 (刻意保留的 re-create 路径)",
+      evo_store.publish(conn, _tb, "tomb body two")["changed"] is True
+      and _tb in {x["name"] for x in evo_store.ls(conn)}
+      and not evo_store.current(conn, _tb)["deleted_at"],
+      f"deleted_at={evo_store.current(conn, _tb)['deleted_at']!r}")
+
 print()
 if fails:
     print("FAILED:", fails)
