@@ -92,6 +92,39 @@ def sha256_text(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------- 可编辑内容判定
+DEFAULT_MAX_EDITABLE_BYTES = 262144   # 256 KB
+
+
+def max_editable_bytes() -> int:
+    """可编辑判定的字节上限; 每次调用都读 env, 便于运行时覆盖与测试。"""
+    raw = (os.environ.get("LCLONE_EVO_MAX_EDIT_BYTES") or "").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_EDITABLE_BYTES
+    return n if n > 0 else DEFAULT_MAX_EDITABLE_BYTES
+
+
+def editability(raw: bytes) -> tuple[bool, str]:
+    """字节内容 → (是否可编辑, 原因码)。服务端唯一权威, 前端只镜像。
+
+    原因码: "" 可编辑 | "too_large" 超尺寸上限 | "binary" 含 NUL 或非法 UTF-8。
+    先判尺寸再解码: 超大内容无需付出解码代价。
+    """
+    if raw is None:
+        return True, ""
+    if len(raw) > max_editable_bytes():
+        return False, "too_large"
+    if b"\x00" in raw:
+        return False, "binary"
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "binary"
+    return True, ""
+
+
 # ---------------------------------------------------------------- 内容存储 (blob)
 def put_blob(content: str) -> Tuple[str, int]:
     """写入内容, 返回 (sha256, 字节数)。同内容只存一份; 先写临时文件再原子替换。

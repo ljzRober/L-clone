@@ -1201,6 +1201,41 @@ check("214 旧库迁移补列且幂等 (既有行保持活跃)",
       f"cols={sorted(_mcols2)} legacy={dict(_legacy) if _legacy else None}")
 _oc2.close()
 
+# ---- 215-220: 可编辑内容判定 (合法 UTF-8 + 尺寸上限, 服务端唯一权威) ----
+check("215 合法 UTF-8 且不超限 -> 可编辑",
+      evo_store.editability("你好 world\n".encode("utf-8")) == (True, ""),
+      str(evo_store.editability("你好 world\n".encode("utf-8"))))
+check("216 含 NUL 字节 -> binary 只读",
+      evo_store.editability(b"abc\x00def") == (False, "binary"),
+      str(evo_store.editability(b"abc\x00def")))
+check("217 非法 UTF-8 -> binary 只读",
+      evo_store.editability(b"\xff\xfe\x80\x81") == (False, "binary"),
+      str(evo_store.editability(b"\xff\xfe\x80\x81")))
+check("218 超阈值 -> too_large 只读",
+      evo_store.editability(b"a" * (evo_store.DEFAULT_MAX_EDITABLE_BYTES + 1))[1] == "too_large",
+      "len=" + str(evo_store.DEFAULT_MAX_EDITABLE_BYTES + 1))
+check("219 恰好等于阈值 -> 仍可编辑 (边界)",
+      evo_store.editability(b"a" * evo_store.DEFAULT_MAX_EDITABLE_BYTES) == (True, ""),
+      "len=" + str(evo_store.DEFAULT_MAX_EDITABLE_BYTES))
+# 阈值必须运行时可改 (读函数, 非模块级常量快照)
+_prev_max = os.environ.get("LCLONE_EVO_MAX_EDIT_BYTES")
+try:
+    os.environ["LCLONE_EVO_MAX_EDIT_BYTES"] = "4"
+    check("220 env 覆盖阈值 (且非法值回落默认)",
+          evo_store.editability(b"abcd") == (True, "")
+          and evo_store.editability(b"abcde") == (False, "too_large")
+          and evo_store.max_editable_bytes() == 4,
+          f"max={evo_store.max_editable_bytes()}")
+    os.environ["LCLONE_EVO_MAX_EDIT_BYTES"] = "not-a-number"
+    check("221 非法 env 值回落默认",
+          evo_store.max_editable_bytes() == evo_store.DEFAULT_MAX_EDITABLE_BYTES,
+          str(evo_store.max_editable_bytes()))
+finally:
+    if _prev_max is None:
+        os.environ.pop("LCLONE_EVO_MAX_EDIT_BYTES", None)
+    else:
+        os.environ["LCLONE_EVO_MAX_EDIT_BYTES"] = _prev_max
+
 print()
 if fails:
     print("FAILED:", fails)
