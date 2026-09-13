@@ -172,8 +172,12 @@ def blob_count() -> int:
 
 # ---------------------------------------------------------------- 索引: 发布 / 解析
 def current(conn: sqlite3.Connection, name: str) -> Optional[dict]:
+    """当前版本 + 墓碑状态 (deleted_at / renamed_to)。
+
+    墓碑只影响**清单列举** (`ls`), 不影响按名字直接读取 —— 删除后历史仍可读、可回滚。
+    """
     row = conn.execute(
-        "SELECT v.* FROM evo_current c"
+        "SELECT v.*, c.deleted_at, c.renamed_to FROM evo_current c"
         " JOIN evo_versions v ON v.name = c.name AND v.version = c.version"
         " WHERE c.name = ?", (name,)
     ).fetchone()
@@ -201,7 +205,11 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
     k = kind or (cur["kind"] if cur else "") or DEFAULT_KIND
     pid = project_id if project_id is not None else (cur["project_id"] if cur else None)
     sref_n = source_ref or (cur["source_ref"] if cur else "") or ""
-    if (cur and cur["hash"] == h and (cur["ref"] or "") == ref_n
+    # 墓碑名字再次 publish 视为**重新激活** (墓碑不在默认清单里, 用户以同名新建应当成功)。
+    # 因此墓碑态必须跳过"内容未变则不新增版本"的早返回, 让流程走到 upsert 去清墓碑 ——
+    # 否则"删除后原样重发"会被早返回挡住, 名字永远留在墓碑态。
+    tombstoned = bool(cur and (cur.get("deleted_at") or ""))
+    if (not tombstoned and cur and cur["hash"] == h and (cur["ref"] or "") == ref_n
             and cur["kind"] == k and cur["project_id"] == pid
             and (cur["source_ref"] or "") == sref_n):
         return {"name": fname, "version": cur["version"], "hash": h, "changed": False}
@@ -225,9 +233,10 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
                 conn.rollback()
                 raise
     conn.execute(
-        "INSERT INTO evo_current(name, version, updated_at) VALUES (?,?,?)"
+        "INSERT INTO evo_current(name, version, updated_at, deleted_at, renamed_to)"
+        " VALUES (?,?,?,'','')"
         " ON CONFLICT(name) DO UPDATE SET version=excluded.version,"
-        " updated_at=excluded.updated_at",
+        " updated_at=excluded.updated_at, deleted_at='', renamed_to=''",
         (fname, ver, _now()),
     )
     conn.commit()
@@ -274,14 +283,42 @@ def rollback(conn: sqlite3.Connection, name: str, to_version: int) -> dict:
     return dict(r)
 
 
-def ls(conn: sqlite3.Connection) -> List[dict]:
-    """列出所有进化资产 (当前版本)。"""
-    rows = conn.execute(
-        "SELECT v.name, v.version, v.hash, v.size, v.kind, v.project_id, v.ref,"
-        " v.created_at, c.updated_at FROM evo_current c"
-        " JOIN evo_versions v ON v.name = c.name AND v.version = c.version"
-        " ORDER BY v.name"
-    ).fetchall()
+def delete(conn: sqlite3.Connection, name: str) -> dict:
+    """墓碑删除: 从默认清单移出, 但**不动** evo_versions 与 blob (可恢复)。幂等。"""
+    cur = current(conn, name)
+    if cur is None:
+        raise ValueError(f"进化资产不存在: {name}")
+    if cur.get("deleted_at"):
+        return {"name": name, "deleted_at": cur["deleted_at"], "changed": False}
+    ts = _now()
+    conn.execute("UPDATE evo_current SET deleted_at=?, updated_at=? WHERE name=?",
+                 (ts, ts, name))
+    conn.commit()
+    return {"name": name, "deleted_at": ts, "changed": True}
+
+
+def restore(conn: sqlite3.Connection, name: str) -> dict:
+    """恢复墓碑: 清 deleted_at 与 renamed_to (回到普通活跃资产)。幂等。"""
+    cur = current(conn, name)
+    if cur is None:
+        raise ValueError(f"进化资产不存在: {name}")
+    if not (cur.get("deleted_at") or cur.get("renamed_to")):
+        return {"name": name, "changed": False}
+    conn.execute("UPDATE evo_current SET deleted_at='', renamed_to='', updated_at=?"
+                 " WHERE name=?", (_now(), name))
+    conn.commit()
+    return {"name": name, "changed": True}
+
+
+def ls(conn: sqlite3.Connection, include_deleted: bool = False) -> List[dict]:
+    """列出所有进化资产 (当前版本)。默认不含墓碑; include_deleted=True 时含并带墓碑字段。"""
+    sql = ("SELECT v.name, v.version, v.hash, v.size, v.kind, v.project_id, v.ref,"
+           " v.created_at, c.updated_at, c.deleted_at, c.renamed_to FROM evo_current c"
+           " JOIN evo_versions v ON v.name = c.name AND v.version = c.version")
+    if not include_deleted:
+        sql += " WHERE COALESCE(c.deleted_at, '') = ''"
+    sql += " ORDER BY v.name"
+    rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -314,15 +351,16 @@ def _fmt_mtime(ts: float) -> str:
     return datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
 
 
-def tree(conn: sqlite3.Connection) -> List[dict]:
+def tree(conn: sqlite3.Connection, include_deleted: bool = False) -> List[dict]:
     """目录 UI 用的扁平清单 (索引条目 + 本地未收录文件)。
 
     保留旧 `list_evolution_files` 的形状 (name/ext/size/mtime/is_dir/children),
     另附加 version/hash/kind/ref/untracked 供 UI/CLI 展示版本与脏状态。
+    `include_deleted` 透传给 `ls` —— 形状**不因墓碑而改变**。
     """
     out: List[dict] = []
     seen = set()
-    for row in ls(conn):
+    for row in ls(conn, include_deleted=include_deleted):
         name = row["name"]
         seen.add(name)
         out.append({

@@ -1236,6 +1236,62 @@ finally:
     else:
         os.environ["LCLONE_EVO_MAX_EDIT_BYTES"] = _prev_max
 
+# ---- 222-228: 墓碑删除与恢复 (evo_versions 与 blob 均不得变化) ----
+_g_name = "tomb-demo.txt"
+evo_store.publish(conn, _g_name, "v1 body")
+evo_store.publish(conn, _g_name, "v2 body")
+_ls_names = {x["name"] for x in evo_store.ls(conn)}
+check("222 删除前在默认清单里", _g_name in _ls_names, str(sorted(_ls_names)))
+_evc_before = conn.execute("SELECT COUNT(*) AS n FROM evo_versions").fetchone()["n"]
+_blob_before = evo_store.blob_count()
+_cur_before = evo_store.current(conn, _g_name)
+_hist_before = evo_store.history(conn, _g_name)
+
+_del = evo_store.delete(conn, _g_name)
+check("223 删除返回 changed 且带时间戳",
+      _del["changed"] is True and bool(_del["deleted_at"]), str(_del))
+check("224 删除后从默认清单消失",
+      _g_name not in {x["name"] for x in evo_store.ls(conn)},
+      str(sorted(x["name"] for x in evo_store.ls(conn))))
+check("225 删除不动 evo_versions 与 blob (历史仍完整可读)",
+      conn.execute("SELECT COUNT(*) AS n FROM evo_versions").fetchone()["n"] == _evc_before
+      and evo_store.blob_count() == _blob_before
+      and [h["version"] for h in evo_store.history(conn, _g_name)] == [h["version"] for h in _hist_before]
+      and evo_store.current(conn, _g_name)["version"] == _cur_before["version"],
+      f"ver={_evc_before}->{conn.execute('SELECT COUNT(*) AS n FROM evo_versions').fetchone()['n']}"
+      f" blob={_blob_before}->{evo_store.blob_count()}")
+
+_del2 = evo_store.delete(conn, _g_name)
+check("226 重复删除幂等 (不报错/不加版本)",
+      _del2["changed"] is False
+      and conn.execute("SELECT COUNT(*) AS n FROM evo_versions").fetchone()["n"] == _evc_before,
+      str(_del2))
+
+_inc = [x for x in evo_store.ls(conn, include_deleted=True) if x["name"] == _g_name]
+check("227 显式含墓碑时可见且带墓碑字段",
+      len(_inc) == 1 and bool(_inc[0].get("deleted_at")) and "renamed_to" in _inc[0],
+      str(_inc))
+
+_rest = evo_store.restore(conn, _g_name)
+check("228 恢复后回到默认清单且当前版本不变",
+      _rest["changed"] is True
+      and _g_name in {x["name"] for x in evo_store.ls(conn)}
+      and evo_store.current(conn, _g_name)["version"] == _cur_before["version"],
+      str(_rest))
+# 复活: 对已墓碑的名字再次 publish 应重新激活 (而非被"内容未变"早返回挡住)
+evo_store.delete(conn, _g_name)
+evo_store.publish(conn, _g_name, "v2 body")     # 与当前版本内容完全相同
+check("229 对墓碑名字 publish 内容未变也应复活",
+      _g_name in {x["name"] for x in evo_store.ls(conn)},
+      str(sorted(x["name"] for x in evo_store.ls(conn))))
+# 未知名字报错
+try:
+    evo_store.delete(conn, "no-such-asset-xyz.txt")
+    _unknown_ok = False
+except ValueError:
+    _unknown_ok = True
+check("230 删除未知名字抛 ValueError", _unknown_ok)
+
 print()
 if fails:
     print("FAILED:", fails)
