@@ -363,6 +363,48 @@ def restore(conn: sqlite3.Connection, name: str) -> dict:
     return {"name": name, "changed": True}
 
 
+class NameConflict(Exception):
+    """改名目标名冲突: 该名字已是活跃资产。"""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"目标名字已是活跃进化资产: {name}")
+
+
+def rename(conn: sqlite3.Connection, name: str, new_name: str,
+           base_version: Optional[int] = None, message: str = "") -> dict:
+    """改名 = 新名字发布 v1 (内容继承当前版本) + 旧名字墓碑并记 renamed_to。
+
+    **不迁移历史**: 旧名字的 evo_versions 行原样不动, 新名字从 v1 起算。
+
+    目标名字已是活跃资产时抛 `NameConflict` (墓碑目标名允许 —— publish 会复活它);
+    `base_version` 是旧名字的乐观锁 (None = 不校验), 校验早于任何写。
+    """
+    _check_base_version(conn, name, base_version)
+    cur = current(conn, name)
+    if cur is None:
+        raise ValueError(f"进化资产不存在: {name}")
+    new_fname = ensure_ext(new_name, cur["kind"])
+    if new_fname == name:
+        return {"old_name": name, "new_name": new_fname, "version": cur["version"],
+                "hash": cur["hash"], "changed": False}
+    tgt = current(conn, new_fname)
+    if tgt is not None and not (tgt.get("deleted_at") or ""):
+        raise NameConflict(new_fname)
+    content = None if cur.get("ref") else get_blob(cur.get("hash") or "")
+    out = publish(conn, new_fname, content, kind=cur["kind"],
+                  project_id=cur["project_id"], ref=cur.get("ref") or "",
+                  message=message or f"改名自 {name}")
+    # 旧名墓碑: 必须同时写 deleted_at 与 renamed_to, 否则改名旧名绕过乐观锁
+    ts = _now()
+    conn.execute(
+        "UPDATE evo_current SET deleted_at=?, renamed_to=?, updated_at=? WHERE name=?",
+        (ts, new_fname, ts, name))
+    conn.commit()
+    return {"old_name": name, "new_name": new_fname, "version": out["version"],
+            "hash": out["hash"], "changed": True}
+
+
 def ls(conn: sqlite3.Connection, include_deleted: bool = False) -> List[dict]:
     """列出所有进化资产 (当前版本)。默认不含墓碑; include_deleted=True 时含并带墓碑字段。"""
     sql = ("SELECT v.name, v.version, v.hash, v.size, v.kind, v.project_id, v.ref,"

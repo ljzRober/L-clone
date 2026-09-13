@@ -1414,6 +1414,59 @@ check("245 不带 base_version 的 publish 仍能复活墓碑名字 (刻意保�
       and not evo_store.current(conn, _tb)["deleted_at"],
       f"deleted_at={evo_store.current(conn, _tb)['deleted_at']!r}")
 
+# ---- 246-252: 改名语义 (新名字发 v1 + 旧名墓碑 + renamed_to, 历史不迁移) ----
+_rn_old, _rn_new = "rename-old.txt", "rename-new.txt"
+evo_store.publish(conn, _rn_old, "renamed body")
+evo_store.publish(conn, _rn_old, "renamed body v2")
+_rn_cur = evo_store.current(conn, _rn_old)
+_rn_hist_old = [h["version"] for h in evo_store.history(conn, _rn_old)]
+
+_rn = evo_store.rename(conn, _rn_old, _rn_new, base_version=_rn_cur["version"])
+check("246 新名字以当前内容发布为 v1",
+      _rn["new_name"] == _rn_new and _rn["version"] == 1
+      and evo_store.resolve(conn, _rn_new)["content"] == "renamed body v2",
+      f"{_rn}")
+check("247 旧名字从默认清单消失且已墓碑",
+      _rn_old not in {x["name"] for x in evo_store.ls(conn)}
+      and bool(evo_store.current(conn, _rn_old)["deleted_at"]),
+      str(evo_store.current(conn, _rn_old)))
+_old_row = [x for x in evo_store.ls(conn, include_deleted=True) if x["name"] == _rn_old][0]
+check("248 旧名字墓碑记录 renamed_to 指向新名字 (可追溯)",
+      _old_row.get("renamed_to") == _rn_new, str(_old_row))
+check("249 改名不迁移历史: 旧名历史不变, 新名历史从 v1 开始",
+      [h["version"] for h in evo_store.history(conn, _rn_old)] == _rn_hist_old
+      and [h["version"] for h in evo_store.history(conn, _rn_new)] == [1],
+      f"old={[h['version'] for h in evo_store.history(conn, _rn_old)]}"
+      f" new={[h['version'] for h in evo_store.history(conn, _rn_new)]}")
+check("250 改名保留 kind",
+      evo_store.current(conn, _rn_new)["kind"] == _rn_cur["kind"],
+      f"{evo_store.current(conn, _rn_new)['kind']} vs {_rn_cur['kind']}")
+# 目标名已是活跃资产 -> 拒绝, 且两侧都不变
+_pn = "rename-busy.txt"
+evo_store.publish(conn, _pn, "busy body")
+_pn_cur = evo_store.current(conn, _pn)
+try:
+    evo_store.rename(conn, _rn_new, _pn)
+    _busy_ok = False
+except evo_store.NameConflict as e:
+    _busy_ok = (e.name == _pn)
+check("251 目标名冲突时拒绝且两侧均不变",
+      _busy_ok
+      and evo_store.current(conn, _pn)["version"] == _pn_cur["version"]
+      and [h["version"] for h in evo_store.history(conn, _pn)] == [1]
+      and _rn_new in {x["name"] for x in evo_store.ls(conn)},
+      f"busy={evo_store.current(conn, _pn)['version']}")
+# 改名旧名受乐观锁保护
+try:
+    evo_store.rename(conn, _rn_new, "rename-other.txt", base_version=999)
+    _rn_lock_ok = False
+except evo_store.VersionConflict:
+    _rn_lock_ok = True
+check("252 改名旧名受乐观锁保护 (陈旧 base_version 被拒)",
+      _rn_lock_ok
+      and _rn_new in {x["name"] for x in evo_store.ls(conn)}
+      and "rename-other.txt" not in {x["name"] for x in evo_store.ls(conn)})
+
 print()
 if fails:
     print("FAILED:", fails)
