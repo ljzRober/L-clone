@@ -1167,6 +1167,40 @@ check("210 retype 把 other 补正为 script 且保留历史",
 check("211 retype 幂等 (已正确的资产不再动作)",
       not any(x["name"] == "rt.sh" for x in evo_store.retype_default_kinds(_backend)))
 
+# ---- 212-214: evo_current 墓碑列 + 旧库迁移幂等 ----
+_ecols = {r["name"] for r in conn.execute("PRAGMA table_info(evo_current)")}
+check("212 evo_current 含 deleted_at / renamed_to 两列",
+      {"deleted_at", "renamed_to"} <= _ecols, str(sorted(_ecols)))
+check("213 两列默认为空串 (既有行不因迁移变成已删除)",
+      all((r["deleted_at"] == "" and r["renamed_to"] == "")
+          for r in conn.execute("SELECT deleted_at, renamed_to FROM evo_current")),
+      "存在非空默认值")
+# 旧形状库迁移: 手工造一个没有这两列的库, 再 init 两次, 应被补齐且幂等
+_olddb = os.path.join(tmp, "evomig.db")
+_oc = db_mod.connect(_olddb)
+_oc.executescript(
+    "CREATE TABLE evo_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,"
+    " version INTEGER NOT NULL, hash TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,"
+    " kind TEXT NOT NULL DEFAULT 'other', project_id INTEGER, ref TEXT NOT NULL DEFAULT '',"
+    " message TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',"
+    " created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(name, version));"
+    "CREATE TABLE evo_current (name TEXT PRIMARY KEY, version INTEGER NOT NULL,"
+    " updated_at TEXT NOT NULL DEFAULT (datetime('now')));"
+    "INSERT INTO evo_current(name, version) VALUES ('legacy.txt', 1);"
+)
+_oc.commit(); _oc.close()
+db_mod.init(_olddb)   # 迁移
+db_mod.init(_olddb)   # 再跑一次: 必须幂等
+_oc2 = db_mod.connect(_olddb)
+_mcols2 = {r["name"] for r in _oc2.execute("PRAGMA table_info(evo_current)")}
+_legacy = _oc2.execute(
+    "SELECT deleted_at, renamed_to FROM evo_current WHERE name='legacy.txt'").fetchone()
+check("214 旧库迁移补列且幂等 (既有行保持活跃)",
+      {"deleted_at", "renamed_to"} <= _mcols2
+      and _legacy["deleted_at"] == "" and _legacy["renamed_to"] == "",
+      f"cols={sorted(_mcols2)} legacy={dict(_legacy) if _legacy else None}")
+_oc2.close()
+
 print()
 if fails:
     print("FAILED:", fails)

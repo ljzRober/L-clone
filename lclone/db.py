@@ -144,7 +144,9 @@ CREATE TABLE IF NOT EXISTS evo_versions (
 CREATE TABLE IF NOT EXISTS evo_current (
   name       TEXT PRIMARY KEY,
   version    INTEGER NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at TEXT NOT NULL DEFAULT '',
+  renamed_to TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_evo_versions_name ON evo_versions(name, version DESC);
@@ -195,6 +197,12 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT NOT NULL DEFAULT ''")
     # 索引: sessions(session_key) 需在列补齐后建 (兼容旧库; messages(thread_id) 已在 SCHEMA)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_key ON sessions(session_key)")
+    # 迁移: evo_current 增墓碑列 (deleted_at 非空 = 已墓碑; renamed_to 非空 = 改名去向)
+    ecols = [r["name"] for r in conn.execute("PRAGMA table_info(evo_current)")]
+    if "deleted_at" not in ecols:
+        conn.execute("ALTER TABLE evo_current ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
+    if "renamed_to" not in ecols:
+        conn.execute("ALTER TABLE evo_current ADD COLUMN renamed_to TEXT NOT NULL DEFAULT ''")
     # 迁移: 进化资产曾改为文件式 (~/.lclone/evolution/), 不再用这两张旧表
     # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
     # 注意: 版本化存储用的是**新表名** evo_versions / evo_current (见 SCHEMA),
