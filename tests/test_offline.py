@@ -1332,6 +1332,54 @@ check("235 无本地副本的墓碑同样默认隐藏 / 显式可见",
       and [x["name"] for x in evo_store.tree(conn, include_deleted=True)].count(_g_name) == 1,
       str([x["name"] for x in evo_store.tree(conn, include_deleted=True)])[:200])
 
+# ---- 236-242: 乐观锁 (base_version 不一致即拒绝, 且不产生任何副作用) ----
+_lk = "lock-demo.txt"
+_lk_v1 = evo_store.publish(conn, _lk, "body one")
+check("236 base_version 一致时放行",
+      evo_store.publish(conn, _lk, "body two", base_version=_lk_v1["version"])["version"] == 2,
+      str(evo_store.current(conn, _lk)["version"]))
+_lk_v2 = evo_store.current(conn, _lk)["version"]
+_evc_lock = conn.execute("SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+                         (_lk,)).fetchone()["n"]
+try:
+    evo_store.publish(conn, _lk, "body three", base_version=_lk_v1["version"])   # 陈旧
+    _conflict_ok = False
+    _conf = None
+except evo_store.VersionConflict as e:
+    _conflict_ok = True
+    _conf = e
+check("237 陈旧 base_version 抛 VersionConflict 并带当前版本号",
+      _conflict_ok and _conf is not None and _conf.current_version == _lk_v2
+      and _conf.base_version == _lk_v1["version"],
+      f"{_conf!r}")
+check("238 冲突不产生新版本、不改当前指针",
+      conn.execute("SELECT COUNT(*) AS n FROM evo_versions WHERE name=?",
+                   (_lk,)).fetchone()["n"] == _evc_lock
+      and evo_store.current(conn, _lk)["version"] == _lk_v2,
+      str(evo_store.current(conn, _lk)["version"]))
+try:
+    evo_store.publish(conn, "lock-new-never-exists.txt", "x", base_version=1)
+    _new_conflict_ok = False
+except evo_store.VersionConflict as e:
+    _new_conflict_ok = (e.current_version is None)
+check("239 对不存在的资产指定 base_version 也冲突 (current_version=None)",
+      _new_conflict_ok)
+check("240 base_version=None 时行为不变 (向后兼容)",
+      evo_store.publish(conn, _lk, "body four", base_version=None)["version"] == _lk_v2 + 1,
+      str(evo_store.current(conn, _lk)["version"]))
+_lk_v3 = evo_store.current(conn, _lk)["version"]
+try:
+    evo_store.delete(conn, _lk, base_version=_lk_v1["version"])   # 陈旧
+    _del_conflict_ok = False
+except evo_store.VersionConflict:
+    _del_conflict_ok = True
+check("241 删除也受乐观锁保护 (陈旧 base_version 被拒)",
+      _del_conflict_ok and _lk in {x["name"] for x in evo_store.ls(conn)},
+      str(sorted(x["name"] for x in evo_store.ls(conn))))
+check("242 删除带正确 base_version 时放行",
+      evo_store.delete(conn, _lk, base_version=_lk_v3)["changed"] is True
+      and _lk not in {x["name"] for x in evo_store.ls(conn)})
+
 print()
 if fails:
     print("FAILED:", fails)

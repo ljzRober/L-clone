@@ -184,17 +184,47 @@ def current(conn: sqlite3.Connection, name: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+class VersionConflict(Exception):
+    """乐观锁冲突: 调用方 base_version 与服务器当前版本不一致。"""
+
+    def __init__(self, name: str, base_version: Optional[int],
+                 current_version: Optional[int]):
+        self.name = name
+        self.base_version = base_version
+        self.current_version = current_version
+        cur = f"v{current_version}" if current_version is not None else "不存在"
+        super().__init__(
+            f"版本冲突: {name} 基于 v{base_version}, 服务器当前为 {cur}")
+
+
+def _check_base_version(conn: sqlite3.Connection, name: str,
+                        base_version: Optional[int]) -> None:
+    """乐观锁校验: base_version 为 None 表示不校验 (向后兼容)。"""
+    if base_version is None:
+        return
+    row = current(conn, name)
+    actual = row["version"] if row else None
+    if actual != base_version:
+        raise VersionConflict(name, base_version, actual)
+
+
 def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
             kind: str = "", project_id: Optional[int] = None, ref: str = "",
-            message: str = "", source_ref: str = "") -> dict:
+            message: str = "", source_ref: str = "",
+            base_version: Optional[int] = None) -> dict:
     """发布一版内容。内容未变则**不新增版本**(幂等), 返回 {name, version, hash, changed}。
 
     ref 类 (项目内脚本, 内容在项目仓库) 只记引用、不写 blob —— hash 为空。
+
+    `base_version` 是乐观锁: 只在显式给出时校验 (None = 不校验, 既有调用方行为不变)。
+    校验**早于任何写**(含 `put_blob`) —— 冲突路径零副作用: 不加版本、不动当前指针、
+    也不留下未引用的内容对象。
     """
     fname = ensure_ext(name, kind)
     if ref and content is not None:
         raise ValueError("ref 类只记引用, 不能同时给 content (内容在项目仓库)")
     cur = current(conn, fname)
+    _check_base_version(conn, fname, base_version)
     if ref and content is None:
         h, size = "", 0
     else:
@@ -283,9 +313,15 @@ def rollback(conn: sqlite3.Connection, name: str, to_version: int) -> dict:
     return dict(r)
 
 
-def delete(conn: sqlite3.Connection, name: str) -> dict:
-    """墓碑删除: 从默认清单移出, 但**不动** evo_versions 与 blob (可恢复)。幂等。"""
+def delete(conn: sqlite3.Connection, name: str,
+           base_version: Optional[int] = None) -> dict:
+    """墓碑删除: 从默认清单移出, 但**不动** evo_versions 与 blob (可恢复)。幂等。
+
+    `base_version` 是乐观锁 (None = 不校验): 名字不存在时既有语义仍是 `ValueError`;
+    但若同时给了 `base_version`, 当前版本为 None → 由校验抛 `VersionConflict`。
+    """
     cur = current(conn, name)
+    _check_base_version(conn, name, base_version)
     if cur is None:
         raise ValueError(f"进化资产不存在: {name}")
     if cur.get("deleted_at"):
