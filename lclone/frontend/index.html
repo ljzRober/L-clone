@@ -415,13 +415,6 @@ const API = {
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
                           .replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-// 内联处理器 (onclick="...") 里的资产名参数: 单引号 JS 串 + HTML 实体转义。
-// 属性值里因此绝无裸引号 —— 不会提前闭合 onclick="..." 逃出属性;
-// esc() 把 " < > & 变实体 (解码后既安全又不改变 JS 语义), 反斜杠与单引号按 JS 规则转义,
-// 于是整串在**实体解码之前**(静态读源码/测试)与**解码之后**(浏览器)都是合法 JS。
-function evoArg(s) {
-  return "'" + esc(String(s == null ? '' : s)).replace(/\\/g, '\\\\').replace(/&#39;/g, "\\'") + "'";
-}
 function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
 function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
@@ -561,7 +554,8 @@ function renderGraph() {
     const label = isEvo ? (m.evo ? `${m.evo.name}${ext}` : t1) : t1;
     const a = label.slice(0, perLine) + (label.length > perLine ? '…' : '');
     const b = label.length > perLine ? label.slice(perLine, perLine * 2) + (label.length > perLine * 2 ? '…' : '') : '';
-    const click = isEvo ? `openEvo(${evoArg(m.evo.name)})` : `openMem(${m.id})`;
+    // 名字进内联处理器: esc() 补了引号转义 (不会闭合 onclick="..."), JSON.stringify 负责 JS 串转义
+    const click = isEvo ? `openEvo(${esc(JSON.stringify(m.evo.name))})` : `openMem(${m.id})`;
     const badge = isEvo ? '进化' : (LN[m.level] || m.level);
     return `<g class="box" onclick="${click}"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
@@ -720,7 +714,7 @@ function evoReasonText(code) { return EVO_REASON[code] || ('不可编辑: ' + (c
 // 渲染 /api/evolution/content 响应: 可编辑 → textarea + 保存; 否则 → 只读预览 + 原因徽标
 function evoRender(d) {
   const ok = !!d.editable;
-  EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok };
+  EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok, loaded: d.content || '' };
   $('evo-pname').textContent = d.name;
   $('evo-ver').textContent = 'v' + d.base_version;
   $('evo-ver').style.display = '';
@@ -737,6 +731,9 @@ function evoRender(d) {
 
 // 打开资产: 内容与可编辑性都取自服务端 (前端不自行判断)
 async function showEvo(name) {
+  // 有未保存编辑时先确认: 任何重载动作都不得静默丢弃草稿 (含 409 后的"刷新重试"路径)
+  if (EVO_CUR && EVO_CUR.name === name && $('evo-editor').value !== EVO_CUR.loaded &&
+      !confirm('「' + name + '」有未保存的编辑，重新载入会放弃它们。要继续吗？')) return;
   document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
   const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
   if (row) row.classList.add('on');
@@ -773,7 +770,7 @@ async function evoSave() {
   if (r.status === 409) {
     // 冲突: 编辑区内容**保持不动** (SHALL NOT 丢弃用户已编辑的内容), 只提示服务器版本
     const cur = (data && data.detail && data.detail.current_version != null) ? data.detail.current_version : null;
-    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}。你的编辑仍在编辑区 —— 刷新资产后重试。`, true);
+    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}。你的编辑仍在编辑区 —— 可先复制，再点左侧条目刷新查看服务器版本。`, true);
     return;
   }
   if (!r.ok) {
@@ -782,6 +779,7 @@ async function evoSave() {
     return;
   }
   const out = (data && data.result) || {};
+  if (EVO_CUR) EVO_CUR.loaded = content;   // 记为已载入, 否则下面的刷新会把自己的保存当草稿弹确认
   await showEvo(name);          // 先刷新到服务端权威状态 (版本牌/内容)
   await evoRefreshList();
   evoNote(out.changed === false ? `内容与 v${base} 相同，未产生新版本。`
@@ -794,11 +792,16 @@ const EVO_ET = { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml'
 function evoChip(ext) { return '<span class="evo-ic ' + (EVO_ET[ext] || 'et-txt') + '">' + (ext || '·').slice(0,3) + '</span>'; }
 
 async function evoRefreshList() {
-  const r = await (await fetch('/api/evolutions')).json();
-  const items = r.items || [];
-  // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
-  let idx = {};
-  try { idx = await (await fetch('/api/evolution/index')).json(); } catch (e) { idx = {}; }
+  let items, idx = {};
+  try {
+    const r = await (await fetch('/api/evolutions')).json();
+    items = r.items || [];
+    // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
+    try { idx = await (await fetch('/api/evolution/index')).json(); } catch (e) { idx = {}; }
+  } catch (e) {
+    $('evo-list').innerHTML = '<div class="evo-empty">资产清单加载失败</div>';
+    return (e && e.message) || String(e);
+  }
   EVO_META = {};
   (idx.items || []).forEach(x => { if (x && x.name) EVO_META[x.name] = x; });
   const dirs = (idx && idx.dirs) || {};
@@ -826,6 +829,7 @@ async function evoRefreshList() {
     html = walk(items, 0);
   }
   $('evo-list').innerHTML = html;
+  return '';
 }
 
 function evoReset() {
@@ -839,9 +843,10 @@ function evoReset() {
   evoNote('可编辑资产点开后可直接改，保存会追加新版本。');
 }
 async function openEvoExplorer(name) {
-  await evoRefreshList();
+  const err = await evoRefreshList();
   evoReset();
   $('evo-exp').classList.add('on');
+  if (err) evoNote('资产清单加载失败: ' + err, true);
   if (name) await showEvo(name);
 }
 function closeEvoExp() { $('evo-exp').classList.remove('on'); }
