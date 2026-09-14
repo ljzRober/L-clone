@@ -844,18 +844,16 @@ function evoConfirmDiscard(what) {
 function evoDropDraft() { if (EVO_CUR) $('evo-editor').value = EVO_CUR.loaded; }
 
 // 打开资产: 切资产 / 重新载入同一资产都不得静默丢弃草稿
-// version 可选 (回滚后刷新用): 显式读"刚回滚到的那一版"。服务端回的是 result 行, 内容仍需再读一次,
-// 而回滚后该版本就是当前版本 —— 显式读它才能让面板显示的版本与回滚结果一致 (生产环境与不传等价)。
-async function showEvo(name, version) {
+// (语义: 读「当前版本」。base_version 恒为当前版本号, 与任何 version 参数无关 —— 见检查 302)
+async function showEvo(name) {
   if (!evoConfirmDiscard('重新载入')) return;
   if (EVO_MODE !== 'view') evoSetMode('view');   // 离开 new/rename 模式, 避免模式与面板内容不一致
   document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
   const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
   if (row) row.classList.add('on');
   evoNote('读取中…');
-  const vs = Number(version) > 0 ? '&version=' + (Number(version) || 0) : '';
   try {
-    const r = await fetch('/api/evolution/content?name=' + encodeURIComponent(name) + vs);
+    const r = await fetch('/api/evolution/content?name=' + encodeURIComponent(name));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     evoRender(await r.json());
     await evoHistLoad(name);   // 先渲染资产再加载历史; 历史加载失败不影响资产渲染
@@ -956,7 +954,7 @@ async function evoHistRollback(version) {
   const out = (data && data.result) || {};
   EVO_HIST_VER = 0;
   await evoRefreshList();
-  await showEvo(name, out.version);   // 刷新到"刚回滚到的那个版本" (生产环境它就是当前版本)
+  await showEvo(name);   // 不带 version: 回滚后当前指针就是目标版本, 读「当前版本」即为回滚结果
   evoNote(`已回滚到 v${out.version != null ? Number(out.version) || 0 : v}。`);
 }
 

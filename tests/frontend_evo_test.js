@@ -873,12 +873,16 @@ function decodeEntities(s) {
   // 334 已确认放弃的草稿不再重复弹确认 (预览历史后回滚: 只弹"放弃"一次 + "回滚确认"一次)
   {
     const { sandbox, byId } = loadSandbox();
+    let curVer = 3;   // 模拟服务端 evo_current.version: 回滚后移到 2
     const h = http([
-      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: curVer, base_version: curVer, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
       { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
       { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
-      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'c2', base_version: 2 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
-      { match: '/api/evolution/rollback', reply: () => okJson({ result: { name: 'h.md', version: 2 } }) },
+      { match: '/api/evolution/rollback', reply: () => { curVer = 2; return okJson({ result: { name: 'h.md', version: 2 } }); } },
+      // 契约: base_version 恒为「当前」版本, 与请求的 version 无关 (web.py:357-362 / 检查 302)
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0
+        ? CONTENT({ name: 'h.md', version: 2, content: 'c2', base_version: curVer })
+        : CONTENT({ name: 'h.md', version: curVer, content: curVer === 2 ? 'c2' : 'c3', base_version: curVer })) },
     ]);
     sandbox.fetch = h.f;
     let confirms = 0;
@@ -891,10 +895,12 @@ function decodeEntities(s) {
     const afterPreview = confirms;
     click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '2' } } });
     await new Promise(r => setTimeout(r, 0));
+    const lastContent = h.seen.filter(x => x.url.indexOf('/api/evolution/content') >= 0).pop() || {};
     check('334 确认放弃后不再为同一草稿重复弹确认 (回滚只弹一次)',
       afterOpen === 0 && afterPreview === 1 && confirms === 2
-      && byId['evo-ver'].textContent === 'v2' && /已回滚/.test(byId['evo-note'].textContent),
-      `confirms=${confirms} (open=${afterOpen} preview=${afterPreview}) ver=${byId['evo-ver'].textContent} note=${byId['evo-note'].textContent}`);
+      && byId['evo-ver'].textContent === 'v2' && /已回滚/.test(byId['evo-note'].textContent)
+      && lastContent.url.indexOf('version=') < 0,
+      `confirms=${confirms} (open=${afterOpen} preview=${afterPreview}) ver=${byId['evo-ver'].textContent} note=${byId['evo-note'].textContent} last=${lastContent.url}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
