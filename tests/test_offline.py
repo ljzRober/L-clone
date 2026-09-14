@@ -1929,6 +1929,34 @@ check("300 /api/evolutions?include_deleted=true 列出墓碑且形状不变, ind
       and _tren.get("renamed_to") == "tn-fresh.txt",
       f"def={sorted(_tdef)} keys={sorted(_keys)}")
 
+# ---- 301-302: 历史与回滚入口所依赖的后端契约 ----
+_tc2.post("/api/evolution/publish", json={"name": "h1.txt", "content": "c1"})
+_tc2.post("/api/evolution/publish", json={"name": "h1.txt", "content": "c2"})
+_tc2.post("/api/evolution/publish", json={"name": "h1.txt", "content": "c3"})
+_hh = _tc2.get("/api/evolution/history?name=h1.txt").json()["items"]
+_blobdir = evo_store.blob_dir()
+_blobs_before = len(list(_blobdir.glob("*"))) if _blobdir.exists() else 0
+_rb = _tc2.post("/api/evolution/rollback", json={"name": "h1.txt", "version": 1})
+_after = {x["name"]: x for x in _tc2.get("/api/evolution/index").json()["items"]}.get("h1.txt", {})
+_blobs_after = len(list(_blobdir.glob("*"))) if _blobdir.exists() else 0
+_pub4 = _tc2.post("/api/evolution/publish", json={"name": "h1.txt", "content": "c4"}).json()["result"]
+check("301 回滚只改当前指针 (版本行与 blob 不变, 再发布按 max+1 续号)",
+      _rb.status_code == 200 and [h["version"] for h in _hh] == [3, 2, 1]
+      and _after.get("base_version") == 1
+      and [h["version"] for h in _tc2.get("/api/evolution/history?name=h1.txt").json()["items"]]
+      == [4, 3, 2, 1]
+      and _pub4.get("version") == 4 and _blobs_after == _blobs_before,
+      f"{_rb.status_code} cur={_after.get('base_version')} pub4={_pub4.get('version')} "
+      f"blobs={_blobs_before}->{_blobs_after}")
+
+# 历史版本内容可读, 且 base_version 恒为「当前」版本 (前端只读预览的依赖契约); 版本不存在 -> 404
+_cv1 = _tc2.get("/api/evolution/content?name=h1.txt&version=1").json()
+_c404 = _tc2.get("/api/evolution/content?name=h1.txt&version=999")
+check("302 历史版本内容可取, base_version 恒为当前版本; 版本不存在 -> 404",
+      _cv1.get("content") == "c1" and _cv1.get("version") == 1 and _cv1.get("base_version") == 4
+      and _c404.status_code == 404,
+      f"v1={_cv1.get('content')!r}/{_cv1.get('version')}/{_cv1.get('base_version')} 404={_c404.status_code}")
+
 print()
 if fails:
     print("FAILED:", fails)

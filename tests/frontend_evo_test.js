@@ -646,6 +646,174 @@ function decodeEntities(s) {
       `del=${byId['evo-del'].style.display} rename=${byId['evo-rename'].style.display} note=${byId['evo-note'].textContent}`);
   }
 
+  // 324 选中资产后渲染版本历史 (新→旧, 动态内容转义)
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [
+        { version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '<b>x</b>', source_ref: '', created_at: '2026-09-14 10:00:00' },
+        { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: 'second', source_ref: '', created_at: '2026-09-13 10:00:00' },
+        { version: 1, hash: 'h1', size: 2, kind: 'other', project_id: null, ref: '', message: 'first', source_ref: '', created_at: '2026-09-12 10:00:00' }] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]).f;
+    await sandbox.openEvoExplorer('h.md');
+    const hist = byId['evo-hist-list'].innerHTML;
+    check('324 历史列表渲染 (新→旧, message 经转义)',
+      hist.indexOf('data-prev="3"') >= 0 && hist.indexOf('data-prev="2"') >= 0 && hist.indexOf('data-prev="1"') >= 0
+      && hist.indexOf('&lt;b&gt;x&lt;/b&gt;') >= 0 && hist.indexOf('<b>x</b>') < 0
+      && hist.indexOf('second') >= 0,
+      hist.slice(0, 220));
+  }
+
+  // 325 预览历史版本 = 只读 (编辑器与保存隐藏, 预览显示该版本内容, 版本牌标历史)
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [
+        { version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' },
+        { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0
+        ? CONTENT({ name: 'h.md', version: 2, content: 'old body', base_version: 3 })
+        : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    const n = click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    check('325 历史预览只读 (编辑器/保存隐藏, 预览显示历史内容)',
+      n > 0 && byId['evo-editor'].style.display === 'none' && byId['evo-save'].style.display === 'none'
+      && byId['evo-preview'].style.display === '' && byId['evo-preview'].textContent === 'old body'
+      && byId['evo-ver'].textContent.indexOf('2') >= 0 && byId['evo-ver'].textContent.indexOf('历史') >= 0
+      && byId['evo-back'].style.display === '',
+      `n=${n} editor=${byId['evo-editor'].style.display} ver=${byId['evo-ver'].textContent} back=${byId['evo-back'].style.display}`);
+  }
+
+  // 326 返回当前版本: 重新取当前版本并恢复可编辑态
+  {
+    const { sandbox, byId } = loadSandbox();
+    let contentCalls = 0;
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => { contentCalls++; return okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'old body', base_version: 3 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })); } },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    click(byId, 'evo-back', {});
+    await new Promise(r => setTimeout(r, 0));
+    check('326 返回当前版本后恢复可编辑态',
+      byId['evo-editor'].style.display === '' && byId['evo-editor'].value === 'c3'
+      && byId['evo-preview'].style.display === 'none' && byId['evo-back'].style.display === 'none'
+      && byId['evo-ver'].textContent === 'v3',
+      `editor=${byId['evo-editor'].style.display} value=${byId['evo-editor'].value} ver=${byId['evo-ver'].textContent} calls=${contentCalls}`);
+  }
+
+  // 327 回滚: confirm 后打 rollback 端点, 刷新到目标版本
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 1, hash: 'h1', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't1' }] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c1', base_version: 1 })) },
+      { match: '/api/evolution/rollback', reply: () => okJson({ result: { name: 'h.md', version: 1 } }) },
+    ]);
+    sandbox.fetch = h.f;
+    sandbox.confirm = () => true;
+    await sandbox.openEvoExplorer('h.md');
+    const n = click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '1' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const rb = h.seen.find(x => x.url.indexOf('/api/evolution/rollback') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(rb.body || '{}'); } catch (e) { body = {}; }
+    check('327 回滚打 rollback 端点 (name+version) 并刷新到目标版本',
+      n > 0 && body.name === 'h.md' && body.version === 1
+      && byId['evo-ver'].textContent === 'v1' && /已回滚/.test(byId['evo-note'].textContent),
+      `n=${n} body=${rb.body} ver=${byId['evo-ver'].textContent} note=${byId['evo-note'].textContent}`);
+  }
+
+  // 328 回滚失败 (404, detail 是字符串) 不崩且提示错误
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+      { match: '/api/evolution/rollback', reply: () => errJson(404, { detail: '版本不存在: h.md@v7' }) },
+    ]).f;
+    sandbox.confirm = () => true;
+    await sandbox.openEvoExplorer('h.md');
+    let threw = '';
+    try {
+      click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '7' } } });
+      await new Promise(r => setTimeout(r, 0));
+    } catch (e) { threw = String(e && e.message); }
+    check('328 回滚失败提示错误且不崩 (detail 为字符串)',
+      threw === '' && byId['evo-note'].classList.contains('err')
+      && /版本不存在/.test(byId['evo-note'].textContent) && byId['evo-pname'].textContent === 'h.md',
+      `threw=${threw} note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 329 有未保存编辑时预览历史 / 回滚都要先确认 (取消则一切原样)
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'old body', base_version: 3 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+      { match: '/api/evolution/rollback', reply: () => okJson({ result: { name: 'h.md', version: 2 } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    byId['evo-editor'].value = 'my unsaved edit';
+    sandbox.confirm = () => false;
+    const before = h.seen.filter(x => x.url.indexOf('version=2') >= 0).length;
+    click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const noPreview = h.seen.filter(x => x.url.indexOf('version=2') >= 0).length === before;
+    click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    check('329 有草稿时预览历史与回滚都先确认 (取消则不发请求不丢草稿)',
+      noPreview && h.seen.every(x => x.url.indexOf('/api/evolution/rollback') < 0)
+      && byId['evo-editor'].value === 'my unsaved edit' && byId['evo-editor'].style.display === '',
+      `noPreview=${noPreview} value=${JSON.stringify(byId['evo-editor'].value)} seen=${h.seen.map(x => x.url).join(',')}`);
+  }
+
+  // 330 改名模式下内容只读 (编辑器隐藏, 预览呈现当前内容), 且编辑器被动改动仍受闸门保护
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    sandbox.evoRenameStart();
+    const readOnly = byId['evo-editor'].style.display === 'none' && byId['evo-preview'].style.display === ''
+      && byId['evo-preview'].textContent === 'c3' && byId['evo-save'].style.display === 'none'
+      && byId['evo-nameinput'].style.display === '';
+    byId['evo-editor'].value = 'tampered';   // 只能程序化产生; 仍必须算脏
+    sandbox.confirm = () => false;
+    const before = h.seen.filter(x => x.url.indexOf('/api/evolution/content') >= 0).length;
+    await sandbox.showEvo('other.txt');
+    check('330 改名模式下内容只读, 且编辑器被动改动仍受闸门保护',
+      readOnly
+      && h.seen.filter(x => x.url.indexOf('/api/evolution/content') >= 0).length === before
+      && byId['evo-nameinput'].value === 'h.md',
+      `readOnly=${readOnly} calls=${h.seen.length} name=${byId['evo-nameinput'].value}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {
