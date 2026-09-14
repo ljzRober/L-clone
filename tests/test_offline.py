@@ -1632,8 +1632,60 @@ try:
     check("274 get_blob(replace 解码) 掩盖非法 UTF-8, get_blob_bytes 暴露原始字节",
           evo_store.get_blob(_bad_h) is not None
           and evo_store.get_blob_bytes(_bad_h) == _bad_raw)
+
+    # ---- 275-280: 服务端故障必须 5xx, 领域异常保持既有 409/400 映射 ----
+    # 端点的异常映射必须**窄**: 只把领域异常 (VersionConflict/NameConflict/ValueError)
+    # 翻成 409/400; 其余 (sqlite3.OperationalError、未来改动引入的 TypeError 等) 是
+    # 服务端故障, 必须冒泡成 500 —— 否则真故障会被报成"你的请求有问题", 且 5xx 永远
+    # 不进日志/指标。TestClient 默认 raise_server_exceptions=True 会把未处理异常直接
+    # 抛进测试进程 (看不到响应), 故同一 app 另起一个关掉该开关的客户端来观察 500。
+    _tc5 = TestClient(_wm2.create_app(_dbp2), raise_server_exceptions=False)
+
+    def _raise_fault(*_a, **_k):
+        raise RuntimeError("模拟服务端故障: database is locked")
+
+    _fault_cases = [
+        ("275", "/api/evolution/publish", "publish", {"name": "fault.txt", "content": "x"}),
+        ("276", "/api/evolution/delete", "delete", {"name": "fault.txt"}),
+        ("277", "/api/evolution/restore", "restore", {"name": "fault.txt"}),
+        ("278", "/api/evolution/rename", "rename",
+         {"name": "fault.txt", "new_name": "fault2.txt"}),
+    ]
+    for _num, _path, _fn, _payload in _fault_cases:
+        _orig_fn = getattr(evo_store, _fn)
+        setattr(evo_store, _fn, _raise_fault)
+        try:
+            _rf = _tc5.post(_path, json=_payload)
+        finally:
+            setattr(evo_store, _fn, _orig_fn)  # 必须恢复, 否则后续检查全被污染
+        check(f"{_num} REST {_fn} 内部故障 -> 500 (不伪装成 400)",
+              _rf.status_code == 500, f"{_rf.status_code} {_rf.text[:80]}")
+
+    # 领域异常仍按原样映射 (窄捕获不得把领域错误也变成 500)
+    _nf = _tc2.post("/api/evolution/delete", json={"name": "no-such-asset.txt"})
+    check("279 REST 删除不存在资产 (ValueError) -> 400",
+          _nf.status_code == 400, f"{_nf.status_code} {_nf.text[:80]}")
+    _tc2.post("/api/evolution/publish", json={"name": "stale.txt", "content": "s1"})
+    _st = _tc2.post("/api/evolution/delete", json={"name": "stale.txt", "base_version": 999})
+    check("280 REST 活跃资产陈旧 base_version 的 DELETE -> 409",
+          _st.status_code == 409 and _st.json()["detail"]["current_version"] == 1,
+          f"{_st.status_code} {_st.text[:80]}")
+    # publish 内部重试版本碰撞后重抛的 sqlite3.IntegrityError 是**服务端故障**, 必须 500
+    import sqlite3 as _sq3
+
+    def _raise_integrity(*_a, **_k):
+        raise _sq3.IntegrityError("UNIQUE constraint failed: evo_versions.name, version")
+
+    _orig_pub = evo_store.publish
+    evo_store.publish = _raise_integrity
+    try:
+        _ri = _tc5.post("/api/evolution/publish", json={"name": "fault.txt", "content": "y"})
+    finally:
+        evo_store.publish = _orig_pub
+    check("281 REST publish 重抛 sqlite3.IntegrityError -> 500 (非领域异常不映射 400)",
+          _ri.status_code == 500, f"{_ri.status_code} {_ri.text[:80]}")
 except ImportError as e:  # 无 fastapi 环境跳过
-    print(f"SKIP 260-274 (缺依赖: {e})")
+    print(f"SKIP 260-281 (缺依赖: {e})")
 
 print()
 if fails:

@@ -115,7 +115,12 @@ class EvoRollbackIn(BaseModel):
 
 # ================================================================ 冲突映射 / 可编辑性
 def _evo_conflict(e: Exception):
-    """领域异常 → HTTPException: 乐观锁/命名冲突一律 409, 其余 400。"""
+    """领域异常 → HTTPException: 乐观锁/命名冲突一律 409, 其余 (ValueError) 400。
+
+    **调用方必须窄捕获** (`VersionConflict`/`NameConflict`/`ValueError`): 其余异常
+    (sqlite3 故障、未来改动引入的 TypeError 等) 是服务端故障, 应冒泡成 500,
+    不得经由本函数伪装成"客户端请求有问题"的 400。
+    """
     from fastapi import HTTPException
     if isinstance(e, evo_mod.VersionConflict):
         return HTTPException(409, {"error": str(e),
@@ -374,7 +379,10 @@ def create_app(db_path: Optional[str] = None):
                                      project_id=body.project_id, ref=body.ref,
                                      message=body.message, source_ref=body.source_ref,
                                      base_version=body.base_version)
-        except Exception as e:  # noqa: BLE001
+        except (evo_mod.VersionConflict, evo_mod.NameConflict, ValueError) as e:
+            # 窄捕获: 只把**领域异常**翻成 409/400。其余 (sqlite3.OperationalError
+            # "database is locked"、未来的 TypeError/AttributeError 等) 是服务端故障,
+            # 必须冒泡成 500 —— 否则真故障被报成"请求有问题", 且 5xx 永不进日志/指标。
             raise _evo_conflict(e)
         return {"result": out}
 
@@ -387,7 +395,10 @@ def create_app(db_path: Optional[str] = None):
         """
         try:
             out = evo_mod.delete(conn, body.name, base_version=body.base_version)
-        except Exception as e:  # noqa: BLE001
+        except (evo_mod.VersionConflict, evo_mod.NameConflict, ValueError) as e:
+            # 窄捕获: 只把**领域异常**翻成 409/400。其余 (sqlite3.OperationalError
+            # "database is locked"、未来的 TypeError/AttributeError 等) 是服务端故障,
+            # 必须冒泡成 500 —— 否则真故障被报成"请求有问题", 且 5xx 永不进日志/指标。
             raise _evo_conflict(e)
         return {"result": out}
 
@@ -396,7 +407,10 @@ def create_app(db_path: Optional[str] = None):
         """恢复墓碑资产 (清 deleted_at / renamed_to), 幂等。"""
         try:
             out = evo_mod.restore(conn, body.name)
-        except Exception as e:  # noqa: BLE001
+        except (evo_mod.VersionConflict, evo_mod.NameConflict, ValueError) as e:
+            # 窄捕获: 只把**领域异常**翻成 409/400。其余 (sqlite3.OperationalError
+            # "database is locked"、未来的 TypeError/AttributeError 等) 是服务端故障,
+            # 必须冒泡成 500 —— 否则真故障被报成"请求有问题", 且 5xx 永不进日志/指标。
             raise _evo_conflict(e)
         return {"result": out}
 
@@ -408,7 +422,10 @@ def create_app(db_path: Optional[str] = None):
         try:
             out = evo_mod.rename(conn, body.name, body.new_name,
                                  base_version=body.base_version, message=body.message)
-        except Exception as e:  # noqa: BLE001
+        except (evo_mod.VersionConflict, evo_mod.NameConflict, ValueError) as e:
+            # 窄捕获: 只把**领域异常**翻成 409/400。其余 (sqlite3.OperationalError
+            # "database is locked"、未来的 TypeError/AttributeError 等) 是服务端故障,
+            # 必须冒泡成 500 —— 否则真故障被报成"请求有问题", 且 5xx 永不进日志/指标。
             raise _evo_conflict(e)
         return {"result": out}
 
