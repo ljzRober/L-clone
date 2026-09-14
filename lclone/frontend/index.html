@@ -118,11 +118,15 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .row { display:flex; gap:8px; align-items:center; }
 
 /* ---- 进化文件目录 (file-explorer) ---- */
-.evo-exp { width:min(1400px,96vw); max-height:94vh; }
-.evo-hd { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+/* 面板做成"占满视口的应用外壳": 弹窗定高 + flex 列, 让内部各区自己滚,
+   这样无论 DSH iframe 多窄/多矮, 都不会把标题栏或正文挤出可视区 */
+.evo-exp { width:min(1600px,99vw); height:96vh; max-height:96vh;
+           display:flex; flex-direction:column; }
+.evo-hd { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex:0 0 auto; }
 .evo-path { font-family:var(--mono); font-size:12px; color:var(--dim); }
-.evo-body { display:grid; grid-template-columns:minmax(240px,30%) 1fr; gap:14px; min-height:56vh; }
-.evo-list { overflow:auto; border:1px solid var(--line); border-radius:12px; padding:8px; }
+.evo-body { display:grid; grid-template-columns:minmax(300px,34%) 1fr; gap:14px;
+            flex:1 1 auto; min-height:0; }
+.evo-list { overflow:auto; border:1px solid var(--line); border-radius:12px; padding:8px; min-height:0; }
 .evo-group { font-family:var(--mono); font-size:11px; color:var(--dim); padding:8px 8px 3px;
              letter-spacing:.06em; }
 .evo-row { display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:8px;
@@ -133,16 +137,18 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
           justify-content:center; font-size:10px; font-weight:700; color:#0a0f1c; flex:none; }
 .et-sh{background:#34d399} .et-py{background:#c084fc} .et-md{background:#60a5fa}
 .et-yml{background:#fbbf24} .et-db{background:#fb923c} .et-txt{background:#9ca3af} .et-dir{background:#94a3b8;color:#0f172a}
-.evo-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.evo-meta { color:var(--dim); font-size:11px; flex:none; }
+/* 名字优先: 元信息(版本·大小·时间)最多占 45% 且可截断, 否则它会挤掉文件名 */
+.evo-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.evo-meta { color:var(--dim); font-size:11px; flex:0 1 auto; min-width:0; max-width:45%;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .evo-preview { border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto;
                font-family:var(--mono); font-size:12px; line-height:1.6; color:var(--fg);
-               white-space:pre-wrap; word-break:break-word; max-height:64vh; }
+               white-space:pre-wrap; word-break:break-word; flex:1 1 auto; min-height:0; }
 .evo-empty { color:var(--dim); font-size:13px; padding:26px 12px; text-align:center;
              border:1px dashed var(--line); border-radius:12px; }
 
 /* 编辑器: 右侧内容区 (可编辑资产是 textarea, 其余退回只读预览) */
-.evo-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.evo-pane { display:flex; flex-direction:column; gap:10px; min-width:0; min-height:0; }
 .evo-phd { display:flex; align-items:center; gap:8px; min-width:0; }
 .evo-pname { font-family:var(--mono); font-size:12px; color:var(--fg);
              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -152,7 +158,8 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
            background:rgba(224,177,92,.08); letter-spacing:.05em; }
 .evo-reason { font-family:var(--mono); font-size:10px; flex:none; border-radius:6px;
               padding:2px 8px; background:#3a2a12; color:var(--warn); }
-.evo-editor { width:100%; min-height:56vh; max-height:64vh; resize:vertical;
+/* 编辑器吃掉右侧剩余高度 (flex), resize 手柄随之取消 —— 它已随视口自适应 */
+.evo-editor { width:100%; flex:1 1 auto; min-height:14vh; resize:none;
               background:#0d1424; color:var(--fg); border:1px solid var(--line);
               border-radius:12px; padding:12px; font-family:var(--mono); font-size:12px;
               line-height:1.6; }
@@ -168,7 +175,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-row.tomb .evo-name { color:var(--dim); text-decoration:line-through; }
 .evo-row.tomb .evo-meta { color:var(--warn); }
 /* 版本历史: 当前资产的历史版本列表 (新→旧), 每行可只读预览或回滚 */
-.evo-hist { border-top:1px solid var(--line); padding-top:10px; }
+.evo-hist { border-top:1px solid var(--line); padding-top:10px; flex:0 0 auto; }
 .evo-hhd { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 .evo-htitle { font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.08em; }
 .evo-hlist { max-height:16vh; overflow:auto; }
@@ -257,8 +264,9 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
   #tree { display:contents; }
   .layer { width:auto; }
   .main { padding:14px; }
-  .evo-body { grid-template-columns:1fr; }
-  .evo-editor, .evo-preview { min-height:24vh; max-height:38vh; }
+  .evo-body { grid-template-columns:1fr; grid-auto-rows:min-content; overflow:auto; }
+  .evo-list { min-height:24vh; }   /* 单列堆叠时给清单一个可用高度, 由 .evo-body 整体滚动 */
+  .evo-editor, .evo-preview { min-height:30vh; }
   .evo-phd { flex-wrap:wrap; }   /* 工具条按钮变多, 窄屏换行而不是溢出 */
   .evo-hhd { flex-wrap:wrap; }   /* 历史区标题 + 返回按钮同理 */
   .evo-hlist { max-height:16vh; }  /* 窄屏纵向空间紧张: 历史列表让位给编辑器/预览 */
