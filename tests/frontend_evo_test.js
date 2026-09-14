@@ -903,6 +903,30 @@ function decodeEntities(s) {
       `confirms=${confirms} (open=${afterOpen} preview=${afterPreview}) ver=${byId['evo-ver'].textContent} note=${byId['evo-note'].textContent} last=${lastContent.url}`);
   }
 
+  // 335 从历史预览进新建模式: 历史态必须被清掉
+  // (否则 canEdit 为假 -> 新建模式的编辑器被隐藏 -> 无法输入; 这是首轮自审发现过的真缺陷)
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'old body', base_version: 3 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const previewed = byId['evo-preview'].textContent === 'old body'
+      && byId['evo-ver'].textContent.indexOf('历史') >= 0;
+    sandbox.evoNewStart();
+    check('335 从历史预览进新建: 历史态清空且编辑器可用',
+      previewed && byId['evo-editor'].style.display === '' && byId['evo-hist-list'].innerHTML === ''
+      && byId['evo-hist'].style.display === 'none' && byId['evo-ver'].textContent.indexOf('历史') < 0
+      && byId['evo-save'].textContent === '新建 v1',
+      `previewed=${previewed} editor=${byId['evo-editor'].style.display} list=${byId['evo-hist-list'].innerHTML.slice(0, 60)} save=${byId['evo-save'].textContent}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {

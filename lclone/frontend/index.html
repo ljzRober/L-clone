@@ -929,10 +929,11 @@ async function evoHistRollback(version) {
   if (!EVO_CUR) return;
   if (EVO_MODE !== 'view') return;   // 同上: 隐藏历史区之外还要挡住被绕过的调用
   if (!evoConfirmDiscard('回滚')) return;
-  evoDropDraft();   // 兑现闸门: 成功路径的 showEvo 不会再弹一次 (否则取消就成了"成功的谎言 + 过期面板")
   const v = Number(version) || 0;
   const name = EVO_CUR.name;
   if (!confirm(`回滚到 v${v}？只改当前指针：所有版本与内容都保留，可再次回滚。`)) return;
+  // 到这里才真正放弃草稿: 回滚确认框上点取消不能丢输入; 且此后成功路径的 showEvo 不会再弹一次闸门
+  evoDropDraft();
   evoNote('回滚中…');
   let r;
   try {
