@@ -927,6 +927,31 @@ function decodeEntities(s) {
       `previewed=${previewed} editor=${byId['evo-editor'].style.display} list=${byId['evo-hist-list'].innerHTML.slice(0, 60)} save=${byId['evo-save'].textContent}`);
   }
 
+  // 336 回滚确认框上取消: 草稿保留且不发 rollback 请求
+  // (evoDropDraft 必须在"确认回滚"之后 —— 否则取消回滚也会丢输入; Task 10 fix round 3 才把顺序改对)
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+      { match: '/api/evolution/rollback', reply: () => okJson({ result: { name: 'h.md', version: 2 } }) },
+    ]);
+    sandbox.fetch = h.f;
+    let n = 0;
+    sandbox.confirm = () => { n++; return n === 1; };   // 第 1 次(放弃闸门)同意; 第 2 次(回滚确认)取消
+    await sandbox.openEvoExplorer('h.md');
+    byId['evo-editor'].value = 'my draft';
+    click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    check('336 取消回滚确认框时保留草稿且不发请求 (evoDropDraft 在确认之后)',
+      n === 2 && byId['evo-editor'].value === 'my draft'
+      && h.seen.every(x => x.url.indexOf('/api/evolution/rollback') < 0)
+      && byId['evo-ver'].textContent === 'v3',
+      `confirms=${n} value=${JSON.stringify(byId['evo-editor'].value)} seen=${h.seen.map(x => x.url).join(',')}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {

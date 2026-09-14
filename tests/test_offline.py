@@ -1957,6 +1957,125 @@ check("302 历史版本内容可取, base_version 恒为当前版本; 版本不�
       and _c404.status_code == 404,
       f"v1={_cv1.get('content')!r}/{_cv1.get('version')}/{_cv1.get('base_version')} 404={_c404.status_code}")
 
+# ---- 303-306: Task 11 验证闸门 (前端静态规范 + 全链路端到端) ----
+# 303 转义覆盖审计: 逐个 `innerHTML =` 语句取窗口, 看 `${...}` 插值是否经 esc()/evoChip()/Number()。
+#     判据 = 未包裹者**恰好等于**冻结白名单 (多一个 = 有人往 innerHTML 里塞了未转义的动态值;
+#     少一个 = 白名单腐烂, 也要复核)。窗口数下限防止本检查变成空转。
+_SAFE_INTERP = {
+    "cntHtml": "调用方拼好的内部计数 HTML (只含数字与静态标记)",
+    "msg": "上游已 esc(String(h.message)) (index.html:881)",
+    "p.id": "DB 自增整数",
+    "rail": "内部字面量 'global'/'project'",
+    "v": "Number(h.version) || 0 (index.html:880)",
+}
+
+
+def _innerhtml_windows(lines):
+    out, i = [], 0
+    while i < len(lines):
+        if re.search(r"\.innerHTML\s*=", lines[i]):
+            depth, buf, j = 0, [], i
+            while j < len(lines) and j < i + 40:      # 上限 40 行防跑飞
+                depth += lines[j].count("{") - lines[j].count("}")
+                buf.append(lines[j])
+                if depth <= 0 and ";" in lines[j]:
+                    break
+                j += 1
+            out.append((i + 1, "\n".join(buf)))
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+_windows = _innerhtml_windows(_fe_text.split("\n"))
+_unwrapped = {}
+for _ln, _win in _windows:
+    for _m in re.finditer(r"\$\{([^{}]*)\}", _win):
+        _expr = _m.group(1).strip()
+        if not any(c in _expr for c in ("esc(", "evoChip(", "Number(")):
+            _unwrapped.setdefault(_expr, []).append(_ln)
+check("303 前端 innerHTML 插值转义审计 (未包裹者必须等于冻结白名单)",
+      len(_windows) >= 15 and set(_unwrapped) == set(_SAFE_INTERP),
+      f"sinks={len(_windows)} extra={sorted(set(_unwrapped) - set(_SAFE_INTERP))} "
+      f"missing={sorted(set(_SAFE_INTERP) - set(_unwrapped))}")
+
+# 304 动效兜底与响应式断点不得被删
+check("304 前端保留 prefers-reduced-motion 兜底与既有响应式断点",
+      "prefers-reduced-motion: reduce" in _fe_text and "animation:none" in _fe_text
+      and "transition:none" in _fe_text and "@media (max-width:760px)" in _fe_text,
+      f"media={re.findall(r'@media[^{]*', _fe_text)}")
+
+# 305 纯 JS 文件必须可解析; 无 TS 断言。
+#     TS 类型断言/声明在 .js 里本就是语法错误, 故 node --check 才是真正的强制手段,
+#     下面的 grep 只是把这条意图显式化 (审阅时一眼可见), 不假装它是独立防线。
+_js_files = [p for p in subprocess.run(["git", "ls-files", "*.js"], cwd=str(ROOT),
+             capture_output=True, text=True, encoding="utf-8").stdout.split("\n") if p.strip()]
+_js_bad = []
+for _rel in _js_files:
+    _jr = subprocess.run([_node, "--check", _rel], cwd=str(ROOT), capture_output=True,
+                         text=True, encoding="utf-8", errors="replace") if _node else None
+    if _jr is None or _jr.returncode != 0:
+        _js_bad.append(_rel + ": " + ("" if _jr is None else (_jr.stderr or "")[:80]))
+_TS_ONLY = re.compile(r"(\bas\s+unknown\b|\bas\s+any\b|\bsatisfies\s+[A-Z]|\binterface\s+[A-Z]"
+                      r"|\bimplements\s+[A-Z]|[A-Za-z0-9_$]!\s*[.;,)]"
+                      r"|\bdeclare\s+(const|function|class)\b)")
+_ts_hits = {_rel: _TS_ONLY.findall((ROOT / _rel).read_text(encoding="utf-8")) for _rel in _js_files}
+check("305 纯 JS 文件可解析且无 TS 类型断言",
+      _node is not None and bool(_js_files) and not _js_bad and not any(_ts_hits.values()),
+      f"files={len(_js_files)} bad={_js_bad} ts={ {k: v for k, v in _ts_hits.items() if v} }")
+
+# 306 端到端: 用真实 app 顺序走完看板能做的整条链路 (建/改/冲突/删/恢复/改名/历史/回滚/续号)
+_e2c = TestClient(_wm2.create_app(os.path.join(tempfile.mkdtemp(prefix="e2e_"), "e.db")))
+_steps = []
+_r = _e2c.post("/api/evolution/publish",
+               json={"name": "life.txt", "content": "v1 body", "only_if_new": True})
+_steps.append(("新建 v1", _r.status_code == 200 and _r.json()["result"]["version"] == 1))
+_r = _e2c.post("/api/evolution/publish",
+               json={"name": "life.txt", "content": "dup", "only_if_new": True})
+_steps.append(("重名新建 409", _r.status_code == 409))
+_r = _e2c.post("/api/evolution/publish",
+               json={"name": "life.txt", "content": "v2 body", "base_version": 1})
+_steps.append(("编辑 v2", _r.status_code == 200 and _r.json()["result"]["version"] == 2))
+_r = _e2c.post("/api/evolution/publish",
+               json={"name": "life.txt", "content": "stale", "base_version": 1})
+_hv = [h["version"] for h in _e2c.get("/api/evolution/history?name=life.txt").json()["items"]]
+_steps.append(("陈旧 base_version 409 且不产生新版本",
+               _r.status_code == 409 and _r.json()["detail"]["current_version"] == 2 and _hv == [2, 1]))
+_cur = [x for x in _e2c.get("/api/evolution/index").json()["items"] if x["name"] == "life.txt"][0]
+_r = _e2c.post("/api/evolution/delete",
+               json={"name": "life.txt", "base_version": _cur["base_version"]})
+_steps.append(("墓碑删除后默认清单消失、显式可见",
+               _r.status_code == 200
+               and "life.txt" not in {x["name"] for x in _e2c.get("/api/evolution/index").json()["items"]}
+               and "life.txt" in {x["name"] for x in
+                                  _e2c.get("/api/evolution/index?include_deleted=true").json()["items"]}))
+_r = _e2c.post("/api/evolution/restore", json={"name": "life.txt"})
+_steps.append(("恢复后回到默认清单且版本不变",
+               _r.status_code == 200
+               and [x for x in _e2c.get("/api/evolution/index").json()["items"]
+                    if x["name"] == "life.txt"][0]["version"] == 2))
+_r = _e2c.post("/api/evolution/rename",
+               json={"name": "life.txt", "new_name": "life2.txt", "base_version": 2})
+_tomb = [x for x in _e2c.get("/api/evolution/index?include_deleted=true").json()["items"]
+         if x["name"] == "life.txt"]
+_steps.append(("改名: 新名 v1 + 旧名墓碑指向新名 + 历史不迁移",
+               _r.status_code == 200 and _r.json()["result"]["new_name"] == "life2.txt"
+               and len(_tomb) == 1 and _tomb[0]["renamed_to"] == "life2.txt"
+               and [h["version"] for h in
+                    _e2c.get("/api/evolution/history?name=life2.txt").json()["items"]] == [1]))
+_cv = _e2c.get("/api/evolution/content?name=life2.txt&version=1").json()
+_rb = _e2c.post("/api/evolution/rollback", json={"name": "life2.txt", "version": 1})
+_steps.append(("历史内容可读且回滚到 v1",
+               _cv.get("content") == "v2 body" and _cv.get("base_version") == 1
+               and _rb.status_code == 200))
+_r = _e2c.post("/api/evolution/publish",
+               json={"name": "life2.txt", "content": "v3 after rollback", "base_version": 1})
+_steps.append(("回滚后再发布按 max+1 续号",
+               _r.status_code == 200 and _r.json()["result"]["version"] == 2))
+_bad = [n for n, ok in _steps if not ok]
+check(f"306 端到端: 看板全链路 ({len(_steps)} 步)", len(_steps) == 9 and not _bad, f"failed={_bad}")
+
 print()
 if fails:
     print("FAILED:", fails)
