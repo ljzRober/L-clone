@@ -1873,11 +1873,15 @@ if _node:
     _fe_ok = _fe_run.returncode == 0
 else:
     _fe_ok, _fe_out = False, "node 不可用: 前端行为测试无法执行"
+# extra 只带桩的末行 (FRONTEND OK n): 整段 _fe_out 会把子进程的 PASS 行灌进外层输出,
+# 让"外层 PASS 计数"出现 313 vs 303 的歧义。
+_fe_tail = _fe_out.strip().splitlines()[-1] if _fe_out.strip() else ""
 check("296 前端进化面板行为契约 (node 执行内联脚本 + 最小 DOM 桩)", _fe_ok and "FRONTEND OK" in _fe_out,
-      _fe_out[-500:])
+      _fe_tail if _fe_ok else _fe_out[-600:])
 
 # 前端引用的 /api/evolution/* 必须真实注册 (防打错 URL 直到浏览器里才暴露)
-_evo_routes = {getattr(r, "path", "") for r in _wm2.create_app(_dbp2).routes}
+# 复用已有客户端 (再 create_app 一次会白建一个 app, 且断言的可能不是被服务的那份)
+_evo_routes = {getattr(r, "path", "") for r in _tc2.app.routes}
 _fe_called = sorted(set(re.findall(r"['\"](/api/evolution/[a-z]+)", _fe_text)))
 check("297 前端引用的 /api/evolution/* 端点都已注册",
       bool(_fe_called) and all(p in _evo_routes for p in _fe_called),

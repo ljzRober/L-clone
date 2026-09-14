@@ -16,7 +16,7 @@ if (!htmlPath || !fs.existsSync(htmlPath)) {
 }
 const html = fs.readFileSync(htmlPath, 'utf8');
 // index.html 有两段内联脚本 (head 里的 API BASE 前缀器 + 主体), 都要执行
-const code = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n');
+const code = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n');
 
 let passed = 0;
 const fails = [];
@@ -29,7 +29,7 @@ function check(name, cond, extra) {
 function El(tag) {
   this.tag = tag || 'div';
   this.id = ''; this._cls = ''; this.value = ''; this._text = ''; this._html = '';
-  this.style = {}; this.dataset = {}; this.children = []; this.title = '';
+  this.style = {}; this.dataset = {}; this.children = []; this.title = ''; this._ls = {};
   const self = this;
   this.classList = {
     add(c) { if (self._cls.split(/\s+/).indexOf(c) < 0) self._cls = (self._cls + ' ' + c).trim(); },
@@ -46,7 +46,7 @@ Object.defineProperty(El.prototype, 'innerHTML', {
   get() { return this._html; },
   set(v) { this._html = String(v == null ? '' : v); this._text = ''; },
 });
-El.prototype.addEventListener = function () {};
+El.prototype.addEventListener = function (t, fn) { (this._ls[t] = this._ls[t] || []).push(fn); };
 El.prototype.appendChild = function (c) { this.children.push(c); return c; };
 El.prototype.focus = function () {};
 El.prototype.querySelectorAll = function () { return []; };
@@ -86,6 +86,14 @@ function loadSandbox() {
   vm.createContext(sandbox);
   vm.runInContext(code, sandbox, { filename: 'index.html', timeout: 5000 });
   return { sandbox, byId, alerts };
+}
+
+// 触发 #evo-list 的 click 处理器 (桩没有真 DOM 树, 用 closestMap 指定 .evo-row 命中)
+function click(byId, id, closestMap) {
+  const fns = (byId[id] && byId[id]._ls && byId[id]._ls.click) || [];
+  const ev = { target: { closest: sel => closestMap[sel] || null } };
+  fns.forEach(fn => fn(ev));
+  return fns.length;
 }
 
 /* ---------------- fetch 桩 ---------------- */
@@ -299,6 +307,88 @@ function decodeEntities(s) {
       threw === '' && byId['evo-exp'].classList.contains('on') &&
       /失败/.test(byId['evo-note'].textContent),
       `threw=${threw} note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 307 面板入口 (看板卡片 / 工具条) 有草稿时必须先确认; 取消则不 reset、不开面板
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([{ match: '/api/evolution/content', reply: () => okJson(CONTENT()) }]).f;
+    await sandbox.showEvo('note.md');
+    byId['evo-editor'].value = 'draft';
+    sandbox.confirm = () => false;
+    await sandbox.openEvoExplorer('note.md');
+    check('307 面板入口不静默丢弃草稿 (取消则不 reset)',
+      byId['evo-editor'].value === 'draft' && !byId['evo-exp'].classList.contains('on'),
+      `value=${JSON.stringify(byId['evo-editor'].value)} on=${byId['evo-exp'].classList.contains('on')}`);
+  }
+
+  // 308 切到另一个资产也要先确认; 确认后才换成新资产内容
+  {
+    const { sandbox, byId } = loadSandbox();
+    let phase = 0;
+    sandbox.fetch = http([{ match: '/api/evolution/content',
+      reply: () => (++phase === 1 ? okJson(CONTENT()) : okJson(CONTENT({ name: 'other.txt', content: 'other body', base_version: 1 }))) }]).f;
+    await sandbox.showEvo('note.md');
+    byId['evo-editor'].value = 'draft';
+    sandbox.confirm = () => false;
+    await sandbox.showEvo('other.txt');
+    const keptOnCancel = byId['evo-editor'].value === 'draft';
+    sandbox.confirm = () => true;
+    await sandbox.showEvo('other.txt');
+    check('308 切资产先确认 (取消保草稿, 确认才切换)',
+      keptOnCancel && byId['evo-editor'].value === 'other body' && byId['evo-pname'].textContent === 'other.txt',
+      `cancel=${JSON.stringify(keptOnCancel ? 'draft' : 'lost')} after=${JSON.stringify(byId['evo-editor'].value)}`);
+  }
+
+  // 309 只读资产即便被程序化调用 evoSave 也不得发布
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ editable: false, editable_reason: 'too_large', content: 'BIG' })) },
+      { match: '/api/evolution/publish', reply: () => okJson({ result: { changed: true, version: 9 } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.showEvo('big.txt');
+    await sandbox.evoSave();
+    check('309 只读资产被程序化调用也不发布',
+      h.seen.every(x => x.url.indexOf('/api/evolution/publish') < 0) && /不可编辑/.test(byId['evo-note'].textContent),
+      `seen=${h.seen.map(x => x.url).join(',')} note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 310 类型徽标必须转义 ext, 且原型键不得污染 class
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [
+        { name: 'evil.txt', ext: '<b>x</b>', size: 1, mtime: 't', is_dir: false, content: 'x' },
+        { name: 'proto.txt', ext: 'constructor', size: 1, mtime: 't', is_dir: false, content: 'y' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+    ]).f;
+    await sandbox.openEvoExplorer();
+    const list = byId['evo-list'].innerHTML;
+    check('310 类型徽标转义 ext + 原型键不污染 class',
+      list.indexOf('<b>') < 0 && list.indexOf('&lt;b&gt;') >= 0 &&
+      list.indexOf('native code') < 0 && list.indexOf('[object Object]') < 0,
+      list.slice(0, 200));
+  }
+
+  // 311 清单点击经事件委托真正打开该资产 (data-name 解实体后逐字传入)
+  {
+    const nasty = 'a"b<c>&d.txt';
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: nasty, ext: 'txt', size: 1, mtime: 't', is_dir: false, content: 'x' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: nasty, content: 'body' })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer();
+    const n = click(byId, 'evo-list', { '.evo-row': { dataset: { name: nasty } } });
+    await new Promise(r => setTimeout(r, 0));   // 放行 showEvo 的 await 链 (setTimeout 在桩外, node 主上下文可用)
+    const hit = h.seen.find(x => x.url.indexOf('/api/evolution/content') >= 0) || {};
+    check('311 清单点击经事件委托打开该资产 (名字逐字传入)',
+      n > 0 && hit.url.indexOf('name=' + encodeURIComponent(nasty)) >= 0 && byId['evo-editor'].value === 'body',
+      `listeners=${n} url=${hit.url} value=${JSON.stringify(byId['evo-editor'].value)}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
