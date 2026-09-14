@@ -260,7 +260,8 @@ def cmd_evolution_publish(args) -> None:
     try:
         out = evolutions.publish_local(backend, args.name, message=args.message,
                                        base_version=getattr(args, "base_version", None))
-    except (evolutions.VersionConflict, ValueError) as e:
+    except (evolutions.VersionConflict, ValueError,
+            RuntimeError) as e:  # RuntimeError: 远端 HTTP 409 (HttpBackend._req)
         raise SystemExit(str(e))
     tail = " (内容未变)" if not out.get("changed") else ""
     print(f"已推送 {out['name']} → v{out['version']}{tail}")
@@ -289,7 +290,8 @@ def cmd_evolution_delete(args) -> None:
     backend, _ = _evo_ctx(args)
     try:
         out = backend.delete(args.name, base_version=getattr(args, "base_version", None))
-    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError,
+            RuntimeError) as e:  # RuntimeError: 远端 HTTP 409 (HttpBackend._req)
         raise SystemExit(str(e))
     print(f"已墓碑 {out['name']}" if out.get("changed") else f"{out['name']} 已是墓碑态")
 
@@ -298,7 +300,8 @@ def cmd_evolution_restore(args) -> None:
     backend, _ = _evo_ctx(args)
     try:
         out = backend.restore(args.name)
-    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError,
+            RuntimeError) as e:  # RuntimeError: 远端 HTTP 409 (HttpBackend._req)
         raise SystemExit(str(e))
     print(f"已恢复 {out['name']}" if out.get("changed") else f"{out['name']} 本就活跃")
 
@@ -309,7 +312,8 @@ def cmd_evolution_rename(args) -> None:
         out = backend.rename(args.name, args.new_name,
                              base_version=getattr(args, "base_version", None),
                              message=args.message)
-    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError,
+            RuntimeError) as e:  # RuntimeError: 远端 HTTP 409 (HttpBackend._req)
         raise SystemExit(str(e))
     print(f"已改名 {args.name} -> {out['new_name']} (v{out['version']})")
 

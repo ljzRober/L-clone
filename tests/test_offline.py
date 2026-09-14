@@ -1774,6 +1774,87 @@ check("289 CLI evolution restore", "已恢复" in cli_out or "恢复" in cli_out
 cli_out = _cli_evo("rename", "cli-z.txt", "cli-w.txt")
 check("290 CLI evolution rename", "cli-w.txt" in cli_out, cli_out[:80])
 
+# ---- 291: HttpBackend.restore 打到正确端点 (此前零覆盖) ----
+_seen3 = {}
+_orig_urlopen3 = urllib.request.urlopen
+
+
+def _fake_urlopen3(req, timeout=None):
+    _seen3["url"] = req.full_url
+    _seen3["body"] = req.data.decode("utf-8") if req.data else ""
+    return _FakeResp2({"result": {"name": "a.txt", "changed": True, "version": 1}})
+
+
+urllib.request.urlopen = _fake_urlopen3
+try:
+    _hb3 = evo_store.HttpBackend("http://x", token="t")
+    _hb3.restore("a.txt")
+    _rst_url, _rst_body = _seen3["url"], _seen3["body"]
+finally:
+    urllib.request.urlopen = _orig_urlopen3
+check("291 HttpBackend.restore 打到 /api/evolution/restore",
+      _rst_url.endswith("/api/evolution/restore") and '"name": "a.txt"' in _rst_body,
+      f"{_rst_url} | {_rst_body[:50]}")
+
+# ---- 292-295: 远端(HTTP)模式下领域冲突也必须是 SystemExit, 不得泄漏 traceback ----
+# HttpBackend._req 把 HTTP 错误(含 Task 6 的 409)统一抛成 RuntimeError; CLI 若不捕获
+# 就会裸 traceback 冒泡 —— 远端是本项目的常规生产路径, 因此必须与 rollback 同款处理。
+import urllib.error  # noqa: E402  (文件顶部只 import 了 urllib.request)
+
+
+def _fake_urlopen409(req, timeout=None):
+    """复刻真实 409: HTTPError → HttpBackend._req 转 RuntimeError。"""
+    body = json.dumps({"detail": "版本冲突: 基于旧版本"}).encode("utf-8")
+    raise urllib.error.HTTPError(req.full_url, 409, "Conflict", {}, io.BytesIO(body))
+
+
+_prev_env3 = {k: os.environ.get(k) for k in ("LCLONE_WEB_URL", "LCLONE_API_KEY")}
+os.environ["LCLONE_WEB_URL"] = "http://brain409.example:8000"
+os.environ["LCLONE_API_KEY"] = "tok-409"
+cfg_mod._loaded = False
+# publish_local 先读本地缓存文件再发请求, 所以要先落一个 (否则会提前 ValueError)
+(pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "x.txt").write_text("remote body",
+                                                                 encoding="utf-8")
+_orig_urlopen4 = urllib.request.urlopen
+urllib.request.urlopen = _fake_urlopen409
+
+
+def _remote_cli(*argv):
+    """跑一次远端 CLI; 返回 (SystemExit 消息, None) 或 (None, 泄漏出来的异常描述)。"""
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["evolution", *argv, "--db", dbp])
+    except SystemExit as e:
+        return str(e), None
+    except BaseException as e:  # noqa: BLE001 - 抓的就是「不该冒出来的东西」
+        return None, f"{type(e).__name__}: {e}"
+    return None, "(没抛异常)"
+
+
+try:
+    _m_del, _l_del = _remote_cli("delete", "x.txt", "--base-version", "3")
+    _m_rst, _l_rst = _remote_cli("restore", "x.txt")
+    _m_rn, _l_rn = _remote_cli("rename", "x.txt", "y.txt", "--base-version", "3")
+    _m_pub, _l_pub = _remote_cli("publish", "x.txt", "--base-version", "3")
+finally:
+    urllib.request.urlopen = _orig_urlopen4
+    for _k, _v in _prev_env3.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+    cfg_mod._loaded = False
+
+# 「409」出现在消息里 = 请求确实走到了 HTTP (而不是本地提前报错), 且消息非空
+check("292 CLI 远端 delete 409 → SystemExit(消息)",
+      _l_del is None and "409" in (_m_del or ""), f"{_m_del!r} | {_l_del}")
+check("293 CLI 远端 restore 409 → SystemExit(消息)",
+      _l_rst is None and "409" in (_m_rst or ""), f"{_m_rst!r} | {_l_rst}")
+check("294 CLI 远端 rename 409 → SystemExit(消息)",
+      _l_rn is None and "409" in (_m_rn or ""), f"{_m_rn!r} | {_l_rn}")
+check("295 CLI 远端 publish --base-version 409 → SystemExit(消息)",
+      _l_pub is None and "409" in (_m_pub or ""), f"{_m_pub!r} | {_l_pub}")
+
 print()
 if fails:
     print("FAILED:", fails)
