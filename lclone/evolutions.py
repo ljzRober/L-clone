@@ -241,7 +241,7 @@ def _check_base_version(conn: sqlite3.Connection, name: str,
 def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
             kind: str = "", project_id: Optional[int] = None, ref: str = "",
             message: str = "", source_ref: str = "",
-            base_version: Optional[int] = None) -> dict:
+            base_version: Optional[int] = None, only_if_new: bool = False) -> dict:
     """发布一版内容。内容未变则**不新增版本**(幂等), 返回 {name, version, hash, changed}。
 
     ref 类 (项目内脚本, 内容在项目仓库) 只记引用、不写 blob —— hash 为空。
@@ -251,12 +251,17 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
     版本号一致但名字已是墓碑态时也判冲突 —— 删除不产生新版本, 版本相同不代表视图未过期。
     校验**早于任何写**(含 `put_blob`) —— 冲突路径零副作用: 不加版本、不动当前指针、
     也不留下未引用的内容对象。
+
+    `only_if_new` 用于"新建"语义 —— 目标名已是**活跃**资产时抛 `NameConflict` (409);
+    **墓碑**名不拒绝, 按既有的"重新激活"路径续用自身版本号。
     """
     fname = ensure_ext(name, kind)
     if ref and content is not None:
         raise ValueError("ref 类只记引用, 不能同时给 content (内容在项目仓库)")
     cur = current(conn, fname)
     _check_base_version(conn, fname, base_version)
+    if only_if_new and cur is not None and not (cur.get("deleted_at") or ""):
+        raise NameConflict(fname)          # 活跃名 → 409; 墓碑名仍允许(重新激活, 见 docstring)
     if ref and content is None:
         h, size = "", 0
     else:

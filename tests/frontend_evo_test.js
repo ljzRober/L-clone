@@ -391,6 +391,186 @@ function decodeEntities(s) {
       `listeners=${n} url=${hit.url} value=${JSON.stringify(byId['evo-editor'].value)}`);
   }
 
+  // 312 新建: 进入新建模式 -> 填名字与内容 -> 请求体带 only_if_new 且不带 base_version
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'made.md', ext: 'md', size: 2, mtime: 't', is_dir: false, content: 'hi' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'made.md', version: 1, base_version: 1, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'made.md', content: 'hi', base_version: 1 })) },
+      { match: '/api/evolution/publish', reply: () => okJson({ result: { name: 'made.md', version: 1, hash: 'h1', changed: true } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer();
+    sandbox.evoNewStart();
+    const nameShown = byId['evo-nameinput'].style.display === '' && byId['evo-save'].textContent === '新建 v1';
+    byId['evo-nameinput'].value = 'made.md';
+    byId['evo-editor'].value = 'hi';
+    await sandbox.evoSave();
+    const pub = h.seen.find(x => x.url.indexOf('/api/evolution/publish') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(pub.body || '{}'); } catch (e) { body = {}; }
+    check('312 新建走 publish + only_if_new (不带 base_version) 并选中新资产',
+      nameShown && body.name === 'made.md' && body.content === 'hi'
+      && body.only_if_new === true && body.base_version === undefined
+      && byId['evo-pname'].textContent === 'made.md' && byId['evo-nameinput'].style.display === 'none',
+      `nameShown=${nameShown} body=${pub.body} pname=${byId['evo-pname'].textContent}`);
+  }
+
+  // 313 新建重名: 409 (detail.name) -> 提示活跃资产, 名字与内容都保留, 不退出新建模式
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+      { match: '/api/evolution/publish', reply: () => errJson(409, { detail: { error: '目标名字已是活跃进化资产: dup.md', name: 'dup.md' } }) },
+    ]).f;
+    await sandbox.openEvoExplorer();
+    sandbox.evoNewStart();
+    byId['evo-nameinput'].value = 'dup.md';
+    byId['evo-editor'].value = 'keep me';
+    await sandbox.evoSave();
+    check('313 新建重名 409 时不丢弃名字与内容, 提示名字冲突',
+      byId['evo-nameinput'].value === 'dup.md' && byId['evo-editor'].value === 'keep me'
+      && byId['evo-nameinput'].style.display === '' && byId['evo-note'].classList.contains('err')
+      && byId['evo-note'].textContent.indexOf('dup.md') >= 0,
+      `note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 314 删除 (墓碑): 带 base_version 打 delete, 并在提示里说明可恢复
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'gone.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'x' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'gone.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'gone.md', content: 'x', base_version: 3 })) },
+      { match: '/api/evolution/delete', reply: () => okJson({ result: { name: 'gone.md', changed: true, deleted_at: 't' } }) },
+    ]);
+    sandbox.fetch = h.f;
+    sandbox.confirm = () => true;
+    await sandbox.openEvoExplorer('gone.md');
+    const delLabel = byId['evo-del'].textContent;
+    await sandbox.evoDeleteSelected();
+    const d = h.seen.find(x => x.url.indexOf('/api/evolution/delete') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(d.body || '{}'); } catch (e) { body = {}; }
+    check('314 删除走墓碑端点且带 base_version',
+      delLabel === '删除' && body.name === 'gone.md' && body.base_version === 3
+      && byId['evo-note'].textContent.indexOf('可恢复') >= 0,
+      `label=${delLabel} body=${d.body} note=${byId['evo-note'].textContent}`);
+  }
+
+  // 315 重复删除幂等: changed=false 不是错误
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'gone.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'x' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'gone.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'gone.md', content: 'x', base_version: 3 })) },
+      { match: '/api/evolution/delete', reply: () => okJson({ result: { name: 'gone.md', changed: false } }) },
+    ]);
+    sandbox.fetch = h.f;
+    sandbox.confirm = () => true;
+    await sandbox.openEvoExplorer('gone.md');
+    await sandbox.evoDeleteSelected();
+    check('315 重复删除幂等 (changed=false 不报错)',
+      !byId['evo-note'].classList.contains('err') && /墓碑|已删除/.test(byId['evo-note'].textContent),
+      `note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 316 显示已删除: 两次清单请求都带 include_deleted=true, 墓碑行标注 已删除 + 指向的新名字
+  {
+    const { sandbox, byId } = loadSandbox();
+    let phase = 0;
+    const h = http([
+      { match: '/api/evolutions', reply: () => (++phase <= 1
+        ? okJson({ items: [{ name: 'live.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'x' }] })
+        : okJson({ items: [
+            { name: 'live.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'x' },
+            { name: 'old.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'y' }] })) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [
+        { name: 'live.md', version: 1, base_version: 1, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' },
+        { name: 'old.md', version: 1, base_version: 1, editable: true, editable_reason: '', deleted_at: '2026-01-01 00:00:00', renamed_to: 'new.md' }], dirs: {} }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer();
+    const beforeCalls = h.seen.filter(x => x.url.indexOf('/api/evolution/index') >= 0).length;
+    await sandbox.evoToggleDeleted();
+    const list = byId['evo-list'].innerHTML;
+    const honored = h.seen.filter(x => x.url.indexOf('/api/evolution/index') >= 0).slice(beforeCalls).every(x => x.url.indexOf('include_deleted=true') >= 0);
+    check('316 显示已删除: 请求带 include_deleted 且墓碑行标注可追溯',
+      honored && list.indexOf('已删除') >= 0 && list.indexOf('new.md') >= 0
+      && byId['evo-showdel'].textContent === '隐藏已删除',
+      `honored=${honored} btn=${byId['evo-showdel'].textContent} list=${list.slice(0, 200)}`);
+  }
+
+  // 317 恢复: 选中墓碑资产时按钮变「恢复」, 打 restore 端点
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'old.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'y' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'old.md', version: 2, base_version: 2, editable: true, editable_reason: '', deleted_at: '2026-01-01 00:00:00', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'old.md', content: 'y', base_version: 2, deleted_at: '2026-01-01 00:00:00' })) },
+      { match: '/api/evolution/restore', reply: () => okJson({ result: { name: 'old.md', changed: true } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('old.md');
+    const label = byId['evo-del'].textContent;
+    await sandbox.evoDeleteSelected();
+    const rs = h.seen.find(x => x.url.indexOf('/api/evolution/restore') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(rs.body || '{}'); } catch (e) { body = {}; }
+    check('317 墓碑资产按钮为「恢复」且打 restore 端点',
+      label === '恢复' && body.name === 'old.md'
+      && h.seen.every(x => x.url.indexOf('/api/evolution/delete') < 0)
+      && /已恢复/.test(byId['evo-note'].textContent),
+      `label=${label} body=${rs.body} note=${byId['evo-note'].textContent}`);
+  }
+
+  // 318 重命名: 带 base_version 打 rename, 成功后选中新名字并说明历史不迁移
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'old.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'y' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'old.md', version: 2, base_version: 2, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'old.md', content: 'y', base_version: 2 })) },
+      { match: '/api/evolution/rename', reply: () => okJson({ result: { old_name: 'old.md', new_name: 'new.md', version: 1, hash: 'h', changed: true } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('old.md');
+    sandbox.evoRenameStart();
+    const namePrefilled = byId['evo-nameinput'].value === 'old.md' && byId['evo-rename-go'].style.display === '';
+    byId['evo-nameinput'].value = 'new.md';
+    await sandbox.evoRenameGo();
+    const rn = h.seen.find(x => x.url.indexOf('/api/evolution/rename') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(rn.body || '{}'); } catch (e) { body = {}; }
+    check('318 重命名带 base_version 且成功后切到新名字',
+      namePrefilled && body.name === 'old.md' && body.new_name === 'new.md' && body.base_version === 2
+      && byId['evo-note'].textContent.indexOf('new.md') >= 0
+      && byId['evo-nameinput'].style.display === 'none',
+      `prefill=${namePrefilled} body=${rn.body} note=${byId['evo-note'].textContent}`);
+  }
+
+  // 319 改名目标名活跃: 409 (detail.name) -> 提示名字冲突且不切名字
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'old.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'y' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'old.md', version: 2, base_version: 2, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'old.md', content: 'y', base_version: 2 })) },
+      { match: '/api/evolution/rename', reply: () => errJson(409, { detail: { error: '目标名字已是活跃进化资产: taken.md', name: 'taken.md' } }) },
+    ]).f;
+    await sandbox.openEvoExplorer('old.md');
+    sandbox.evoRenameStart();
+    byId['evo-nameinput'].value = 'taken.md';
+    await sandbox.evoRenameGo();
+    check('319 改名目标活跃 409 时提示名字冲突且停在改名模式',
+      byId['evo-note'].classList.contains('err') && byId['evo-note'].textContent.indexOf('taken.md') >= 0
+      && byId['evo-nameinput'].style.display === '',
+      `note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {

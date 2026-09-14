@@ -90,6 +90,7 @@ class EvoPublishIn(BaseModel):
     ref: str = ""
     source_ref: str = ""
     base_version: Optional[int] = None
+    only_if_new: bool = False
 
 
 class EvoDeleteIn(BaseModel):
@@ -373,12 +374,15 @@ def create_app(db_path: Optional[str] = None):
         """发布一版内容 (内容未变则不新增版本); ref 类只记引用。
 
         `base_version` 为乐观锁 (None = 不校验): 陈旧视图 → 409, **绝不静默覆盖**。
+        `only_if_new` 为"新建"语义: 目标名已是活跃资产 → 409 (名字冲突, 不追加版本);
+        墓碑名字不拒绝 (按既有的"重新激活"路径续用自身版本号)。
         """
         try:
             out = evo_mod.publish(conn, body.name, body.content, kind=body.kind,
                                      project_id=body.project_id, ref=body.ref,
                                      message=body.message, source_ref=body.source_ref,
-                                     base_version=body.base_version)
+                                     base_version=body.base_version,
+                                     only_if_new=body.only_if_new)
         except (evo_mod.VersionConflict, evo_mod.NameConflict, ValueError) as e:
             # 窄捕获: 只把**领域异常**翻成 409/400。其余 (sqlite3.OperationalError
             # "database is locked"、未来的 TypeError/AttributeError 等) 是服务端故障,

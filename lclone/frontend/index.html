@@ -159,6 +159,14 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-editor:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
 .evo-note { font-size:12px; color:var(--dim); min-height:17px; line-height:1.5; }
 .evo-note.err { color:var(--warn); }
+/* 工具条: 新建/重命名的名字输入框 (同面板其余输入框的深色风格) */
+.evo-nameinput { background:#0d1424; color:var(--fg); border:1px solid var(--line);
+                 border-radius:8px; padding:4px 8px; font-family:var(--mono); font-size:12px;
+                 max-width:220px; }
+.evo-nameinput:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+/* 墓碑(已删除)行: 名字划掉 + 元信息转警示色, 与活跃资产一眼可分 */
+.evo-row.tomb .evo-name { color:var(--dim); text-decoration:line-through; }
+.evo-row.tomb .evo-meta { color:var(--warn); }
 
 /* ---- 问答页 ---- */
 .ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
@@ -236,6 +244,7 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
   .main { padding:14px; }
   .evo-body { grid-template-columns:1fr; }
   .evo-editor, .evo-preview { min-height:24vh; max-height:38vh; }
+  .evo-phd { flex-wrap:wrap; }   /* 工具条按钮变多, 窄屏换行而不是溢出 */
 }
 @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 
@@ -338,6 +347,7 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
       <h3>进化资产</h3>
       <span class="evo-path" id="evo-path">服务器版本库</span>
       <span style="flex:1"></span>
+      <button class="ghost" id="evo-showdel" onclick="evoToggleDeleted()" title="显示/隐藏已删除（墓碑）资产">显示已删除</button>
       <button class="modal-x" onclick="closeEvoExp()" title="关闭">✕</button>
     </div>
     <div class="evo-body">
@@ -347,7 +357,14 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
           <span class="evo-pname" id="evo-pname">服务器版本库</span>
           <span class="evo-ver" id="evo-ver" style="display:none"></span>
           <span class="evo-reason" id="evo-reason" style="display:none"></span>
+          <input class="evo-nameinput" id="evo-nameinput" style="display:none" spellcheck="false"
+                 placeholder="资产名字，如 note.md">
           <span style="flex:1"></span>
+          <button class="ghost" id="evo-new" onclick="evoNewStart()" title="新建资产">＋ 新建</button>
+          <button class="ghost" id="evo-rename" style="display:none" onclick="evoRenameStart()" title="改名: 新名字发布一版, 旧名转墓碑">重命名</button>
+          <button class="ghost" id="evo-cancel" style="display:none" onclick="evoModeCancel()">取消</button>
+          <button class="ghost" id="evo-del" style="display:none" onclick="evoDeleteSelected()">删除</button>
+          <button class="ghost" id="evo-rename-go" style="display:none" onclick="evoRenameGo()">确认重命名</button>
           <button class="act" id="evo-save" style="display:none" onclick="evoSave()">保存新版本</button>
         </div>
         <textarea class="evo-editor" id="evo-editor" spellcheck="false" style="display:none"
@@ -701,8 +718,12 @@ function openEvo(name) { closeModal(); openEvoExplorer(name); }
 /* ---- 进化资产编辑器 (可编辑性由服务端判定, 前端只镜像) ---- */
 const EVO_REASON = { binary:'二进制内容 · 只读', too_large:'超过可编辑上限 · 只读',
                      ref:'引用项目仓库文件 · 只读', missing:'内容对象缺失 · 只读' };
-let EVO_CUR = null;    // {name, base_version, editable} —— 当前打开资产的写上下文
-let EVO_META = {};     // name -> /api/evolution/index 行 (版本/可编辑性)
+let EVO_CUR = null;    // {name, base_version, editable, loaded} —— 当前打开资产的写上下文 (loaded = 上次从服务端载入的内容)
+let EVO_META = {};     // name -> /api/evolution/index 行 (版本/可编辑性/墓碑)
+let EVO_MODE = 'view';        // 'view' | 'new' | 'rename' —— 工具条当前模式
+let EVO_TOMB = false;         // 当前选中项是否墓碑 (决定 #evo-del 是「删除」还是「恢复」)
+let EVO_SEL = '';             // 上一次选中的资产名 (取消新建/改名时回退到它)
+let EVO_SHOW_DELETED = false; // 清单是否显式带 include_deleted=true (服务端默认不列墓碑)
 
 function evoNote(msg, isErr) {
   const el = $('evo-note');
@@ -711,22 +732,48 @@ function evoNote(msg, isErr) {
 }
 function evoReasonText(code) { return EVO_REASON[code] || ('不可编辑: ' + (code || '未知')); }
 
+// 工具条的**唯一**同步出口: 显隐/文案只在这里算 (evoRender / evoSetMode / evoReset 都调它)
+function evoSyncChrome() {
+  const editing = EVO_MODE !== 'view';
+  const cur = EVO_CUR;
+  const has = !!(cur && cur.name);
+  $('evo-nameinput').style.display = editing ? '' : 'none';
+  $('evo-cancel').style.display = editing ? '' : 'none';
+  $('evo-new').style.display = editing ? 'none' : '';
+  $('evo-rename-go').style.display = EVO_MODE === 'rename' ? '' : 'none';
+  if (EVO_MODE === 'new') {           // 新建没有前序版本, 保存按钮打的是「新建 v1」
+    $('evo-save').textContent = '新建 v1';
+    $('evo-save').style.display = '';
+  } else {                            // view / rename: 选中且服务端判定可编辑才给保存入口
+    $('evo-save').textContent = '保存新版本';
+    $('evo-save').style.display = (!editing && has && cur.editable) ? '' : 'none';
+  }
+  $('evo-rename').style.display = (!editing && has && !EVO_TOMB) ? '' : 'none';  // 墓碑要先恢复
+  $('evo-del').style.display = (!editing && has) ? '' : 'none';
+  $('evo-del').textContent = EVO_TOMB ? '恢复' : '删除';
+  $('evo-showdel').textContent = EVO_SHOW_DELETED ? '隐藏已删除' : '显示已删除';
+  $('evo-showdel').classList.toggle('hot', EVO_SHOW_DELETED);
+}
+function evoSetMode(mode) { EVO_MODE = mode; evoSyncChrome(); }
+
 // 渲染 /api/evolution/content 响应: 可编辑 → textarea + 保存; 否则 → 只读预览 + 原因徽标
 function evoRender(d) {
   const ok = !!d.editable;
   EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok, loaded: d.content || '' };
+  EVO_TOMB = !!d.deleted_at;   // 墓碑资产: 工具条的删除按钮变成「恢复」
+  EVO_SEL = d.name;
   $('evo-pname').textContent = d.name;
   $('evo-ver').textContent = 'v' + d.base_version;
   $('evo-ver').style.display = '';
   $('evo-reason').style.display = ok ? 'none' : '';
   $('evo-reason').textContent = ok ? '' : evoReasonText(d.editable_reason);
   $('evo-editor').style.display = ok ? '' : 'none';
-  $('evo-save').style.display = ok ? '' : 'none';
   $('evo-preview').style.display = ok ? 'none' : '';
   $('evo-editor').value = d.content || '';
   $('evo-preview').textContent = d.content || '(空文件)';
   evoNote(ok ? `可编辑 · 保存将追加 v${(d.base_version || 0) + 1}，v${d.base_version} 及更早版本不会被改写。`
              : '该资产不可编辑，仅可预览内容。');
+  evoSyncChrome();
 }
 
 // 未保存编辑的判定基准 = 上次从服务端载入的内容
@@ -755,8 +802,50 @@ async function showEvo(name) {
   }
 }
 
-// 保存: 带 base_version 走显式发布 (乐观锁); 409 时保留编辑区内容, 只提示刷新
+// 保存: 编辑模式带 base_version 走显式发布 (乐观锁); 新建模式无前序版本 -> only_if_new
+// 409 时保留编辑区内容, 只提示冲突 (名字冲突 / 版本冲突分诊)
 async function evoSave() {
+  if (EVO_MODE === 'new') {
+    const name = ($('evo-nameinput').value || '').trim();
+    if (!name) { evoNote('请先填写资产名字。', true); $('evo-nameinput').focus(); return; }
+    const content = $('evo-editor').value;
+    evoNote('新建中…');
+    let r;
+    try {
+      r = await fetch('/api/evolution/publish', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // 新建没有前序版本可做乐观锁: 用 only_if_new 让"名字已是活跃资产"由服务端判 409
+        body: JSON.stringify({ name, content, only_if_new: true }),
+      });
+    } catch (e) {
+      evoNote('新建失败(网络): ' + ((e && e.message) || e) + ' —— 你的名字与内容仍在。', true);
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      const d = (data && typeof data.detail === 'object' && data.detail) || {};
+      if (d.name) {   // 名字冲突: 停在新建模式, 名字与内容都保留
+        evoNote(`新建被拒: 名字「${d.name}」已是活跃的进化资产，请换一个名字。名字与内容都还在。`, true);
+        return;
+      }
+      const cur = (d.current_version != null) ? d.current_version : null;
+      evoNote(`新建被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，视图已过期。内容仍在编辑区，刷新后重试。`, true);
+      return;
+    }
+    if (!r.ok) {
+      const d = data && data.detail;
+      evoNote('新建失败: HTTP ' + r.status + ' · ' + (typeof d === 'string' ? d : JSON.stringify(d || {})), true);
+      return;
+    }
+    const out = (data && data.result) || {};
+    const made = out.name || name;
+    evoSetMode('view');                 // 先回 view: 名字框隐藏, 工具条交还给选中态
+    if (EVO_CUR) EVO_CUR.loaded = content;  // 记为已载入, 免得下面的刷新把自己的新建当草稿弹确认
+    await showEvo(made);                // 刷新到服务端权威状态 (新资产 = v1)
+    await evoRefreshList();
+    evoNote(`已新建 ${made} v${out.version}。`);
+    return;
+  }
   if (!EVO_CUR) return;
   // 服务端判定不可编辑 -> 一律不发发布请求 (调用方可能绕过被隐藏的按钮, 不能只靠 UI 挡着)
   if (!EVO_CUR.editable) { evoNote('该资产不可编辑，不能保存。', true); return; }
@@ -793,6 +882,133 @@ async function evoSave() {
                                 : `已保存为 v${out.version}（改自 v${base}）。`);
 }
 
+// 新建: 清掉当前写上下文与编辑器, 进入 'new' 模式 (发布时走 only_if_new)
+function evoNewStart() {
+  if (!evoConfirmDiscard('新建')) return;   // 有草稿先确认; 取消则一切原样
+  EVO_CUR = null;                           // 主动放弃上下文 (也免得自己的输入被当成"未保存草稿")
+  EVO_TOMB = false;
+  $('evo-editor').value = ''; $('evo-editor').style.display = '';
+  $('evo-preview').textContent = ''; $('evo-preview').style.display = 'none';
+  $('evo-ver').textContent = ''; $('evo-ver').style.display = 'none';
+  $('evo-reason').textContent = ''; $('evo-reason').style.display = 'none';
+  $('evo-pname').textContent = '新建资产';
+  $('evo-nameinput').value = '';
+  evoSetMode('new');
+  evoNote('填写资产名字与内容，保存即发布 v1。');
+  $('evo-nameinput').focus();
+}
+
+// 重命名: 新名字发 v1 + 旧名转墓碑 (历史不迁移), 乐观锁用旧名字的 base_version
+function evoRenameStart() {
+  if (!EVO_CUR) return;
+  if (!evoConfirmDiscard('重命名')) return;
+  $('evo-nameinput').value = EVO_CUR.name;   // 预填当前名字, 便于就地改
+  evoSetMode('rename');
+  evoNote('改成新名字后确认：新名字发布 v1，旧名字转为墓碑（历史不迁移）。');
+  $('evo-nameinput').focus();
+}
+async function evoRenameGo() {
+  if (!EVO_CUR) { evoNote('请先选择一个资产再重命名。', true); return; }
+  const name = EVO_CUR.name, base = EVO_CUR.base_version;
+  const newName = ($('evo-nameinput').value || '').trim();
+  if (!newName) { evoNote('新名字不能为空。', true); $('evo-nameinput').focus(); return; }
+  evoNote('重命名中…');
+  let r;
+  try {
+    r = await fetch('/api/evolution/rename', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, new_name: newName, base_version: base }),
+    });
+  } catch (e) {
+    evoNote('重命名失败(网络): ' + ((e && e.message) || e) + ' —— 名字与内容仍在。', true);
+    return;
+  }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    const d = (data && typeof data.detail === 'object' && data.detail) || {};
+    if (d.name) {   // 目标名字活跃: 停在改名模式, 输入保留
+      evoNote(`重命名被拒: 名字「${d.name}」已是活跃的进化资产，请换一个名字。`, true);
+      return;
+    }
+    const cur = (d.current_version != null) ? d.current_version : null;
+    evoNote(`重命名被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期。刷新后重试。`, true);
+    return;
+  }
+  if (!r.ok) {
+    const d = data && data.detail;
+    evoNote('重命名失败: HTTP ' + r.status + ' · ' + (typeof d === 'string' ? d : JSON.stringify(d || {})), true);
+    return;
+  }
+  const out = (data && data.result) || {};
+  EVO_MODE = 'view'; EVO_CUR = null;   // 旧名字已成墓碑: 写上下文整体换掉
+  await evoRefreshList();
+  await showEvo(out.new_name || newName);
+  evoNote(`已重命名 ${out.old_name || name} → ${out.new_name || newName}（历史不迁移，旧名字转为墓碑，可恢复）。`);
+}
+// 取消 = 主动放弃 (先清 EVO_CUR, 否则回退时会弹"未保存"确认), 再回退到上次选中的资产
+async function evoModeCancel() {
+  EVO_MODE = 'view'; EVO_CUR = null;
+  $('evo-nameinput').value = '';   // 放弃的输入不留在框里 (两个模式都会在显示前重设它, 这里只是收拾干净)
+  if (EVO_SEL) await showEvo(EVO_SEL); else evoReset();
+}
+
+// 删除 / 恢复二合一: 墓碑资产打 restore, 活跃资产打 delete (墓碑式, 历史与内容全部保留)
+async function evoDeleteSelected() {
+  if (!EVO_CUR) return;
+  const name = EVO_CUR.name, base = EVO_CUR.base_version;
+  const tomb = EVO_TOMB;
+  if (!tomb && !confirm(`删除「${name}」？墓碑式：从清单与看板消失，历史版本与内容全部保留，之后可恢复。`)) return;
+  evoNote(tomb ? '恢复中…' : '删除中…');
+  let r;
+  try {
+    r = await fetch(tomb ? '/api/evolution/restore' : '/api/evolution/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tomb ? { name } : { name, base_version: base }),
+    });
+  } catch (e) {
+    evoNote((tomb ? '恢复失败(网络): ' : '删除失败(网络): ') + ((e && e.message) || e), true);
+    return;
+  }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    const d = (data && typeof data.detail === 'object' && data.detail) || {};
+    if (d.name) {
+      evoNote(`操作被拒: 名字「${d.name}」已是活跃的进化资产。`, true);
+      return;
+    }
+    const cur = (d.current_version != null) ? d.current_version : null;
+    await evoRefreshList();   // 陈旧视图: 先把清单刷到服务端状态, 再提示重试
+    evoNote(`${tomb ? '恢复' : '删除'}被拒: 服务器当前为 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期 —— 已刷新清单，请重试。`, true);
+    return;
+  }
+  if (!r.ok) {
+    const d = data && data.detail;
+    evoNote((tomb ? '恢复失败: HTTP ' : '删除失败: HTTP ') + r.status + ' · '
+            + (typeof d === 'string' ? d : JSON.stringify(d || {})), true);
+    return;
+  }
+  const out = (data && data.result) || {};
+  await evoRefreshList();
+  if (tomb) {                       // 已复活: 重新载入服务端权威状态
+    await showEvo(name);
+    evoNote(out.changed === false ? `${name} 本就活跃，无需恢复。` : `已恢复 ${name}。`);
+  } else {                          // 已墓碑: 该资产不在默认清单里了, 面板回到未选中态
+    EVO_CUR = null;
+    evoReset();
+    evoNote(out.changed === false ? `${name} 已是墓碑态，无需重复删除（可恢复）。`
+                                  : `已墓碑 ${name} —— 从清单与看板消失，历史与内容全部保留，可恢复。`);
+  }
+}
+
+// 显示/隐藏墓碑: 清单的两个请求都要显式带 include_deleted (服务端默认不列墓碑)
+async function evoToggleDeleted() {
+  EVO_SHOW_DELETED = !EVO_SHOW_DELETED;
+  evoSyncChrome();
+  const err = await evoRefreshList();
+  evoNote(err ? ('资产清单加载失败: ' + err)
+              : (EVO_SHOW_DELETED ? '已显示墓碑（已删除）资产：选中后可恢复。' : '已隐藏墓碑资产。'), !!err);
+}
+
 /* ---- 进化文件目录 (file-explorer) ---- */
 // 无原型表: ext 来自文件名 (可控), 走原型链会把 constructor 之类解析成 Object 的成员
 const EVO_ET = Object.assign(Object.create(null), { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
@@ -804,11 +1020,12 @@ function evoChip(ext) {
 
 async function evoRefreshList() {
   let items, idx = {};
+  const q = EVO_SHOW_DELETED ? '?include_deleted=true' : '';   // 墓碑只在显式要求时列举
   try {
-    const r = await (await fetch('/api/evolutions')).json();
+    const r = await (await fetch('/api/evolutions' + q)).json();
     items = r.items || [];
     // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
-    try { idx = await (await fetch('/api/evolution/index')).json(); } catch (e) { idx = {}; }
+    try { idx = await (await fetch('/api/evolution/index' + q)).json(); } catch (e) { idx = {}; }
   } catch (e) {
     EVO_META = {};
     $('evo-path').textContent = '服务器版本库（清单不可用）';
@@ -832,9 +1049,12 @@ async function evoRefreshList() {
           s += `<div class="evo-group">${'&nbsp;'.repeat(depth)}📁 ${esc(n.name)}/</div>` + walk(n.children || [], depth + 1);
         } else {
           const m = EVO_META[n.name] || {};
+          const tomb = !!(m.deleted_at || '');
           const v = (m.base_version != null) ? 'v' + m.base_version + ' · ' : '';
           const sz = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
-          s += `<div class="evo-row" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(v + sz)}</span></div>`;
+          // 墓碑行: meta 前缀「已删除」, 改名场景指出新名字 (与其余动态内容一样经 esc)
+          const tag = tomb ? ('已删除' + (m.renamed_to ? ' → ' + m.renamed_to : '') + ' · ') : '';
+          s += `<div class="evo-row${tomb ? ' tomb' : ''}" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(tag + v + sz)}</span></div>`;
         }
       }
       return s;
@@ -847,13 +1067,15 @@ async function evoRefreshList() {
 
 function evoReset() {
   EVO_CUR = null;
+  EVO_MODE = 'view'; EVO_TOMB = false; EVO_SEL = '';   // 回到未选中态: 工具条交还给「＋ 新建」
+  $('evo-nameinput').value = '';
   $('evo-pname').textContent = '未选择资产';
   $('evo-ver').textContent = ''; $('evo-ver').style.display = 'none';
   $('evo-reason').textContent = ''; $('evo-reason').style.display = 'none';
   $('evo-editor').value = ''; $('evo-editor').style.display = 'none';
-  $('evo-save').style.display = 'none';
   $('evo-preview').style.display = ''; $('evo-preview').textContent = '点击左侧条目查看内容';
   evoNote('可编辑资产点开后可直接改，保存会追加新版本。');
+  evoSyncChrome();
 }
 async function openEvoExplorer(name) {
   // 面板入口 (看板卡片 / 工具条「进化」) 也必须过闸门: evoReset() 会清空编辑区
@@ -955,6 +1177,12 @@ $('modal').addEventListener('click', e => { if (e.target === $('modal')) closeMo
 $('evo-list').addEventListener('click', ev => {
   const row = ev.target && ev.target.closest ? ev.target.closest('.evo-row') : null;
   if (row && row.dataset.name) showEvo(row.dataset.name);
+});
+// 名字框回车 = 确认当前模式 (新建 -> 发布; 改名 -> 改名), 免得必须去点按钮
+$('evo-nameinput').addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter') return;
+  if (EVO_MODE === 'rename') evoRenameGo();
+  else if (EVO_MODE === 'new') evoSave();
 });
 $('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 

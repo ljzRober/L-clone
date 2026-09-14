@@ -1893,6 +1893,39 @@ check("298 GET / 提供的就是被测试的 index.html",
       _ir.status_code == 200 and _ir.content == _fe_html.read_bytes(),
       f"status={_ir.status_code} served={len(_ir.content)} disk={len(_fe_html.read_bytes())}")
 
+# ---- 299-300: 前端工具条所依赖的后端语义 (新建重名 409 / 墓碑列举) ----
+_pn = _tc2.post("/api/evolution/publish", json={"name": "tn-new.txt", "content": "n1", "only_if_new": True})
+_vn = _pn.json()["result"]["version"]
+_pn2 = _tc2.post("/api/evolution/publish", json={"name": "tn-new.txt", "content": "n2", "only_if_new": True})
+_h2 = _tc2.get("/api/evolution/history?name=tn-new.txt").json()["items"]
+check("299 only_if_new: 新名字发布 v1, 活跃名再新建 -> 409 且不改动既有资产",
+      _pn.status_code == 200 and _vn == 1 and _pn2.status_code == 409
+      and _pn2.json()["detail"].get("name") == "tn-new.txt"
+      and len(_h2) == 1 and _h2[0]["version"] == 1,
+      f"{_pn.status_code}/{_vn} vs {_pn2.status_code} {_pn2.text[:80]} hist={[h['version'] for h in _h2]}")
+# 墓碑名: only_if_new 不拒绝 (沿用自身历史递增, 即"重新激活"), 且新名字仍不受限
+_tc2.post("/api/evolution/delete", json={"name": "tn-new.txt", "base_version": _vn})
+_pn3 = _tc2.post("/api/evolution/publish", json={"name": "tn-new.txt", "content": "n3", "only_if_new": True})
+_tn = [x for x in _tc2.get("/api/evolution/index?include_deleted=true").json()["items"]
+       if x["name"] == "tn-new.txt"][0]
+check("299b only_if_new 对墓碑名放行 (续用历史版本号并清墓碑)",
+      _pn3.status_code == 200 and _pn3.json()["result"]["version"] == _vn + 1 and _tn["deleted_at"] == "",
+      f"{_pn3.status_code} {_pn3.text[:80]} {_tn['deleted_at']!r}")
+
+# 清单接口必须能显式列出墓碑 (Task 6 遗留未断言项; 前端「显示已删除」依赖它)
+_tc2.post("/api/evolution/publish", json={"name": "tn-ren.txt", "content": "r"})
+_tc2.post("/api/evolution/rename", json={"name": "tn-ren.txt", "new_name": "tn-fresh.txt"})
+_tdef = {i["name"] for i in _tc2.get("/api/evolutions").json()["items"]}
+_tinc = _tc2.get("/api/evolutions?include_deleted=true").json()["items"]
+_keys = set(_tinc[0].keys())
+_tomb = [i for i in _tinc if i["name"] == "tn-ren.txt"]
+check("300 /api/evolutions?include_deleted=true 列出墓碑且形状不变, index 可追溯 renamed_to",
+      "tn-ren.txt" not in _tdef and len(_tomb) == 1
+      and {"name", "ext", "size", "mtime", "is_dir", "children", "content"} <= _keys
+      and [x for x in _tc2.get("/api/evolution/index?include_deleted=true").json()["items"]
+           if x["name"] == "tn-ren.txt"][0]["renamed_to"] == "tn-fresh.txt",
+      f"def={sorted(_tdef)} keys={sorted(_keys)}")
+
 print()
 if fails:
     print("FAILED:", fails)
