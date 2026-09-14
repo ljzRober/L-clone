@@ -776,16 +776,33 @@ function evoRender(d) {
   evoSyncChrome();
 }
 
-// 未保存编辑的判定基准 = 上次从服务端载入的内容
-function evoDirty() { return !!(EVO_CUR && $('evo-editor').value !== EVO_CUR.loaded); }
+// 未保存输入的判定基准: view = 与已载入内容比; new/rename = 模式内的输入是否已填/已改
+function evoDirty() {
+  if (EVO_MODE === 'new') {
+    return $('evo-editor').value !== '' || ($('evo-nameinput').value || '').trim() !== '';
+  }
+  if (EVO_MODE === 'rename') {
+    return !!EVO_CUR && ($('evo-nameinput').value || '').trim() !== EVO_CUR.name;
+  }
+  return !!(EVO_CUR && $('evo-editor').value !== EVO_CUR.loaded);
+}
+function evoDirtySubject() {
+  if (EVO_MODE === 'new') {
+    const n = ($('evo-nameinput').value || '').trim();
+    return n ? '正在新建的「' + n + '」' : '正在新建的资产';
+  }
+  if (EVO_MODE === 'rename') return EVO_CUR ? '「' + EVO_CUR.name + '」的改名' : '正在进行的改名';
+  return EVO_CUR ? '「' + EVO_CUR.name + '」' : '当前资产';
+}
 function evoConfirmDiscard(what) {
   if (!evoDirty()) return true;
-  return confirm('「' + EVO_CUR.name + '」有未保存的编辑，' + what + '会放弃它们。要继续吗？');
+  return confirm(evoDirtySubject() + ' 有未保存的输入，' + what + '会放弃它们。要继续吗？');
 }
 
 // 打开资产: 切资产 / 重新载入同一资产都不得静默丢弃草稿
 async function showEvo(name) {
   if (!evoConfirmDiscard('重新载入')) return;
+  if (EVO_MODE !== 'view') evoSetMode('view');   // 离开 new/rename 模式, 避免模式与面板内容不一致
   document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
   const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
   if (row) row.classList.add('on');
@@ -798,6 +815,7 @@ async function showEvo(name) {
     EVO_CUR = null;
     $('evo-editor').style.display = 'none'; $('evo-save').style.display = 'none';
     $('evo-preview').style.display = ''; $('evo-preview').textContent = '(读取失败)';
+    evoSyncChrome();          // 失败后工具条不得残留「恢复」/改名按钮
     evoNote('读取失败: ' + ((e && e.message) || e), true);
   }
 }

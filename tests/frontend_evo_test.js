@@ -571,6 +571,81 @@ function decodeEntities(s) {
       `note=${JSON.stringify(byId['evo-note'].textContent)}`);
   }
 
+  // 320 新建模式的输入也算草稿: 取消则既不丢输入也不切资产
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'note.md', ext: 'md', size: 5, mtime: 't', is_dir: false, content: 'hello' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT()) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer();
+    sandbox.evoNewStart();
+    byId['evo-nameinput'].value = 'brand-new.md';
+    byId['evo-editor'].value = 'new body';
+    sandbox.confirm = () => false;
+    await sandbox.showEvo('note.md');
+    check('320 新建模式的输入受闸门保护 (取消则不切资产不丢输入)',
+      byId['evo-editor'].value === 'new body' && byId['evo-nameinput'].value === 'brand-new.md'
+      && byId['evo-nameinput'].style.display === '' && byId['evo-save'].textContent === '新建 v1'
+      && h.seen.every(x => x.url.indexOf('/api/evolution/content') < 0),
+      `value=${JSON.stringify(byId['evo-editor'].value)} name=${byId['evo-nameinput'].value} fetched=${h.seen.map(x => x.url).join(',')}`);
+  }
+
+  // 321 改名模式只改了名字也算草稿: 取消则不静默改目标
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'old.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'y' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'old.md', version: 2, base_version: 2, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'old.md', content: 'y', base_version: 2 })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('old.md');
+    sandbox.evoRenameStart();
+    byId['evo-nameinput'].value = 'typed-name.md';
+    sandbox.confirm = () => false;
+    await sandbox.showEvo('other.txt');
+    check('321 改名模式的名字输入受闸门保护 (取消则不切资产)',
+      byId['evo-nameinput'].value === 'typed-name.md' && byId['evo-nameinput'].style.display === ''
+      && byId['evo-rename-go'].style.display === '' && byId['evo-pname'].textContent === 'old.md'
+      && h.seen.filter(x => x.url.indexOf('/api/evolution/content') >= 0).length === 1,
+      `name=${byId['evo-nameinput'].value} pname=${byId['evo-pname'].textContent} calls=${h.seen.length}`);
+  }
+
+  // 322 确认离开模式后: 模式退出 + 面板切到目标资产
+  {
+    const { sandbox, byId } = loadSandbox();
+    let phase = 0;
+    sandbox.fetch = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'note.md', ext: 'md', size: 5, mtime: 't', is_dir: false, content: 'hello' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => (++phase === 1 ? okJson(CONTENT()) : okJson(CONTENT({ name: 'note.md', content: 'hello', base_version: 3 }))) },
+    ]).f;
+    await sandbox.openEvoExplorer();
+    sandbox.evoNewStart();
+    byId['evo-editor'].value = 'discard me';
+    sandbox.confirm = () => true;
+    await sandbox.showEvo('note.md');
+    check('322 确认后退出新建模式并切到目标资产',
+      byId['evo-nameinput'].style.display === 'none' && byId['evo-save'].textContent === '保存新版本'
+      && byId['evo-pname'].textContent === 'note.md' && byId['evo-editor'].value === 'hello',
+      `mode=${byId['evo-nameinput'].style.display} save=${byId['evo-save'].textContent} pname=${byId['evo-pname'].textContent}`);
+  }
+
+  // 323 读取失败后工具条不得残留选择态按钮
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([{ match: '/api/evolution/content', reply: () => errJson(500, { detail: 'boom' }) }]).f;
+    await sandbox.showEvo('gone.md');
+    check('323 读取失败后工具条一致 (不残留删除/改名/保存入口)',
+      byId['evo-del'].style.display === 'none' && byId['evo-rename'].style.display === 'none'
+      && byId['evo-save'].style.display === 'none' && byId['evo-editor'].style.display === 'none'
+      && /读取失败/.test(byId['evo-note'].textContent),
+      `del=${byId['evo-del'].style.display} rename=${byId['evo-rename'].style.display} note=${byId['evo-note'].textContent}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {
