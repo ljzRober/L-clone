@@ -6,6 +6,9 @@
 import json
 import os
 import pathlib
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -1854,6 +1857,37 @@ check("294 CLI 远端 rename 409 → SystemExit(消息)",
       _l_rn is None and "409" in (_m_rn or ""), f"{_m_rn!r} | {_l_rn}")
 check("295 CLI 远端 publish --base-version 409 → SystemExit(消息)",
       _l_pub is None and "409" in (_m_pub or ""), f"{_m_pub!r} | {_l_pub}")
+
+# ---- 296-298: 前端进化面板编辑器 (无构建单文件 HTML, 由 node + DOM 桩直测行为) ----
+_fe_html = ROOT / "lclone" / "frontend" / "index.html"
+_fe_test = ROOT / "tests" / "frontend_evo_test.js"
+_fe_text = _fe_html.read_text(encoding="utf-8")
+# 前端行为 (可编辑→就地编辑 / 不可编辑→只读 / 409 不丢内容) 本身是 spec 要求, 故 node 缺失时
+# 本检查**失败**而不是静默跳过: 静默 SKIP 会让"未验证"看起来像"已验证"。
+_node = shutil.which("node")
+if _node:
+    _fe_run = subprocess.run([_node, str(_fe_test), str(_fe_html)],
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=180)
+    _fe_out = (_fe_run.stdout or "") + (_fe_run.stderr or "")
+    _fe_ok = _fe_run.returncode == 0
+else:
+    _fe_ok, _fe_out = False, "node 不可用: 前端行为测试无法执行"
+check("296 前端进化面板行为契约 (node 执行内联脚本 + 最小 DOM 桩)", _fe_ok and "FRONTEND OK" in _fe_out,
+      _fe_out[-500:])
+
+# 前端引用的 /api/evolution/* 必须真实注册 (防打错 URL 直到浏览器里才暴露)
+_evo_routes = {getattr(r, "path", "") for r in _wm2.create_app(_dbp2).routes}
+_fe_called = sorted(set(re.findall(r"['\"](/api/evolution/[a-z]+)", _fe_text)))
+check("297 前端引用的 /api/evolution/* 端点都已注册",
+      bool(_fe_called) and all(p in _evo_routes for p in _fe_called),
+      f"{_fe_called} vs {sorted(_evo_routes)}")
+
+# 被测试的必须就是被服务的那份文件 (GET / 由 FileResponse 提供)
+_ir = _tc2.get("/")
+check("298 GET / 提供的就是被测试的 index.html",
+      _ir.status_code == 200 and _ir.content == _fe_html.read_bytes(),
+      f"status={_ir.status_code} served={len(_ir.content)} disk={len(_fe_html.read_bytes())}")
 
 print()
 if fails:

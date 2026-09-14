@@ -141,6 +141,25 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-empty { color:var(--dim); font-size:13px; padding:26px 12px; text-align:center;
              border:1px dashed var(--line); border-radius:12px; }
 
+/* 编辑器: 右侧内容区 (可编辑资产是 textarea, 其余退回只读预览) */
+.evo-pane { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.evo-phd { display:flex; align-items:center; gap:8px; min-width:0; }
+.evo-pname { font-family:var(--mono); font-size:12px; color:var(--fg);
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 签名元素: 版本牌 —— 这套存储的核心是"第几版", 唯一视觉重音给它 */
+.evo-ver { font-family:var(--mono); font-size:11px; color:var(--acc); flex:none;
+           border:1px solid rgba(224,177,92,.45); border-radius:999px; padding:1px 9px;
+           background:rgba(224,177,92,.08); letter-spacing:.05em; }
+.evo-reason { font-family:var(--mono); font-size:10px; flex:none; border-radius:6px;
+              padding:2px 8px; background:#3a2a12; color:var(--warn); }
+.evo-editor { width:100%; min-height:46vh; max-height:52vh; resize:vertical;
+              background:#0d1424; color:var(--fg); border:1px solid var(--line);
+              border-radius:12px; padding:12px; font-family:var(--mono); font-size:12px;
+              line-height:1.6; }
+.evo-editor:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+.evo-note { font-size:12px; color:var(--dim); min-height:17px; line-height:1.5; }
+.evo-note.err { color:var(--warn); }
+
 /* ---- 问答页 ---- */
 .ask-wrap { max-width:760px; margin:0 auto; padding:18px 20px 64px; }
 .ask-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
@@ -215,6 +234,8 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
   #tree { display:contents; }
   .layer { width:auto; }
   .main { padding:14px; }
+  .evo-body { grid-template-columns:1fr; }
+  .evo-editor, .evo-preview { max-height:38vh; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 
@@ -321,7 +342,19 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
     </div>
     <div class="evo-body">
       <div class="evo-list" id="evo-list"></div>
-      <div class="evo-preview" id="evo-preview">点击左侧条目查看内容<br><span style="color:var(--dim)">服务器版本库为权威；此处预览当前版本，改动用 lclone evolution publish。</span></div>
+      <div class="evo-pane" id="evo-pane">
+        <div class="evo-phd">
+          <span class="evo-pname" id="evo-pname">服务器版本库</span>
+          <span class="evo-ver" id="evo-ver" style="display:none"></span>
+          <span class="evo-reason" id="evo-reason" style="display:none"></span>
+          <span style="flex:1"></span>
+          <button class="act" id="evo-save" style="display:none" onclick="evoSave()">保存新版本</button>
+        </div>
+        <textarea class="evo-editor" id="evo-editor" spellcheck="false" style="display:none"
+                  placeholder="点击左侧条目查看或编辑内容"></textarea>
+        <div class="evo-preview" id="evo-preview">点击左侧条目查看内容<br><span style="color:var(--dim)">服务器版本库为权威；可编辑资产可就地改并保存为新版本，历史版本不会被改写。</span></div>
+        <div class="evo-note" id="evo-note"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -380,7 +413,15 @@ const API = {
   removeProject: async id => (await fetch('/api/projects/'+id+'/remove', {method:'POST'})).json(),
   restoreProject: async id => (await fetch('/api/projects/'+id+'/restore', {method:'POST'})).json(),
 };
-function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                          .replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// 内联处理器 (onclick="...") 里的资产名参数: 单引号 JS 串 + HTML 实体转义。
+// 属性值里因此绝无裸引号 —— 不会提前闭合 onclick="..." 逃出属性;
+// esc() 把 " < > & 变实体 (解码后既安全又不改变 JS 语义), 反斜杠与单引号按 JS 规则转义,
+// 于是整串在**实体解码之前**(静态读源码/测试)与**解码之后**(浏览器)都是合法 JS。
+function evoArg(s) {
+  return "'" + esc(String(s == null ? '' : s)).replace(/\\/g, '\\\\').replace(/&#39;/g, "\\'") + "'";
+}
 function makeEl(tag, cls, text){ const d = document.createElement(tag); d.className = cls || ''; d.textContent = text || ''; return d; }
 function short(t){ return (t||'').replace(/\s+/g, ' ').slice(0, 18); }
 window.addEventListener('unhandledrejection', e => {
@@ -520,7 +561,7 @@ function renderGraph() {
     const label = isEvo ? (m.evo ? `${m.evo.name}${ext}` : t1) : t1;
     const a = label.slice(0, perLine) + (label.length > perLine ? '…' : '');
     const b = label.length > perLine ? label.slice(perLine, perLine * 2) + (label.length > perLine * 2 ? '…' : '') : '';
-    const click = isEvo ? `openEvo(${JSON.stringify(m.evo.name)})` : `openMem(${m.id})`;
+    const click = isEvo ? `openEvo(${evoArg(m.evo.name)})` : `openMem(${m.id})`;
     const badge = isEvo ? '进化' : (LN[m.level] || m.level);
     return `<g class="box" onclick="${click}"><rect x="${x}" y="${y}" width="${w}" height="${BOX_H}" rx="9"/>` +
       `<rect x="${x}" y="${y + 8}" width="4" height="${BOX_H - 16}" rx="2" fill="${col}"/>` +
@@ -660,45 +701,113 @@ function openMem(mid) {
   $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
   $('modal').classList.add('on');
 }
-// 进化资产预览: 与 insight 一样, 默认按文本展示 (内容/引用/沉淀原因), 只读。
-function openEvo(name) {
-  const e = EVOS.find(x => x.name === name); if (!e) return;
-  CUR_MID = null;
-  $('m-title').textContent = '进化资产 · ' + e.name + (e.ext ? ' (' + e.ext + ')' : '');
-  $('m-content').value = e.content || '';
-  $('m-level').value = 'insight';
-  $('m-meta').textContent = `进化资产 · ${e.ext || '?'} · ${e.name}`;
-  $('m-owner-hint').textContent = '（进化资产：服务器版本库为权威，此处仅预览当前版本；改动请用 lclone evolution publish）';
-  $('m-links').innerHTML = '链接：无';
-  $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').style.display = 'none';
-  $('modal').classList.add('on');
+// 进化资产的唯一编辑面 = 进化面板 (避免"看板卡片"与"面板"两处编辑入口分叉)
+function openEvo(name) { closeModal(); openEvoExplorer(name); }
+
+/* ---- 进化资产编辑器 (可编辑性由服务端判定, 前端只镜像) ---- */
+const EVO_REASON = { binary:'二进制内容 · 只读', too_large:'超过可编辑上限 · 只读',
+                     ref:'引用项目仓库文件 · 只读', missing:'内容对象缺失 · 只读' };
+let EVO_CUR = null;    // {name, base_version, editable} —— 当前打开资产的写上下文
+let EVO_META = {};     // name -> /api/evolution/index 行 (版本/可编辑性)
+
+function evoNote(msg, isErr) {
+  const el = $('evo-note');
+  el.textContent = msg || '';
+  el.classList.toggle('err', !!isErr);
 }
+function evoReasonText(code) { return EVO_REASON[code] || ('不可编辑: ' + (code || '未知')); }
+
+// 渲染 /api/evolution/content 响应: 可编辑 → textarea + 保存; 否则 → 只读预览 + 原因徽标
+function evoRender(d) {
+  const ok = !!d.editable;
+  EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok };
+  $('evo-pname').textContent = d.name;
+  $('evo-ver').textContent = 'v' + d.base_version;
+  $('evo-ver').style.display = '';
+  $('evo-reason').style.display = ok ? 'none' : '';
+  $('evo-reason').textContent = ok ? '' : evoReasonText(d.editable_reason);
+  $('evo-editor').style.display = ok ? '' : 'none';
+  $('evo-save').style.display = ok ? '' : 'none';
+  $('evo-preview').style.display = ok ? 'none' : '';
+  $('evo-editor').value = d.content || '';
+  $('evo-preview').textContent = d.content || '(空文件)';
+  evoNote(ok ? `可编辑 · 保存将追加 v${(d.base_version || 0) + 1}，v${d.base_version} 及更早版本不会被改写。`
+             : '该资产不可编辑，仅可预览内容。');
+}
+
+// 打开资产: 内容与可编辑性都取自服务端 (前端不自行判断)
+async function showEvo(name) {
+  document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
+  const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
+  if (row) row.classList.add('on');
+  evoNote('读取中…');
+  try {
+    const r = await fetch('/api/evolution/content?name=' + encodeURIComponent(name));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    evoRender(await r.json());
+  } catch (e) {
+    EVO_CUR = null;
+    $('evo-editor').style.display = 'none'; $('evo-save').style.display = 'none';
+    $('evo-preview').style.display = ''; $('evo-preview').textContent = '(读取失败)';
+    evoNote('读取失败: ' + ((e && e.message) || e), true);
+  }
+}
+
+// 保存: 带 base_version 走显式发布 (乐观锁); 409 时保留编辑区内容, 只提示刷新
+async function evoSave() {
+  if (!EVO_CUR) return;
+  const name = EVO_CUR.name, base = EVO_CUR.base_version;
+  const content = $('evo-editor').value;
+  evoNote('保存中…');
+  let r;
+  try {
+    r = await fetch('/api/evolution/publish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, content, base_version: base }),
+    });
+  } catch (e) {
+    evoNote('保存失败(网络): ' + ((e && e.message) || e) + ' —— 你的编辑仍在编辑区。', true);
+    return;
+  }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    // 冲突: 编辑区内容**保持不动** (SHALL NOT 丢弃用户已编辑的内容), 只提示服务器版本
+    const cur = (data && data.detail && data.detail.current_version != null) ? data.detail.current_version : null;
+    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}。你的编辑仍在编辑区 —— 刷新资产后重试。`, true);
+    return;
+  }
+  if (!r.ok) {
+    const d = data && data.detail;
+    evoNote('保存失败: HTTP ' + r.status + ' · ' + (typeof d === 'string' ? d : JSON.stringify(d || {})), true);
+    return;
+  }
+  const out = (data && data.result) || {};
+  await showEvo(name);          // 先刷新到服务端权威状态 (版本牌/内容)
+  await evoRefreshList();
+  evoNote(out.changed === false ? `内容与 v${base} 相同，未产生新版本。`
+                                : `已保存为 v${out.version}（改自 v${base}）。`);
+}
+
 /* ---- 进化文件目录 (file-explorer) ---- */
 const EVO_ET = { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
                  db:'et-db', json:'et-db', txt:'et-txt' };
 function evoChip(ext) { return '<span class="evo-ic ' + (EVO_ET[ext] || 'et-txt') + '">' + (ext || '·').slice(0,3) + '</span>'; }
-let EVO_CONTENT = {};   // 文件名 -> 内容 (供预览)
-async function openEvoExplorer() {
+
+async function evoRefreshList() {
   const r = await (await fetch('/api/evolutions')).json();
   const items = r.items || [];
   // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
-  let meta = {};
-  try { meta = await (await fetch('/api/evolution/index')).json(); } catch (e) { meta = {}; }
-  const dirs = (meta && meta.dirs) || {};
+  let idx = {};
+  try { idx = await (await fetch('/api/evolution/index')).json(); } catch (e) { idx = {}; }
+  EVO_META = {};
+  (idx.items || []).forEach(x => { if (x && x.name) EVO_META[x.name] = x; });
+  const dirs = (idx && idx.dirs) || {};
   $('evo-path').textContent = dirs.content
-    ? `服务器内容库 ${dirs.content} · ${items.length} 个资产（版本化，本地为只读缓存）`
+    ? `服务器内容库 ${dirs.content} · ${items.length} 个资产（版本化）`
     : `服务器版本库 · ${items.length} 个资产`;
-  EVO_CONTENT = {};
-  const collect = (nodes) => {
-    for (const n of nodes) {
-      if (n.is_dir) collect(n.children || []);
-      else if (n.name) EVO_CONTENT[n.name] = n.content || '';
-    }
-  };
-  collect(items);
   let html = '';
   if (!items.length) {
-    html = '<div class="evo-empty">暂无进化资产<br><span style="color:var(--dim)">用 lclone evolution add 沉淀，或在项目里写好脚本后 publish 上来。</span></div>';
+    html = '<div class="evo-empty">暂无进化资产<br><span style="color:var(--dim)">用命令行 lclone evolution add 沉淀，或发布一个再回来编辑。</span></div>';
   } else {
     const walk = (nodes, depth) => {
       let s = '';
@@ -706,8 +815,10 @@ async function openEvoExplorer() {
         if (n.is_dir) {
           s += `<div class="evo-group">${'&nbsp;'.repeat(depth)}📁 ${esc(n.name)}/</div>` + walk(n.children || [], depth + 1);
         } else {
-          const meta = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
-          s += `<div class="evo-row" data-name="${esc(n.name)}" onclick="showEvo('${esc(n.name)}')">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(meta)}</span></div>`;
+          const m = EVO_META[n.name] || {};
+          const v = (m.base_version != null) ? 'v' + m.base_version + ' · ' : '';
+          const sz = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
+          s += `<div class="evo-row" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(v + sz)}</span></div>`;
         }
       }
       return s;
@@ -715,16 +826,25 @@ async function openEvoExplorer() {
     html = walk(items, 0);
   }
   $('evo-list').innerHTML = html;
-  $('evo-preview').innerHTML = '点击左侧文件查看内容<br><span style="color:var(--dim)">文件本身即权威；点击后按文本预览。</span>';
+}
+
+function evoReset() {
+  EVO_CUR = null;
+  $('evo-pname').textContent = '未选择资产';
+  $('evo-ver').textContent = ''; $('evo-ver').style.display = 'none';
+  $('evo-reason').textContent = ''; $('evo-reason').style.display = 'none';
+  $('evo-editor').value = ''; $('evo-editor').style.display = 'none';
+  $('evo-save').style.display = 'none';
+  $('evo-preview').style.display = ''; $('evo-preview').textContent = '点击左侧条目查看内容';
+  evoNote('可编辑资产点开后可直接改，保存会追加新版本。');
+}
+async function openEvoExplorer(name) {
+  await evoRefreshList();
+  evoReset();
   $('evo-exp').classList.add('on');
+  if (name) await showEvo(name);
 }
 function closeEvoExp() { $('evo-exp').classList.remove('on'); }
-function showEvo(name) {
-  document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
-  const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
-  if (row) row.classList.add('on');
-  $('evo-preview').textContent = EVO_CONTENT[name] || '(空文件)';
-}
 
 function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
 async function saveEdit() {
@@ -811,6 +931,11 @@ async function addProject() {
   await loadAll();
 }
 $('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
+// 行内 onclick 拼资产名会被引号逃逸, 故用事件委托 + data-name (dataset 已自动解码实体)
+$('evo-list').addEventListener('click', ev => {
+  const row = ev.target && ev.target.closest ? ev.target.closest('.evo-row') : null;
+  if (row && row.dataset.name) showEvo(row.dataset.name);
+});
 $('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 (async function boot() {
