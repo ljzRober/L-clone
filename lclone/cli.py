@@ -203,12 +203,18 @@ def cmd_evolution_list(args) -> None:
               f"{e['size']:>6}B  {e.get('kind', 'other'): <7} {e['created_at'][:16]}  [{pl}]{ref}")
     # 本地有、服务器没有的文件也要列出来 —— 否则升级/首次使用时 `list` 显示"暂无",
     # 用户会以为文件丢了 (看板那边是能看到的)
-    untracked = [r["name"] for r in evolutions.status(backend.manifest())
-                 if r["state"] == "untracked"]
+    _rows = evolutions.backend_status(backend)
+    untracked = [r["name"] for r in _rows if r["state"] == "untracked"]
     if untracked:
         print(f"(本地未收录 {len(untracked)} 个: " + "、".join(untracked)
               + " —— 用 lclone evolution publish 上传, 或在服务器上 migrate)")
-    if not items and not untracked:
+    # 墓碑 (服务器已删除、本地还有副本) **不能**混进上面那句"用 publish 上传":
+    # 不带 base_version 的 publish 会清掉墓碑, 即"照着提示做就会静默复活被删资产"。
+    deleted = [r["name"] for r in _rows if r["state"] == "deleted"]
+    if deleted:
+        print(f"(已删除 {len(deleted)} 个: " + "、".join(deleted)
+              + " —— 可用 lclone evolution restore 恢复; 不要用 publish 上传)")
+    if not items and not untracked and not deleted:
         print("(暂无进化资产)")
 
 
@@ -230,7 +236,7 @@ def cmd_evolution_pull(args) -> None:
 
 def cmd_evolution_status(args) -> None:
     backend, _ = _evo_ctx(args)
-    rows = evolutions.status(backend.manifest())
+    rows = evolutions.backend_status(backend)
     if not rows:
         print("(没有进化资产)")
         return

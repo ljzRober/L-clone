@@ -1636,6 +1636,35 @@ try:
           evo_store.get_blob(_bad_h) is not None
           and evo_store.get_blob_bytes(_bad_h) == _bad_raw)
 
+    # 274b/274c (final review I3): `ref` 与 `missing` 这两条**只可能由 web.py 的
+    # `_editability_of` 产出**的原因码此前零断言 —— `evolutions.editability()` 只会返回
+    # ""/too_large/binary, 而 delta spec「可编辑内容判定」给 ref 与 missing 各有一个场景。
+    # 光凭"ref 资产能改名"证明不了原因码本身 (那证明的是别的需求)。
+    _tc2.post("/api/evolution/publish", json={"name": "r.txt", "ref": "scripts/run.sh"})
+    _refrow = [x for x in _tc2.get("/api/evolution/index").json()["items"]
+               if x["name"] == "r.txt"][0]
+    check("274b REST 引用类资产 -> editable=false / ref",
+          _refrow["editable"] is False and _refrow["editable_reason"] == "ref",
+          str({k: _refrow[k] for k in ("editable", "editable_reason")}))
+    # missing: 内容对象缺失(或与其哈希不匹配)。这里直接**删掉**内容库里那个对象。
+    # blob 路径按模块文档/基线 spec 的公开布局自己拼 (`<blob_dir>/<hash 前 2 位>/<hash>`),
+    # 刻意不 import 私有 `_blob_path`; 并把"删之前它确实在"写进断言 —— 否则布局一变,
+    # 这条检查会静默退化成"其实什么都没删"却依然绿。
+    _miss_content = "missing-blob-payload-4f1c9d (unique)"
+    _tc2.post("/api/evolution/publish", json={"name": "miss.txt", "content": _miss_content})
+    _miss_h = [x for x in _tc2.get("/api/evolution/index").json()["items"]
+               if x["name"] == "miss.txt"][0]["hash"]
+    _miss_p = evo_store.blob_dir() / _miss_h[:2] / _miss_h
+    _miss_existed = _miss_p.is_file() and evo_store.get_blob_bytes(_miss_h) is not None
+    _miss_p.unlink()
+    _missrow = [x for x in _tc2.get("/api/evolution/index").json()["items"]
+                if x["name"] == "miss.txt"][0]
+    check("274c REST 内容对象缺失 -> editable=false / missing",
+          _miss_existed and _missrow["editable"] is False
+          and _missrow["editable_reason"] == "missing",
+          f"existed={_miss_existed} path={_miss_p} "
+          + str({k: _missrow[k] for k in ("editable", "editable_reason")}))
+
     # ---- 275-280: 服务端故障必须 5xx, 领域异常保持既有 409/400 映射 ----
     # 端点的异常映射必须**窄**: 只把领域异常 (VersionConflict/NameConflict/ValueError)
     # 翻成 409/400; 其余 (sqlite3.OperationalError、未来改动引入的 TypeError 等) 是
@@ -1979,10 +2008,10 @@ check("302 历史版本内容可取, base_version 恒为当前版本; 版本不�
 #       F7 修正冻结依据文本: created_at 的 INSERT 实为 7 处, 且唯一写它的是一条**测试自身的** UPDATE。
 _SAFE_INTERP = {
     "cntHtml": "调用方拼好的内部计数 HTML (只含数字与静态标记)",
-    "msg": "上游已 esc(String(h.message)) (index.html:881)",
+    "msg": "上游已 esc(String(h.message)) (index.html:915)",
     "p.id": "DB 自增整数",
     "rail": "内部字面量 'global'/'project'",
-    "v": "Number(h.version) || 0 (index.html:880)",
+    "v": "Number(h.version) || 0 (index.html:914)",
     # --- fix round 1 (F1 扩大可见面后新暴露的 #pending-list 两处, 逐条可证安全) ---
     "m.id": "memories.id = INTEGER PRIMARY KEY AUTOINCREMENT (db.py:39),"
             " /api/pending 原样下发 (web.py:281-283 dict(r)) -> 恒为整数, 不可能带 HTML",
@@ -2002,8 +2031,12 @@ _IDENT_SINKS = {
     "cntHtml": "内部计数 HTML; 由 renderSidebar 传入 ('∞' 字面量 index.html:551 /"
                " `记忆 <b>${p.mem_count}</b>${pendTag}` :555, 计数来自服务端) -> 见 _SAFE_INTERP",
     "TRASH_ICON": "文件内常量字面量 '<svg .../>' (index.html:517), 不含任何插值",
-    "svg": "#graph 的 SVG 拼装 (字符串 bg 逐段累加, index.html:588-696) —— 既有代码, 本 change 未触碰;"
-           " 该处的项目名/charter 已走 esc(), 其余为内部字面量与内部计数; 显式冻结为例外(非静默放过)",
+    "svg": "#graph 的 SVG 拼装 (字符串 bg 逐段累加, index.html:655-696, sink 即 :697"
+           " `$('graph').innerHTML = svg;`) —— **sink 那一行本身**未被本 change 修改,"
+           " 但这段拼装里**有**一处本 change 新增的插值 (:602"
+           " `openEvo(${esc(JSON.stringify(m.evo.name))})`) —— 它走的正是 esc(), 并由桩检查"
+           " 304 以 8 个名字 (含 \" < > \\ 真实换行 反引号+${ 实体 U+2028) 实体解码后编译往返"
+           " 验证过; 其余为内部字面量与内部计数; 显式冻结为例外(非静默放过)",
     "html": "#evo-list 行拼装 —— 由检查 307 审计 (本 change 自己新增的渲染代码)",
 }
 
@@ -2241,6 +2274,124 @@ check("307 #evo-list 拼装行的插值转义审计 (本 change 自己的渲染)
       bool(_accum) and _accum_unwrapped == set(_SAFE_ACCUM),
       f"lines={len(_accum.splitlines())} extra={sorted(_accum_unwrapped - set(_SAFE_ACCUM))} "
       f"missing={sorted(set(_SAFE_ACCUM) - _accum_unwrapped)}")
+
+# ---- 308 (final review I4): 墓碑必须自成一态, 不能被当成 untracked 而被 publish --all 复活 ----
+# 根因: `manifest_index`/`ls()` 默认都**不含**墓碑 (Task 3 的墓碑过滤扩到了 tree() 与
+# migrate_cache_files, 漏了 status() 这条链), 于是"服务器已删除"与"服务器从来没有"在
+# 同步状态里长得一模一样 -> status 报 untracked -> publish_all 把它推上去 -> 不带
+# base_version 的 publish 会清掉墓碑 = **静默复活被删资产**; 而且 `evolution list` 会打印
+# "本地未收录 N 个: … 用 lclone evolution publish 上传", 等于指导用户复活自己刚删的东西。
+_al = tempfile.mkdtemp(prefix="evotombst_")
+_al_db = os.path.join(_al, "al.db")
+_al_conn = db_mod.init(_al_db)
+_prev_evo_dir3 = os.environ.get("LCLONE_EVO_DIR")
+_prev_blob_dir3 = os.environ.get("LCLONE_EVO_BLOB_DIR")
+os.environ["LCLONE_EVO_DIR"] = os.path.join(_al, "evo")
+os.environ["LCLONE_EVO_BLOB_DIR"] = os.path.join(_al, "blobs")
+try:
+    _al_be = evo_store.LocalBackend(_al_conn)
+    # 模拟"缓存过该资产"的机器: 发布 -> pull 到本地 -> 服务器侧墓碑删除
+    evo_store.publish(_al_conn, "doomed.sh", "echo doomed")
+    evo_store.pull(_al_be, ["doomed.sh"])
+    evo_store.delete(_al_conn, "doomed.sh")
+    _al_st = {r["name"]: r["state"] for r in evo_store.backend_status(_al_be)}
+    _al_push = evo_store.publish_all(_al_be)
+    _al_buf = io.StringIO()
+    with contextlib.redirect_stdout(_al_buf):
+        cli.main(["evolution", "list", "--local", "--db", _al_db])
+    _al_list = _al_buf.getvalue()
+    _al_tomb = evo_store.current(_al_conn, "doomed.sh")["deleted_at"]
+    check("308 墓碑自成一态: status=deleted, publish --all 不复活, list 指向 restore",
+          _al_st.get("doomed.sh") == "deleted"
+          and "doomed.sh" not in [x.get("name") for x in _al_push["published"]]
+          and bool(_al_tomb)
+          and "已删除" in _al_list and "restore" in _al_list
+          and "本地未收录" not in _al_list,
+          f"state={_al_st.get('doomed.sh')} published={[x.get('name') for x in _al_push['published']]} "
+          f"deleted_at={_al_tomb!r} list={_al_list.strip()[:160]}")
+finally:
+    if _prev_evo_dir3 is None:
+        os.environ.pop("LCLONE_EVO_DIR", None)
+    else:
+        os.environ["LCLONE_EVO_DIR"] = _prev_evo_dir3
+    if _prev_blob_dir3 is None:
+        os.environ.pop("LCLONE_EVO_BLOB_DIR", None)
+    else:
+        os.environ["LCLONE_EVO_BLOB_DIR"] = _prev_blob_dir3
+
+# ---- 309 (final review I5): 乐观锁必须在**排他事务**里做 check-then-act ----
+# 只比较版本号是 check-then-act: 两个同 base_version 的写可以先后都通过校验。这里用两条
+# 连接 + 一个"校验之后、DB 写入之前"的闸门**确定性地**构造那个交错 (钩在 put_blob 上 ——
+# 它是每条写路径在校验与 INSERT 之间唯一的公共点, 不依赖内部读了几次 current):
+#   B 通过校验后卡住 -> A 以同一个 base_version 完整跑完 -> 放 B 继续
+# 修复后: A 在 BEGIN IMMEDIATE 上就**等着** B 提交, 随后看到 v2 而 409 (B 赢, A 被告知刷新);
+# 修复前: A 也写成功 (v2), B 再补一条 v3 把指针推过 A —— 两个都"成功", 典型的 lost update。
+import threading  # noqa: E402  (只有本块用)
+import time  # noqa: E402
+
+_rc_dir = tempfile.mkdtemp(prefix="evorace_")
+_rc_db = os.path.join(_rc_dir, "race.db")
+_rc_init = db_mod.init(_rc_db)
+_rc_init.close()
+_rc_a = db_mod.connect(_rc_db)
+_rc_b = db_mod.connect(_rc_db)
+evo_store.publish(_rc_a, "race.txt", "v1")
+_orig_put_blob = evo_store.put_blob
+_rc_entered = threading.Event()
+_rc_open = threading.Event()
+_rc_res = {}
+
+
+def _rc_writer_a():
+    try:
+        _rc_res["A"] = evo_store.publish(_rc_a, "race.txt", "A-body", base_version=1)
+    except BaseException as e:  # noqa: BLE001 - 测试要看清到底抛了什么
+        _rc_res["A"] = e
+
+
+def _rc_writer_b():
+    try:
+        _rc_res["B"] = evo_store.publish(_rc_b, "race.txt", "B-body", base_version=1)
+    except BaseException as e:  # noqa: BLE001
+        _rc_res["B"] = e
+
+
+_rc_tb = threading.Thread(target=_rc_writer_b)
+
+
+def _rc_hooked_put_blob(content):
+    if threading.current_thread() is _rc_tb:   # 只卡 B, 卡在"校验已过、INSERT 未发"处
+        _rc_entered.set()
+        _rc_open.wait(5)
+    return _orig_put_blob(content)
+
+
+_rc_entered_ok = False
+_rc_ta = threading.Thread(target=_rc_writer_a)
+try:
+    evo_store.put_blob = _rc_hooked_put_blob
+    _rc_tb.start()
+    _rc_entered_ok = _rc_entered.wait(5)
+    _rc_ta.start()
+    time.sleep(0.2)      # 给 A 时间抵达 BEGIN IMMEDIATE (无排他事务时它会直接写成功)
+    _rc_open.set()
+    _rc_ta.join(10)
+    _rc_tb.join(10)
+finally:
+    _rc_open.set()
+    evo_store.put_blob = _orig_put_blob
+
+_rc_cur = evo_store.current(_rc_a, "race.txt")
+_rc_hist = [h["version"] for h in evo_store.history(_rc_a, "race.txt")]
+check("309 乐观锁在同一排他事务内: 同 base_version 的并发写不丢更新",
+      _rc_entered_ok
+      and isinstance(_rc_res.get("A"), evo_store.VersionConflict)
+      and getattr(_rc_res.get("A"), "current_version", None) == 2
+      and isinstance(_rc_res.get("B"), dict) and _rc_res["B"].get("version") == 2
+      and _rc_cur["version"] == 2 and _rc_hist == [2, 1]
+      and evo_store.resolve(_rc_a, "race.txt")["content"] == "B-body",
+      f"entered={_rc_entered_ok} A={_rc_res.get('A')!r} B={_rc_res.get('B')!r} "
+      f"cur=v{_rc_cur['version']} hist={_rc_hist}")
 
 print()
 if fails:

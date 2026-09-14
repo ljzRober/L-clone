@@ -745,7 +745,8 @@ function openEvo(name) { closeModal(); openEvoExplorer(name); }
 /* ---- 进化资产编辑器 (可编辑性由服务端判定, 前端只镜像) ---- */
 const EVO_REASON = { binary:'二进制内容 · 只读', too_large:'超过可编辑上限 · 只读',
                      ref:'引用项目仓库文件 · 只读', missing:'内容对象缺失 · 只读' };
-let EVO_CUR = null;    // {name, base_version, editable, loaded} —— 当前打开资产的写上下文 (loaded = 上次从服务端载入的内容)
+let EVO_CUR = null;    // {name, base_version, editable, loaded, loadedRaw} —— 当前打开资产的写上下文
+                       // (loaded = 归一形(LF) 基准, 与 textarea 回读一致; loadedRaw = 服务端原文, 含 CRLF)
 let EVO_META = {};     // name -> /api/evolution/index 行 (版本/可编辑性/墓碑)
 let EVO_MODE = 'view';        // 'view' | 'new' | 'rename' —— 工具条当前模式
 let EVO_TOMB = false;         // 当前选中项是否墓碑 (决定 #evo-del 是「删除」还是「恢复」)
@@ -760,6 +761,24 @@ function evoNote(msg, isErr) {
 }
 function evoReasonText(code) { return EVO_REASON[code] || ('不可编辑: ' + (code || '未知')); }
 
+// 409 分诊的**唯一出口** (publish 新建/保存、delete/restore、rename、rollback 共用) ——
+// 服务端把三种冲突都放在 detail 里 (web.py 的 _evo_conflict):
+//   name    目标名已是活跃资产 (only_if_new / 改名) -> 调用方给带名字与"输入仍在"的文案
+//   deleted 墓碑冲突: 版本号与 base_version **相同**却仍被拒, 原因是该名字已被删除
+//           (evolutions.py 对墓碑名恒抛 VersionConflict(deleted=True))。此分支下
+//           "刷新后重试"是**假话** —— 重试必然再次 409, 必须先「恢复」。
+//   stale   服务器已有更新版本 -> 按 spec 场景引导刷新后重试
+function evoConflict(detail, action) {
+  const d = (detail && typeof detail === 'object') ? detail : {};
+  if (d.name) return { kind: 'name', name: d.name, text: '' };
+  if (d.deleted === true) {
+    return { kind: 'deleted', text: action + '被拒: 该资产已被删除（墓碑），请先点「恢复」'
+      + '再操作；刷新或重试都不会成功。' };
+  }
+  const cur = (d.current_version != null) ? 'v' + Number(d.current_version) : '更新版本';
+  return { kind: 'stale', text: action + '被拒: 服务器已有 ' + cur + '，你的视图已过期，请刷新后重试。' };
+}
+
 // 工具条的**唯一**同步出口: 显隐/文案只在这里算 (evoRender / evoSetMode / evoReset / evoHistPreview 都调它)
 // 显隐是 (模式, 历史态, 可编辑, 有无选中) 的函数, 必须单点求值 —— 散在 evoRender 与别处必然分叉。
 function evoSyncChrome() {
@@ -767,8 +786,12 @@ function evoSyncChrome() {
   const cur = EVO_CUR;
   const has = !!(cur && cur.name);
   const hist = EVO_HIST_VER > 0;
+  // 可编辑 = 服务端判定可编辑 **且不是墓碑**: 墓碑是只读预览 + 「恢复」(与 rename 对齐)。
+  // 不排除墓碑的话, "点墓碑行 -> 编辑 -> 保存"必然 409 (服务端对墓碑名的写恒冲突),
+  // 也就是 UI 给出一个永远不可能成功的入口。
+  const editable = has && !!cur.editable && !EVO_TOMB;
   // 编辑器可见 = 内容可写: 历史态只读; 改名模式也不给内容编辑 (确认改名不用这份内容, 见 evoDirty)
-  const canEdit = EVO_HIST_VER === 0 && (EVO_MODE === 'new' || (EVO_MODE === 'view' && has && cur.editable));
+  const canEdit = EVO_HIST_VER === 0 && (EVO_MODE === 'new' || (EVO_MODE === 'view' && editable));
   $('evo-editor').style.display = canEdit ? '' : 'none';
   $('evo-preview').style.display = canEdit ? 'none' : '';   // 与编辑器互补
   $('evo-nameinput').style.display = editing ? '' : 'none';
@@ -780,7 +803,7 @@ function evoSyncChrome() {
     $('evo-save').style.display = hist ? 'none' : '';
   } else {                            // view / rename: 选中且服务端判定可编辑才给保存入口
     $('evo-save').textContent = '保存新版本';
-    $('evo-save').style.display = (!editing && !hist && has && cur.editable) ? '' : 'none';
+    $('evo-save').style.display = (!editing && !hist && editable) ? '' : 'none';
   }
   // 签名元素「版本牌」: 历史态显示 vN（历史）, 否则显示当前版本; 无选中整体隐藏
   $('evo-ver').textContent = hist ? ('v' + EVO_HIST_VER + '（历史）')
@@ -802,16 +825,23 @@ function evoSetMode(mode) { EVO_MODE = mode; evoSyncChrome(); }
 // 渲染 /api/evolution/content 响应: 只写文本/值/状态, 显隐一律交给 evoSyncChrome
 function evoRender(d) {
   const ok = !!d.editable;
-  EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok, loaded: d.content || '' };
+  // 两个形都必须留: 真 textarea 的 .value 回读会把 CRLF 归一成 LF, 所以"脏判定"只能拿
+  // **归一形**比 (否则含 \r 的资产一载入就是脏, 每次切资产都弹无用确认); 而"内容未变"的
+  // 保存必须回传**原文**, 否则服务端看到 hash 变化 -> 凭空多一个版本, 并悄悄改掉整份文件的行尾。
+  const raw = d.content || '';
+  EVO_CUR = { name: d.name, base_version: d.base_version, editable: ok,
+              loadedRaw: raw, loaded: raw.replace(/\r\n?/g, '\n') };
   EVO_TOMB = !!d.deleted_at;   // 墓碑资产: 工具条的删除按钮变成「恢复」
   EVO_SEL = d.name;
   EVO_HIST_VER = 0;            // 渲染 = 回到当前版本 (历史预览走 evoHistPreview)
   $('evo-pname').textContent = d.name;
   $('evo-reason').textContent = ok ? '' : evoReasonText(d.editable_reason);
-  $('evo-editor').value = d.content || '';
-  $('evo-preview').textContent = d.content || '(空文件)';   // 始终写: 改名模式靠它做只读呈现
-  evoNote(ok ? `可编辑 · 保存将追加 v${(d.base_version || 0) + 1}，v${d.base_version} 及更早版本不会被改写。`
-             : '该资产不可编辑，仅可预览内容。');
+  $('evo-editor').value = EVO_CUR.loaded;
+  $('evo-preview').textContent = raw || '(空文件)';   // 始终写: 改名模式靠它做只读呈现
+  // 墓碑不得再承诺"保存将追加 vN" —— 服务端对墓碑名的写恒 409, 那句承诺是假话
+  evoNote(EVO_TOMB ? '该资产已删除（墓碑）：只读预览，点「恢复」后再编辑。'
+         : ok ? `可编辑 · 保存将追加 v${(d.base_version || 0) + 1}，v${d.base_version} 及更早版本不会被改写。`
+              : '该资产不可编辑，仅可预览内容。');
   evoSyncChrome();
 }
 
@@ -946,6 +976,13 @@ async function evoHistRollback(version) {
     return;
   }
   const data = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    // 今天的后端 rollback 无乐观锁参数, 不会回 409; 仍与其余写操作共用同一分诊出口,
+    // 免得将来给它补上 base_version 时又长出一份"刷新后重试"的假话 (墓碑分支)。
+    const c = evoConflict(data && data.detail, '回滚');
+    evoNote(c.text || '回滚被拒: 服务器拒绝了本次回滚。', true);
+    return;
+  }
   if (!r.ok) {
     // 404 的 detail 是**字符串** (web.py 把 ValueError 映射成 HTTPException(404, str(e))), 不能当对象读
     const d = data && data.detail;
@@ -980,13 +1017,12 @@ async function evoSave() {
     }
     const data = await r.json().catch(() => ({}));
     if (r.status === 409) {
-      const d = (data && typeof data.detail === 'object' && data.detail) || {};
-      if (d.name) {   // 名字冲突: 停在新建模式, 名字与内容都保留
-        evoNote(`新建被拒: 名字「${d.name}」已是活跃的进化资产，请换一个名字。名字与内容都还在。`, true);
+      const c = evoConflict(data && data.detail, '新建');
+      if (c.kind === 'name') {   // 名字冲突: 停在新建模式, 名字与内容都保留
+        evoNote(`新建被拒: 名字「${c.name}」已是活跃的进化资产，请换一个名字。名字与内容都还在。`, true);
         return;
       }
-      const cur = (d.current_version != null) ? d.current_version : null;
-      evoNote(`新建被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，视图已过期。内容仍在编辑区，刷新后重试。`, true);
+      evoNote(c.text + ' 名字与内容都还在。', true);
       return;
     }
     if (!r.ok) {
@@ -1008,12 +1044,15 @@ async function evoSave() {
   if (!EVO_CUR.editable) { evoNote('该资产不可编辑，不能保存。', true); return; }
   const name = EVO_CUR.name, base = EVO_CUR.base_version;
   const content = $('evo-editor').value;
+  // 未改过内容时回传**原文** (EVO_CUR.loadedRaw): 编辑器里是 CRLF 归一后的 LF, 拿它去发布
+  // 会让服务端把"没改"看成"改了" -> 多一个版本 + 整个文件被重写成 LF。
+  const payload = (content === EVO_CUR.loaded) ? EVO_CUR.loadedRaw : content;
   evoNote('保存中…');
   let r;
   try {
     r = await fetch('/api/evolution/publish', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, content, base_version: base }),
+      body: JSON.stringify({ name, content: payload, base_version: base }),
     });
   } catch (e) {
     evoNote('保存失败(网络): ' + ((e && e.message) || e) + ' —— 你的编辑仍在编辑区。', true);
@@ -1021,9 +1060,11 @@ async function evoSave() {
   }
   const data = await r.json().catch(() => ({}));
   if (r.status === 409) {
-    // 冲突: 编辑区内容**保持不动** (SHALL NOT 丢弃用户已编辑的内容), 只提示服务器版本
-    const cur = (data && data.detail && data.detail.current_version != null) ? data.detail.current_version : null;
-    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期。编辑内容仍在编辑区，可先复制；刷新查看服务器版本后再点保存即为重试。`, true);
+    // 冲突: 编辑区内容**保持不动** (SHALL NOT 丢弃用户已编辑的内容), 只提示冲突性质
+    const c = evoConflict(data && data.detail, '保存');
+    if (c.kind === 'name') { evoNote(`保存被拒: 名字「${c.name}」已是活跃的进化资产。`, true); return; }
+    evoNote(c.text + ' 编辑内容仍在编辑区'
+            + (c.kind === 'stale' ? '（刷新前可先复制）' : '') + '。', true);
     return;
   }
   if (!r.ok) {
@@ -1087,13 +1128,12 @@ async function evoRenameGo() {
   }
   const data = await r.json().catch(() => ({}));
   if (r.status === 409) {
-    const d = (data && typeof data.detail === 'object' && data.detail) || {};
-    if (d.name) {   // 目标名字活跃: 停在改名模式, 输入保留
-      evoNote(`重命名被拒: 名字「${d.name}」已是活跃的进化资产，请换一个名字。`, true);
+    const c = evoConflict(data && data.detail, '重命名');
+    if (c.kind === 'name') {   // 目标名字活跃: 停在改名模式, 输入保留
+      evoNote(`重命名被拒: 名字「${c.name}」已是活跃的进化资产，请换一个名字。`, true);
       return;
     }
-    const cur = (d.current_version != null) ? d.current_version : null;
-    evoNote(`重命名被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期。刷新后重试。`, true);
+    evoNote(c.text, true);
     return;
   }
   if (!r.ok) {
@@ -1133,14 +1173,13 @@ async function evoDeleteSelected() {
   }
   const data = await r.json().catch(() => ({}));
   if (r.status === 409) {
-    const d = (data && typeof data.detail === 'object' && data.detail) || {};
-    if (d.name) {
-      evoNote(`操作被拒: 名字「${d.name}」已是活跃的进化资产。`, true);
+    const c = evoConflict(data && data.detail, tomb ? '恢复' : '删除');
+    if (c.kind === 'name') {
+      evoNote(`操作被拒: 名字「${c.name}」已是活跃的进化资产。`, true);
       return;
     }
-    const cur = (d.current_version != null) ? d.current_version : null;
-    await evoRefreshList();   // 陈旧视图: 先把清单刷到服务端状态, 再提示重试
-    evoNote(`${tomb ? '恢复' : '删除'}被拒: 服务器当前为 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期 —— 已刷新清单，请重试。`, true);
+    await evoRefreshList();   // 陈旧视图: 先把清单刷到服务端状态
+    evoNote(c.text, true);
     return;
   }
   if (!r.ok) {

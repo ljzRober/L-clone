@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -227,6 +228,9 @@ def _check_base_version(conn: sqlite3.Connection, name: str,
 
     删除只打墓碑、**不新增版本**, 所以"版本号相同"不等于"视图未过期":
     版本一致但当前是墓碑态时同样判冲突 (不复活被删资产)。
+
+    ⚠️ 本函数只做**读**。调用方必须把它和后续写入放进 `_immediate()` 的同一个排他
+    事务里 —— 单靠比较版本号是 check-then-act, 挡不住并发丢更新。
     """
     if base_version is None:
         return
@@ -236,6 +240,46 @@ def _check_base_version(conn: sqlite3.Connection, name: str,
         raise VersionConflict(name, base_version, actual)
     if row and (row.get("deleted_at") or ""):
         raise VersionConflict(name, base_version, actual, deleted=True)
+
+
+# 已持有排他事务的连接 (按 id), 供 rename -> publish 这种"外层已开事务"的嵌套复用。
+_EXCL_TX: set = set()
+
+
+@contextlib.contextmanager
+def _immediate(conn: sqlite3.Connection):
+    """把「读当前版本 → 写入」整段包进**排他事务** (`BEGIN IMMEDIATE`)。
+
+    为什么必须: 乐观锁是 check-then-act —— 不加锁时两个同 `base_version` 的写可以
+    先后都通过校验, 后者把当前指针推过前者 (lost update)。`UNIQUE(name, version)`
+    只挡重号, 挡不住丢更新 (第二个写者拿到的是下一个号, 两个都"成功")。
+    `BEGIN IMMEDIATE` 在进入临界区时就拿写锁, 于是后到者要么等前者提交、拿到已更新的
+    版本号而 409, 要么在 busy timeout 后拿到 `sqlite3.OperationalError` (服务端故障,
+    由 web 层冒泡成 500) —— 两条路都不会静默覆盖。
+
+    两个必须注意的 sqlite3 细节:
+      * 默认的隐式事务只在 DML 前才 BEGIN 且是 deferred; 若连接上已有一个未了结的
+        事务, `BEGIN IMMEDIATE` 会报 "cannot start a transaction within a
+        transaction"(而不是嵌套), 所以进入前先 `commit()` —— 对无事务的连接是 no-op。
+      * `rename()` 内部会调 `publish()`。已在同一连接的排他事务里时**复用它**(直接
+        yield), 既不嵌套 BEGIN、也不提前 commit —— 于是改名整体变成一次原子事务。
+    """
+    if id(conn) in _EXCL_TX:
+        yield conn
+        return
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    _EXCL_TX.add(id(conn))
+    try:
+        yield conn
+    except BaseException:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        _EXCL_TX.discard(id(conn))
 
 
 def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
@@ -254,59 +298,61 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
 
     `only_if_new` 用于"新建"语义 —— 目标名已是**活跃**资产时抛 `NameConflict` (409);
     **墓碑**名不拒绝, 按既有的"重新激活"路径续用自身版本号。
+
+    整个「读当前版本 → 校验 → 写入」在 `_immediate()` 的**排他事务**内完成 (见该函数):
+    否则两个同 `base_version` 的写能先后都通过校验, 后者把指针推过前者。
     """
     fname = ensure_ext(name, kind)
     if ref and content is not None:
         raise ValueError("ref 类只记引用, 不能同时给 content (内容在项目仓库)")
-    cur = current(conn, fname)
-    _check_base_version(conn, fname, base_version)
-    if only_if_new and cur is not None and not (cur.get("deleted_at") or ""):
-        raise NameConflict(fname)          # 活跃名 → 409; 墓碑名仍允许(重新激活, 见 docstring)
-    if ref and content is None:
-        h, size = "", 0
-    else:
-        h, size = put_blob(content or "")
+    with _immediate(conn):
+        cur = current(conn, fname)
+        _check_base_version(conn, fname, base_version)
+        if only_if_new and cur is not None and not (cur.get("deleted_at") or ""):
+            raise NameConflict(fname)      # 活跃名 → 409; 墓碑名仍允许(重新激活, 见 docstring)
+        if ref and content is None:
+            h, size = "", 0
+        else:
+            h, size = put_blob(content or "")
 
-    # 元数据也参与"是否有变化"的判断 —— 否则"内容没变但改了归属/类型"会被静默丢弃
-    ref_n = ref or ""
-    k = kind or (cur["kind"] if cur else "") or DEFAULT_KIND
-    pid = project_id if project_id is not None else (cur["project_id"] if cur else None)
-    sref_n = source_ref or (cur["source_ref"] if cur else "") or ""
-    # 墓碑名字再次 publish 视为**重新激活** (墓碑不在默认清单里, 用户以同名新建应当成功)。
-    # 因此墓碑态必须跳过"内容未变则不新增版本"的早返回, 让流程走到 upsert 去清墓碑 ——
-    # 否则"删除后原样重发"会被早返回挡住, 名字永远留在墓碑态。
-    tombstoned = bool(cur and (cur.get("deleted_at") or ""))
-    if (not tombstoned and cur and cur["hash"] == h and (cur["ref"] or "") == ref_n
-            and cur["kind"] == k and cur["project_id"] == pid
-            and (cur["source_ref"] or "") == sref_n):
-        return {"name": fname, "version": cur["version"], "hash": h, "changed": False}
+        # 元数据也参与"是否有变化"的判断 —— 否则"内容没变但改了归属/类型"会被静默丢弃
+        ref_n = ref or ""
+        k = kind or (cur["kind"] if cur else "") or DEFAULT_KIND
+        pid = project_id if project_id is not None else (cur["project_id"] if cur else None)
+        sref_n = source_ref or (cur["source_ref"] if cur else "") or ""
+        # 墓碑名字再次 publish 视为**重新激活** (墓碑不在默认清单里, 用户以同名新建应当成功)。
+        # 因此墓碑态必须跳过"内容未变则不新增版本"的早返回, 让流程走到 upsert 去清墓碑 ——
+        # 否则"删除后原样重发"会被早返回挡住, 名字永远留在墓碑态。
+        tombstoned = bool(cur and (cur.get("deleted_at") or ""))
+        if (not tombstoned and cur and cur["hash"] == h and (cur["ref"] or "") == ref_n
+                and cur["kind"] == k and cur["project_id"] == pid
+                and (cur["source_ref"] or "") == sref_n):
+            return {"name": fname, "version": cur["version"], "hash": h, "changed": False}
 
-    # 版本号按**历史最大版本**递增, 不是"当前版本+1" —— 回滚会把当前指针往回拨,
-    # 用当前+1 会撞上已存在的版本 (UNIQUE(name, version) 冲突)。
-    # 并发下两个请求可能同时算出同一个号 → 撞 UNIQUE 时重算一次。
-    for attempt in (1, 2):
-        mx = conn.execute("SELECT COALESCE(MAX(version), 0) AS mx FROM evo_versions"
-                          " WHERE name=?", (fname,)).fetchone()["mx"]
-        ver = int(mx) + 1
-        try:
-            conn.execute(
-                "INSERT INTO evo_versions(name, version, hash, size, kind, project_id,"
-                " ref, message, source_ref) VALUES (?,?,?,?,?,?,?,?,?)",
-                (fname, ver, h, size, k, pid, ref_n, message or "", sref_n),
-            )
-            break
-        except sqlite3.IntegrityError:
-            if attempt == 2:
-                conn.rollback()
-                raise
-    conn.execute(
-        "INSERT INTO evo_current(name, version, updated_at, deleted_at, renamed_to)"
-        " VALUES (?,?,?,'','')"
-        " ON CONFLICT(name) DO UPDATE SET version=excluded.version,"
-        " updated_at=excluded.updated_at, deleted_at='', renamed_to=''",
-        (fname, ver, _now()),
-    )
-    conn.commit()
+        # 版本号按**历史最大版本**递增, 不是"当前版本+1" —— 回滚会把当前指针往回拨,
+        # 用当前+1 会撞上已存在的版本 (UNIQUE(name, version) 冲突)。
+        # 排他事务下重号已不可能, 保留重试只为兜住"库被外部进程并发写"的残余窗口。
+        for attempt in (1, 2):
+            mx = conn.execute("SELECT COALESCE(MAX(version), 0) AS mx FROM evo_versions"
+                              " WHERE name=?", (fname,)).fetchone()["mx"]
+            ver = int(mx) + 1
+            try:
+                conn.execute(
+                    "INSERT INTO evo_versions(name, version, hash, size, kind, project_id,"
+                    " ref, message, source_ref) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (fname, ver, h, size, k, pid, ref_n, message or "", sref_n),
+                )
+                break
+            except sqlite3.IntegrityError:
+                if attempt == 2:
+                    raise
+        conn.execute(
+            "INSERT INTO evo_current(name, version, updated_at, deleted_at, renamed_to)"
+            " VALUES (?,?,?,'','')"
+            " ON CONFLICT(name) DO UPDATE SET version=excluded.version,"
+            " updated_at=excluded.updated_at, deleted_at='', renamed_to=''",
+            (fname, ver, _now()),
+        )
     return {"name": fname, "version": ver, "hash": h, "changed": True}
 
 
@@ -358,17 +404,19 @@ def delete(conn: sqlite3.Connection, name: str,
     但若同时给了 `base_version`, 当前版本为 None → 由校验抛 `VersionConflict`。
     名字已是墓碑态且给了 `base_version` 时同样抛 `VersionConflict(deleted=True)`
     (不带 `base_version` 的重复删除仍是幂等的 `changed=False`)。
+
+    「读当前版本 → 校验 → 打墓碑」在同一个排他事务内 (见 `_immediate`)。
     """
-    cur = current(conn, name)
-    _check_base_version(conn, name, base_version)
-    if cur is None:
-        raise ValueError(f"进化资产不存在: {name}")
-    if cur.get("deleted_at"):
-        return {"name": name, "deleted_at": cur["deleted_at"], "changed": False}
-    ts = _now()
-    conn.execute("UPDATE evo_current SET deleted_at=?, updated_at=? WHERE name=?",
-                 (ts, ts, name))
-    conn.commit()
+    with _immediate(conn):
+        cur = current(conn, name)
+        _check_base_version(conn, name, base_version)
+        if cur is None:
+            raise ValueError(f"进化资产不存在: {name}")
+        if cur.get("deleted_at"):
+            return {"name": name, "deleted_at": cur["deleted_at"], "changed": False}
+        ts = _now()
+        conn.execute("UPDATE evo_current SET deleted_at=?, updated_at=? WHERE name=?",
+                     (ts, ts, name))
     return {"name": name, "deleted_at": ts, "changed": True}
 
 
@@ -405,30 +453,33 @@ def rename(conn: sqlite3.Connection, name: str, new_name: str,
     当前版本的内容对象**缺失或损坏** (`get_blob` 返回 None) 时抛 `ValueError` ——
     内容继承无法兑现, 拒绝改名以免静默产出空资产 (合法的空内容 hash 非空且读回 `""`,
     不触发该守卫; ref 类无 blob, 同样不触发)。
+
+    整体在一个排他事务内: 内层 `publish` 复用外层事务 (见 `_immediate`), 于是"新名字发布
+    + 旧名字墓碑"要么都生效要么都不生效 —— 不再有"崩溃窗口里留下两个活跃名字"。
     """
-    _check_base_version(conn, name, base_version)
-    cur = current(conn, name)
-    if cur is None:
-        raise ValueError(f"进化资产不存在: {name}")
-    new_fname = ensure_ext(new_name, cur["kind"])
-    if new_fname == name:
-        return {"old_name": name, "new_name": new_fname, "version": cur["version"],
-                "hash": cur["hash"], "changed": False}
-    tgt = current(conn, new_fname)
-    if tgt is not None and not (tgt.get("deleted_at") or ""):
-        raise NameConflict(new_fname)
-    content = None if cur.get("ref") else get_blob(cur.get("hash") or "")
-    if content is None and not cur.get("ref"):
-        raise ValueError(f"内容缺失或损坏, 拒绝改名以免丢失内容: {name}")
-    out = publish(conn, new_fname, content, kind=cur["kind"],
-                  project_id=cur["project_id"], ref=cur.get("ref") or "",
-                  message=message or f"改名自 {name}")
-    # 旧名墓碑: 必须同时写 deleted_at 与 renamed_to, 否则改名旧名绕过乐观锁
-    ts = _now()
-    conn.execute(
-        "UPDATE evo_current SET deleted_at=?, renamed_to=?, updated_at=? WHERE name=?",
-        (ts, new_fname, ts, name))
-    conn.commit()
+    with _immediate(conn):
+        _check_base_version(conn, name, base_version)
+        cur = current(conn, name)
+        if cur is None:
+            raise ValueError(f"进化资产不存在: {name}")
+        new_fname = ensure_ext(new_name, cur["kind"])
+        if new_fname == name:
+            return {"old_name": name, "new_name": new_fname, "version": cur["version"],
+                    "hash": cur["hash"], "changed": False}
+        tgt = current(conn, new_fname)
+        if tgt is not None and not (tgt.get("deleted_at") or ""):
+            raise NameConflict(new_fname)
+        content = None if cur.get("ref") else get_blob(cur.get("hash") or "")
+        if content is None and not cur.get("ref"):
+            raise ValueError(f"内容缺失或损坏, 拒绝改名以免丢失内容: {name}")
+        out = publish(conn, new_fname, content, kind=cur["kind"],
+                      project_id=cur["project_id"], ref=cur.get("ref") or "",
+                      message=message or f"改名自 {name}")
+        # 旧名墓碑: 必须同时写 deleted_at 与 renamed_to, 否则改名旧名绕过乐观锁
+        ts = _now()
+        conn.execute(
+            "UPDATE evo_current SET deleted_at=?, renamed_to=?, updated_at=? WHERE name=?",
+            (ts, new_fname, ts, name))
     return {"old_name": name, "new_name": new_fname, "version": out["version"],
             "hash": out["hash"], "changed": True}
 
@@ -578,28 +629,54 @@ def _local_files() -> List[str]:
 
 
 # ---------------------------------------------------------------- 同步操作 (后端无关)
-def status(remote: Dict[str, dict], cache: Optional[Path] = None) -> List[dict]:
-    """本地缓存相对服务器的状态, 五态:
+def tombstones(conn: sqlite3.Connection) -> set:
+    """墓碑 (已删除) 名字集合。
+
+    默认清单 (`ls`) 与 manifest 都不含墓碑条目, 于是"服务器已删除"与"本地有、服务器
+    从来没有" (untracked) 在同步状态里长得一模一样 —— 而后者会被 `publish --all`
+    推上去, 推一个墓碑名等于经 `publish` 的复活路径**静默撤销那次删除**。
+    """
+    return {r["name"] for r in ls(conn, include_deleted=True) if r.get("deleted_at")}
+
+
+def tombstones_of(backend) -> set:
+    """后端墓碑集合 (两端同一语义); 缺该方法的自定义后端退回空集 (与本 change 之前一致)。"""
+    fn = getattr(backend, "tombstones", None)
+    return set(fn() or ()) if callable(fn) else set()
+
+
+def status(remote: Dict[str, dict], cache: Optional[Path] = None,
+           deleted: Optional[set] = None) -> List[dict]:
+    """本地缓存相对服务器的状态, 六态:
 
       in-sync    本地内容 == 服务器当前版本
       behind     本地是**干净的旧版本** (manifest 记录的哈希与本地一致), 可安全 pull
       dirty      本地被改过 / 或与服务器内容不一致 → pull 会拒绝覆盖
       missing    服务器有, 本地没有
-      untracked  本地有, 服务器没有 (可 publish 上去)
+      untracked  本地有, 服务器**从来没有** (可 publish 上去)
+      deleted    服务器已把该名字标为墓碑 (删除), 本地还留着副本
 
     `behind` 只看"本地是否干净"(与 manifest 哈希一致), 不看版本号大小 —— 回滚会让
     服务器当前版本号变小, 用版本号比较会把干净的本地文件误判成 dirty。
+
+    `deleted` 必须与 `untracked` 分开: 墓碑名同时"不在默认清单"且"本地有文件", 但它
+    SHALL NOT 被 `publish --all` 推上去 (那会静默复活被删资产), 恢复的唯一正路是
+    `restore`。集合由调用方给出 (本地 `tombstones(conn)` / 远端 index?include_deleted=true),
+    因为两个后端的 manifest 都不含墓碑 —— 这是本函数必须**额外**知道的一件事。
     """
     cache = cache or cache_dir(create=False)
+    deleted = set(deleted or ())
     entries = read_manifest().get("entries", {})
-    names = sorted(set(remote) | set(entries) | set(_local_files()))
+    names = sorted(set(remote) | set(entries) | set(_local_files()) | deleted)
     out: List[dict] = []
     for n in names:
         r = remote.get(n)
         m = entries.get(n) or {}
         p = cache / n
         lh = local_sha(p)
-        if r is None:
+        if n in deleted:
+            st = "deleted"
+        elif r is None:
             st = "untracked"
         elif lh is None:
             st = "missing"
@@ -613,6 +690,11 @@ def status(remote: Dict[str, dict], cache: Optional[Path] = None) -> List[dict]:
                     "remote_version": (r or {}).get("version"),
                     "local_version": m.get("version")})
     return out
+
+
+def backend_status(backend, cache: Optional[Path] = None) -> List[dict]:
+    """`status()` 的后端便捷入口: 清单与墓碑集合都从后端取 (CLI / publish_all 用)。"""
+    return status(backend.manifest(), cache=cache, deleted=tombstones_of(backend))
 
 
 def pull(backend, names: Optional[List[str]] = None, all_: bool = False,
@@ -707,9 +789,13 @@ def publish_local(backend, name: str, message: str = "", kind: str = "",
 
 
 def publish_all(backend, message: str = "") -> Dict[str, List[dict]]:
-    """把本地所有 dirty / untracked 文件一次推上去 (首次把本地手写的资产倒进服务器用)。"""
+    """把本地所有 dirty / untracked 文件一次推上去 (首次把本地手写的资产倒进服务器用)。
+
+    `deleted` (服务器侧墓碑、本地还留副本) **必须跳过**: 不带 base_version 的 publish 会
+    清掉墓碑, 即"推送 = 静默复活被删资产"。要恢复请显式 `lclone evolution restore`。
+    """
     res: Dict[str, List[dict]] = {"published": [], "unchanged": [], "failed": []}
-    for s in status(backend.manifest()):
+    for s in backend_status(backend):
         if s["state"] not in ("dirty", "untracked"):
             continue
         try:
@@ -733,6 +819,9 @@ class LocalBackend:
 
     def manifest(self) -> Dict[str, dict]:
         return manifest_index(self.conn)
+
+    def tombstones(self) -> set:
+        return tombstones(self.conn)
 
     def content(self, name: str, version: Optional[int] = None) -> Optional[str]:
         row = resolve(self.conn, name, version)
@@ -805,6 +894,15 @@ class HttpBackend:
 
     def manifest(self) -> Dict[str, dict]:
         return self._req("GET", "/api/evolution/manifest").get("items", {})
+
+    def tombstones(self) -> set:
+        """远端墓碑集合: 显式带 include_deleted 取 index, 再看 deleted_at。
+
+        `/api/evolution/manifest` 按设计不含墓碑, 所以同步状态必须另问一次 —— 否则
+        "远端已删除"与"远端从来没有"分不开, `publish --all` 会把删除复活。
+        """
+        items = self._req("GET", "/api/evolution/index?include_deleted=true").get("items", [])
+        return {x.get("name") for x in items if x.get("name") and x.get("deleted_at")}
 
     def content(self, name: str, version: Optional[int] = None) -> Optional[str]:
         import urllib.parse

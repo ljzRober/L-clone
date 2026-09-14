@@ -61,6 +61,15 @@ const IDS = ['graph', 'graph-sum', 'graph-svg', 'pending-n', 'btn-pending', 'm-o
 function loadSandbox() {
   const byId = {};
   IDS.forEach(id => { const e = new El('div'); e.id = id; byId[id] = e; });
+  // 真 <textarea> 的 .value **回读**会把 CRLF 归一成 LF; 桩默认是普通属性, 不归一 ——
+  // 这是桩与实际产品之间最大的保真度缺口: 不补上, "CRLF 资产一载入就是脏 / 未编辑保存
+  // 把整份文件重写成 LF" 这个真缺陷在桩里永远看不见 (检查 338 的 RED 也就无从谈起)。
+  const _ed = byId['evo-editor'];
+  let _edVal = '';
+  Object.defineProperty(_ed, 'value', {
+    get() { return _edVal; },
+    set(v) { _edVal = String(v == null ? '' : v).replace(/\r\n?/g, '\n'); },
+  });
   const document = {
     getElementById(id) { if (!byId[id]) { byId[id] = new El('div'); byId[id].id = id; } return byId[id]; },
     createElement(t) { return new El(t); },
@@ -516,15 +525,22 @@ function decodeEntities(s) {
     sandbox.fetch = h.f;
     await sandbox.openEvoExplorer('old.md');
     const label = byId['evo-del'].textContent;
+    // A1: 墓碑 = 只读预览 + 「恢复」 (与 rename 对齐) —— 不得留任何保存入口,
+    // 也不得再承诺"保存将追加 vN" (服务端对墓碑名的写恒 409, 那份承诺是假话)
+    const tombChrome = byId['evo-save'].style.display === 'none'
+      && byId['evo-editor'].style.display === 'none'
+      && byId['evo-preview'].style.display === ''
+      && byId['evo-rename'].style.display === 'none'
+      && !/保存将追加/.test(byId['evo-note'].textContent);
     await sandbox.evoDeleteSelected();
     const rs = h.seen.find(x => x.url.indexOf('/api/evolution/restore') >= 0) || {};
     let body = {};
     try { body = JSON.parse(rs.body || '{}'); } catch (e) { body = {}; }
     check('317 墓碑资产按钮为「恢复」且打 restore 端点',
-      label === '恢复' && body.name === 'old.md'
+      label === '恢复' && tombChrome && body.name === 'old.md'
       && h.seen.every(x => x.url.indexOf('/api/evolution/delete') < 0)
       && /已恢复/.test(byId['evo-note'].textContent),
-      `label=${label} body=${rs.body} note=${byId['evo-note'].textContent}`);
+      `label=${label} tombChrome=${tombChrome} save=${byId['evo-save'].style.display} body=${rs.body} note=${byId['evo-note'].textContent}`);
   }
 
   // 318 重命名: 带 base_version 打 rename, 成功后选中新名字并说明历史不迁移
@@ -950,6 +966,57 @@ function decodeEntities(s) {
       && h.seen.every(x => x.url.indexOf('/api/evolution/rollback') < 0)
       && byId['evo-ver'].textContent === 'v3',
       `confirms=${n} value=${JSON.stringify(byId['evo-editor'].value)} seen=${h.seen.map(x => x.url).join(',')}`);
+  }
+
+  // 337 墓碑冲突 409 (detail.deleted) 必须如实提示「先恢复」, 而不是"刷新后重试"
+  // A1: 服务端对"墓碑名 + base_version 与当前版本相同"的写一律抛 VersionConflict(deleted=True)
+  // (evolutions.py:237-238), 并在 body 里回 deleted:true (web.py:118-133)。该分支下版本号并不陈旧,
+  // 所以"服务器已有 vN, 刷新后重试"是**假话** —— 重试必然再次 409。前端必须读 detail.deleted 分诊。
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'gone.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'x' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'gone.md', version: 2, base_version: 2, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'gone.md', content: 'x', base_version: 2 })) },
+      // 别人在此期间删了它: 版本号(2)与 base_version 相同, 但 deleted=true
+      { match: '/api/evolution/delete', reply: () => errJson(409, { detail: { error: '版本冲突: gone.md 基于 v2, 服务器当前为 v2 (已被删除)', current_version: 2, deleted: true } }) },
+    ]);
+    sandbox.fetch = h.f;
+    sandbox.confirm = () => true;
+    await sandbox.openEvoExplorer('gone.md');
+    await sandbox.evoDeleteSelected();
+    const note = byId['evo-note'].textContent;
+    check('337 409 detail.deleted -> 提示「先恢复」而非"刷新后重试"',
+      byId['evo-note'].classList.contains('err') && note.indexOf('恢复') >= 0
+      && note.indexOf('墓碑') >= 0 && note.indexOf('刷新后重试') < 0,
+      `err=${byId['evo-note'].classList.contains('err')} resume=${note.indexOf('恢复')}`
+      + ` tomb=${note.indexOf('墓碑')} retry=${note.indexOf('刷新后重试')}`
+      + ` note=${JSON.stringify(note)}`);
+  }
+
+  // 338 CRLF 资产: 载入不算脏 (归一化比较), 未编辑直接保存必须回传**原文**:
+  // 若把 CRLF 重写成 LF, 服务端看作内容已变 -> hash 变化 -> 凭空多一个版本
+  // (违反 delta spec「内容未变的保存不产生新版本」), 并悄悄改掉整份文件的行尾。
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'crlf.txt', ext: 'txt', size: 4, mtime: 't', is_dir: false, content: 'a\r\nb' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'crlf.txt', version: 1, base_version: 1, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'crlf.txt', content: 'a\r\nb', base_version: 1 })) },
+      { match: '/api/evolution/publish', reply: () => okJson({ result: { name: 'crlf.txt', version: 1, hash: 'h', changed: false } }) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('crlf.txt');
+    const notDirty = sandbox.evoDirty() === false;            // 旧缺陷: 载入即真
+    const editorNorm = byId['evo-editor'].value === 'a\nb';   // 编辑器里是归一形
+    await sandbox.evoSave();
+    const pub = h.seen.find(x => x.url.indexOf('/api/evolution/publish') >= 0) || {};
+    let body = {};
+    try { body = JSON.parse(pub.body || '{}'); } catch (e) { body = {}; }
+    check('338 CRLF 资产载入不脏, 未编辑保存回传原文 (不产生新版本)',
+      notDirty && editorNorm && body.content === 'a\r\nb'
+      && /未产生新版本/.test(byId['evo-note'].textContent),
+      `dirty=${sandbox.evoDirty()} editor=${JSON.stringify(byId['evo-editor'].value)} sent=${JSON.stringify(body.content)} note=${byId['evo-note'].textContent}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
