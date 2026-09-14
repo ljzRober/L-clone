@@ -260,6 +260,8 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
   .evo-body { grid-template-columns:1fr; }
   .evo-editor, .evo-preview { min-height:24vh; max-height:38vh; }
   .evo-phd { flex-wrap:wrap; }   /* 工具条按钮变多, 窄屏换行而不是溢出 */
+  .evo-hhd { flex-wrap:wrap; }   /* 历史区标题 + 返回按钮同理 */
+  .evo-hlist { max-height:16vh; }  /* 窄屏纵向空间紧张: 历史列表让位给编辑器/预览 */
 }
 @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 
@@ -388,7 +390,9 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
         <div class="evo-hist" id="evo-hist">
           <div class="evo-hhd">
             <span class="evo-htitle">版本历史</span>
-            <!-- 显隐由 evoSyncChrome 统一决定; 处理器在 JS 里注册 (与历史行一样走事件绑定, 不写行内 onclick) -->
+            <!-- 显隐由 evoSyncChrome 统一决定; 处理器在 JS 里注册而不是行内 onclick, 因为:
+                 ① 测试桩 (node, 最小 DOM) 不解析 HTML, 行内 onclick 对桩完全不可见, 该入口就没法被直测;
+                 ② 若两处都留, 真实浏览器里一次点击会同时触发行内 onclick 与监听器 -> 双发请求 -->
             <button class="ghost" id="evo-back" style="display:none">← 返回当前版本</button>
           </div>
           <div class="evo-hlist" id="evo-hist-list"></div>
@@ -747,7 +751,6 @@ let EVO_MODE = 'view';        // 'view' | 'new' | 'rename' —— 工具条当�
 let EVO_TOMB = false;         // 当前选中项是否墓碑 (决定 #evo-del 是「删除」还是「恢复」)
 let EVO_SEL = '';             // 上一次选中的资产名 (取消新建/改名时回退到它)
 let EVO_SHOW_DELETED = false; // 清单是否显式带 include_deleted=true (服务端默认不列墓碑)
-let EVO_HIST = [];            // 当前资产的历史行 (新→旧, 来自 /api/evolution/history)
 let EVO_HIST_VER = 0;         // 0 = 正在看当前版本; >0 = 正在只读预览的历史版本号
 
 function evoNote(msg, isErr) {
@@ -786,6 +789,8 @@ function evoSyncChrome() {
   $('evo-ver').classList.toggle('hist', hist);
   $('evo-reason').style.display = (EVO_HIST_VER === 0 && has && !cur.editable) ? '' : 'none';
   $('evo-back').style.display = hist ? '' : 'none';
+  // 历史区只在浏览态出现: new/rename 下点历史行会让「面板正显示的内容」与「工具条正在改的东西」不一致
+  $('evo-hist').style.display = (EVO_MODE === 'view') ? '' : 'none';
   $('evo-rename').style.display = (!editing && has && !EVO_TOMB) ? '' : 'none';  // 墓碑要先恢复
   $('evo-del').style.display = (!editing && has) ? '' : 'none';
   $('evo-del').textContent = EVO_TOMB ? '恢复' : '删除';
@@ -834,17 +839,23 @@ function evoConfirmDiscard(what) {
   if (!evoDirty()) return true;
   return confirm(evoDirtySubject() + ' 有未保存的输入，' + what + '会放弃它们。要继续吗？');
 }
+// 用户已确认放弃草稿 -> 把编辑区恢复到"已载入"基准, 兑现 evoConfirmDiscard 的承诺;
+// 否则闸门会为这份**已被同意放弃**的输入反复弹确认 (返回当前版本 / 切资产 / 回滚都会再问一次)。
+function evoDropDraft() { if (EVO_CUR) $('evo-editor').value = EVO_CUR.loaded; }
 
 // 打开资产: 切资产 / 重新载入同一资产都不得静默丢弃草稿
-async function showEvo(name) {
+// version 可选 (回滚后刷新用): 显式读"刚回滚到的那一版"。服务端回的是 result 行, 内容仍需再读一次,
+// 而回滚后该版本就是当前版本 —— 显式读它才能让面板显示的版本与回滚结果一致 (生产环境与不传等价)。
+async function showEvo(name, version) {
   if (!evoConfirmDiscard('重新载入')) return;
   if (EVO_MODE !== 'view') evoSetMode('view');   // 离开 new/rename 模式, 避免模式与面板内容不一致
   document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
   const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
   if (row) row.classList.add('on');
   evoNote('读取中…');
+  const vs = Number(version) > 0 ? '&version=' + (Number(version) || 0) : '';
   try {
-    const r = await fetch('/api/evolution/content?name=' + encodeURIComponent(name));
+    const r = await fetch('/api/evolution/content?name=' + encodeURIComponent(name) + vs);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     evoRender(await r.json());
     await evoHistLoad(name);   // 先渲染资产再加载历史; 历史加载失败不影响资产渲染
@@ -857,40 +868,40 @@ async function showEvo(name) {
 }
 
 /* ---- 版本历史 (查看 / 只读预览 / 回滚) ---- */
-// 加载历史: 失败或空只把提示写进 #evo-hist-list 内部并静默返回 —— #evo-note 承载的是
-// 当前操作的结果文案, 不能被历史加载的失败覆盖。
+// 加载历史: 取数与渲染同在 try 内 —— 渲染期异常 (如 items 不是数组) 也必须只落到历史区;
+// 失败或空只把提示写进 #evo-hist-list 内部, **不**污染 #evo-note (那里承载当前操作的结果文案)。
 async function evoHistLoad(name) {
-  EVO_HIST = [];
-  let items;
   try {
+    $('evo-hist-list').innerHTML = '';   // 换资产先清旧行, 免得加载期间还挂着上一个资产的历史
     const r = await fetch('/api/evolution/history?name=' + encodeURIComponent(name));
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    items = (await r.json()).items || [];
+    const items = (await r.json()).items;
+    const rows = Array.isArray(items) ? items : [];
+    if (!rows.length) {
+      $('evo-hist-list').innerHTML = '<div class="evo-empty">暂无历史版本</div>';
+      return;
+    }
+    // 版本号是整数 (Number 归一后再插值); 其余动态内容一律 esc; 按钮只带整数 data-*, 走事件委托
+    $('evo-hist-list').innerHTML = rows.map(h => {
+      const v = Number(h.version) || 0;
+      const msg = h.message ? ' · ' + esc(String(h.message)) : '';
+      return `<div class="evo-hrow"><span class="evo-hver">v${v}</span>`
+        + `<span class="evo-hmsg">${esc(String(h.created_at || ''))}${msg}</span>`
+        + `<button class="evo-hbtn" data-prev="${v}">预览</button>`
+        + `<button class="evo-hbtn" data-rollback="${v}">回滚</button></div>`;
+    }).join('');
   } catch (e) {
     $('evo-hist-list').innerHTML = '<div class="evo-empty">历史加载失败</div>';
-    return;
   }
-  EVO_HIST = items;
-  if (!items.length) {
-    $('evo-hist-list').innerHTML = '<div class="evo-empty">暂无历史版本</div>';
-    return;
-  }
-  // 版本号是整数 (Number 归一后再插值); 其余动态内容一律 esc; 按钮只带整数 data-*, 走事件委托
-  $('evo-hist-list').innerHTML = items.map(h => {
-    const v = Number(h.version) || 0;
-    const msg = h.message ? ' · ' + esc(String(h.message)) : '';
-    return `<div class="evo-hrow"><span class="evo-hver">v${v}</span>`
-      + `<span class="evo-hmsg">${esc(String(h.created_at || ''))}${msg}</span>`
-      + `<button class="evo-hbtn" data-prev="${v}">预览</button>`
-      + `<button class="evo-hbtn" data-rollback="${v}">回滚</button></div>`;
-  }).join('');
 }
 
 // 只读预览某历史版本: ?version=N 的 editable 判的是该版本的 blob, 而 base_version 是当前版本,
 // 所以历史视图不允许编辑 (隐藏编辑器与保存), 只给"回滚到此版 / 返回当前版本"两个出口。
 async function evoHistPreview(version) {
   if (!EVO_CUR) return;
+  if (EVO_MODE !== 'view') return;   // 编辑模式没有历史区可言: 不能只靠把它隐藏, 调用方可能绕过被隐藏的行
   if (!evoConfirmDiscard('预览历史版本')) return;
+  evoDropDraft();   // 闸门已同意放弃: 兑现它, 免得后面每一步都再问一次
   const v = Number(version) || 0;
   const name = EVO_CUR.name;
   try {
@@ -909,14 +920,18 @@ async function evoHistPreview(version) {
 // 返回当前版本: 重新取一遍当前内容 (evoRender 会把 EVO_HIST_VER 置 0)
 async function evoHistBack() {
   if (!EVO_CUR) return;
+  if (EVO_HIST_VER === 0) return;    // 不在历史态就没有"返回"可言 (按钮也被隐藏)
   if (!evoConfirmDiscard('返回当前版本')) return;
+  evoDropDraft();   // 兑现闸门: 下面的 showEvo 不会再弹一次
   await showEvo(EVO_CUR.name);
 }
 
 // 回滚: 只改当前指针 (所有版本与内容都保留), 不带 base_version —— delta spec 的乐观锁只枚举 编辑/删除/改名
 async function evoHistRollback(version) {
   if (!EVO_CUR) return;
+  if (EVO_MODE !== 'view') return;   // 同上: 隐藏历史区之外还要挡住被绕过的调用
   if (!evoConfirmDiscard('回滚')) return;
+  evoDropDraft();   // 兑现闸门: 成功路径的 showEvo 不会再弹一次 (否则取消就成了"成功的谎言 + 过期面板")
   const v = Number(version) || 0;
   const name = EVO_CUR.name;
   if (!confirm(`回滚到 v${v}？只改当前指针：所有版本与内容都保留，可再次回滚。`)) return;
@@ -941,7 +956,7 @@ async function evoHistRollback(version) {
   const out = (data && data.result) || {};
   EVO_HIST_VER = 0;
   await evoRefreshList();
-  await showEvo(name);    // 刷新到回滚后的权威状态 (版本牌 / 内容)
+  await showEvo(name, out.version);   // 刷新到"刚回滚到的那个版本" (生产环境它就是当前版本)
   evoNote(`已回滚到 v${out.version != null ? Number(out.version) || 0 : v}。`);
 }
 
@@ -1034,6 +1049,7 @@ function evoNewStart() {
   $('evo-editor').value = '';
   $('evo-preview').textContent = '';
   $('evo-reason').textContent = '';
+  $('evo-hist-list').innerHTML = '';        // 上一个资产的历史行不能挂在「新建资产」下面
   $('evo-pname').textContent = '新建资产';
   $('evo-nameinput').value = '';
   evoSetMode('new');
@@ -1215,7 +1231,7 @@ async function evoRefreshList() {
 function evoReset() {
   EVO_CUR = null;
   EVO_MODE = 'view'; EVO_TOMB = false; EVO_SEL = '';   // 回到未选中态: 工具条交还给「＋ 新建」
-  EVO_HIST = []; EVO_HIST_VER = 0;                     // 未选中 = 没有历史可看
+  EVO_HIST_VER = 0;                                    // 未选中 = 没有历史可看
   $('evo-nameinput').value = '';
   $('evo-pname').textContent = '未选择资产';
   $('evo-reason').textContent = '';

@@ -814,6 +814,89 @@ function decodeEntities(s) {
       `readOnly=${readOnly} calls=${h.seen.length} name=${byId['evo-nameinput'].value}`);
   }
 
+  // 331 历史加载失败只写进历史区, 不污染 #evo-note
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => errJson(500, { detail: 'boom' }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]).f;
+    await sandbox.openEvoExplorer('h.md');
+    check('331 历史加载失败不污染 #evo-note (只写进历史区)',
+      /历史加载失败/.test(byId['evo-hist-list'].innerHTML)
+      && !byId['evo-note'].classList.contains('err')
+      && byId['evo-note'].textContent.indexOf('boom') < 0
+      && byId['evo-pname'].textContent === 'h.md',
+      `list=${byId['evo-hist-list'].innerHTML.slice(0, 80)} note=${JSON.stringify(byId['evo-note'].textContent)}`);
+  }
+
+  // 332 空历史 -> 历史区内提示, 面板其余部分照常
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 1, base_version: 1, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c1' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'h.md', content: 'c1', base_version: 1 })) },
+    ]).f;
+    await sandbox.openEvoExplorer('h.md');
+    check('332 空历史只在历史区提示',
+      /暂无历史版本/.test(byId['evo-hist-list'].innerHTML) && !byId['evo-note'].classList.contains('err')
+      && byId['evo-editor'].style.display === '' && byId['evo-editor'].value === 'c1',
+      `list=${byId['evo-hist-list'].innerHTML.slice(0, 80)}`);
+  }
+
+  // 333 改名模式隐藏历史区; 从历史预览进改名后只读区回到当前版本内容
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'old body', base_version: 3 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+    ]);
+    sandbox.fetch = h.f;
+    await sandbox.openEvoExplorer('h.md');
+    click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const previewed = byId['evo-preview'].textContent === 'old body';
+    sandbox.evoRenameStart();
+    check('333 改名模式隐藏历史区, 只读区回到当前版本内容',
+      previewed && byId['evo-hist'].style.display === 'none'
+      && byId['evo-preview'].textContent === 'c3'
+      && byId['evo-ver'].textContent.indexOf('历史') < 0,
+      `previewed=${previewed} hist=${byId['evo-hist'].style.display} preview=${JSON.stringify(byId['evo-preview'].textContent)} ver=${byId['evo-ver'].textContent}`);
+  }
+
+  // 334 已确认放弃的草稿不再重复弹确认 (预览历史后回滚: 只弹"放弃"一次 + "回滚确认"一次)
+  {
+    const { sandbox, byId } = loadSandbox();
+    const h = http([
+      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: 'h.md', version: 3, base_version: 3, editable: true, editable_reason: '', deleted_at: '', renamed_to: '' }], dirs: {} }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: 'h.md', ext: 'md', size: 1, mtime: 't', is_dir: false, content: 'c3' }] }) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [{ version: 3, hash: 'h3', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't3' }, { version: 2, hash: 'h2', size: 2, kind: 'other', project_id: null, ref: '', message: '', source_ref: '', created_at: 't2' }] }) },
+      { match: '/api/evolution/content', reply: (u) => okJson(u.indexOf('version=2') >= 0 ? CONTENT({ name: 'h.md', version: 2, content: 'c2', base_version: 2 }) : CONTENT({ name: 'h.md', content: 'c3', base_version: 3 })) },
+      { match: '/api/evolution/rollback', reply: () => okJson({ result: { name: 'h.md', version: 2 } }) },
+    ]);
+    sandbox.fetch = h.f;
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return true; };
+    await sandbox.openEvoExplorer('h.md');
+    const afterOpen = confirms;
+    byId['evo-editor'].value = 'unsaved draft';
+    click(byId, 'evo-hist-list', { '[data-prev]': { dataset: { prev: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const afterPreview = confirms;
+    click(byId, 'evo-hist-list', { '[data-rollback]': { dataset: { rollback: '2' } } });
+    await new Promise(r => setTimeout(r, 0));
+    check('334 确认放弃后不再为同一草稿重复弹确认 (回滚只弹一次)',
+      afterOpen === 0 && afterPreview === 1 && confirms === 2
+      && byId['evo-ver'].textContent === 'v2' && /已回滚/.test(byId['evo-note'].textContent),
+      `confirms=${confirms} (open=${afterOpen} preview=${afterPreview}) ver=${byId['evo-ver'].textContent} note=${byId['evo-note'].textContent}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {
