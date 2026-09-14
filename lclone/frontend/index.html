@@ -118,10 +118,10 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .row { display:flex; gap:8px; align-items:center; }
 
 /* ---- 进化文件目录 (file-explorer) ---- */
-.evo-exp { width:min(940px,96vw); }
+.evo-exp { width:min(1400px,96vw); max-height:94vh; }
 .evo-hd { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
 .evo-path { font-family:var(--mono); font-size:12px; color:var(--dim); }
-.evo-body { display:grid; grid-template-columns:minmax(320px,46%) 1fr; gap:14px; min-height:46vh; }
+.evo-body { display:grid; grid-template-columns:minmax(240px,30%) 1fr; gap:14px; min-height:56vh; }
 .evo-list { overflow:auto; border:1px solid var(--line); border-radius:12px; padding:8px; }
 .evo-group { font-family:var(--mono); font-size:11px; color:var(--dim); padding:8px 8px 3px;
              letter-spacing:.06em; }
@@ -137,7 +137,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-meta { color:var(--dim); font-size:11px; flex:none; }
 .evo-preview { border:1px solid var(--line); border-radius:12px; padding:12px; overflow:auto;
                font-family:var(--mono); font-size:12px; line-height:1.6; color:var(--fg);
-               white-space:pre-wrap; word-break:break-word; max-height:52vh; }
+               white-space:pre-wrap; word-break:break-word; max-height:64vh; }
 .evo-empty { color:var(--dim); font-size:13px; padding:26px 12px; text-align:center;
              border:1px dashed var(--line); border-radius:12px; }
 
@@ -152,7 +152,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
            background:rgba(224,177,92,.08); letter-spacing:.05em; }
 .evo-reason { font-family:var(--mono); font-size:10px; flex:none; border-radius:6px;
               padding:2px 8px; background:#3a2a12; color:var(--warn); }
-.evo-editor { width:100%; min-height:46vh; max-height:52vh; resize:vertical;
+.evo-editor { width:100%; min-height:56vh; max-height:64vh; resize:vertical;
               background:#0d1424; color:var(--fg); border:1px solid var(--line);
               border-radius:12px; padding:12px; font-family:var(--mono); font-size:12px;
               line-height:1.6; }
@@ -171,7 +171,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-hist { border-top:1px solid var(--line); padding-top:10px; }
 .evo-hhd { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 .evo-htitle { font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.08em; }
-.evo-hlist { max-height:22vh; overflow:auto; }
+.evo-hlist { max-height:16vh; overflow:auto; }
 .evo-hrow { display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:7px;
             font-family:var(--mono); font-size:11px; color:var(--fg); }
 .evo-hrow:hover { background:var(--card2); }
