@@ -1957,48 +1957,98 @@ check("302 历史版本内容可取, base_version 恒为当前版本; 版本不�
       and _c404.status_code == 404,
       f"v1={_cv1.get('content')!r}/{_cv1.get('version')}/{_cv1.get('base_version')} 404={_c404.status_code}")
 
-# ---- 303-306: Task 11 验证闸门 (前端静态规范 + 全链路端到端) ----
+# ---- 303-307: Task 11 验证闸门 (前端静态规范 + 全链路端到端) ----
 # 303 转义覆盖审计: 逐个 `innerHTML =` 语句取窗口, 看 `${...}` 插值是否经 esc()/evoChip()/Number()。
 #     判据 = 未包裹者**恰好等于**冻结白名单 (多一个 = 有人往 innerHTML 里塞了未转义的动态值;
 #     少一个 = 白名单腐烂, 也要复核)。窗口数下限防止本检查变成空转。
+#
+#     fix round 1 的两处收紧 (原判据的两个漏洞: "绿"被误读成"全量审计通过"):
+#       F1 窗口结束条件从"该行含 ';'"改为"该行右去空以 ';' 结尾" —— 属性/内联样式里夹着的 ';'
+#          不再把多行模板提前截断 (窗口只会变长, 原先捕到的插值一个都不会漏)。
+#       F2 右边是**裸标识符**的 sink (`x.innerHTML = svg;` 这种拼装在别处的) 窗口内一个插值都没有,
+#          旧版会静默算通过 —— 现在必须逐条登记在 _IDENT_SINKS, 新增即 FAIL。
 _SAFE_INTERP = {
     "cntHtml": "调用方拼好的内部计数 HTML (只含数字与静态标记)",
     "msg": "上游已 esc(String(h.message)) (index.html:881)",
     "p.id": "DB 自增整数",
     "rail": "内部字面量 'global'/'project'",
     "v": "Number(h.version) || 0 (index.html:880)",
+    # --- fix round 1 (F1 扩大可见面后新暴露的 #pending-list 两处, 逐条可证安全) ---
+    "m.id": "memories.id = INTEGER PRIMARY KEY AUTOINCREMENT (db.py:39),"
+            " /api/pending 原样下发 (web.py:281-283 dict(r)) -> 恒为整数, 不可能带 HTML",
+    "(m.created_at||'').slice(0,16)":
+        "memories.created_at = TEXT NOT NULL DEFAULT (datetime('now')) (db.py:48);"
+        " 全仓 4 处 INSERT 均不写该列 (memory.py:105/112/283/1029) 且没有任何 UPDATE ->"
+        " 恒为服务端时钟生成的 19 字符时间戳, 用户输入进不来",
 }
+
+# F2: 右边是标识符(拼装在别处)的 sink —— 必须逐条在此登记, 并说明它由谁审计或为何是本 change 之外的例外。
+# 新增一条 = 新盲区 -> 必须让本检查失败, 而不是静默放过。
+_IDENT_SINKS = {
+    "cntHtml": "内部计数 HTML; 由 renderSidebar 传入 ('∞' 字面量 index.html:551 /"
+               " `记忆 <b>${p.mem_count}</b>${pendTag}` :555, 计数来自服务端) -> 见 _SAFE_INTERP",
+    "TRASH_ICON": "文件内常量字面量 '<svg .../>' (index.html:517), 不含任何插值",
+    "svg": "#graph 的 SVG 拼装 (字符串 bg 逐段累加, index.html:588-696) —— 既有代码, 本 change 未触碰;"
+           " 该处的项目名/charter 已走 esc(), 其余为内部字面量与内部计数; 显式冻结为例外(非静默放过)",
+    "html": "#evo-list 行拼装 —— 由检查 307 审计 (本 change 自己新增的渲染代码)",
+}
+
+
+def _sink_window(lines, start):
+    """sink 语句窗口: 从 start 行扫到"花括号深度 <= 0 且右去空以 ';' 结尾"的第一行。
+    只看**行尾**的 ';' —— 属性/内联样式里夹着的 ';' 不再提前截断窗口。"""
+    depth, buf = 0, []
+    for j in range(start, min(start + 60, len(lines))):
+        ln = lines[j]
+        depth += ln.count("{") - ln.count("}")
+        buf.append(ln)
+        if depth <= 0 and ln.rstrip().endswith(";"):
+            break
+    return "\n".join(buf), j
 
 
 def _innerhtml_windows(lines):
     out, i = [], 0
     while i < len(lines):
         if re.search(r"\.innerHTML\s*=", lines[i]):
-            depth, buf, j = 0, [], i
-            while j < len(lines) and j < i + 40:      # 上限 40 行防跑飞
-                depth += lines[j].count("{") - lines[j].count("}")
-                buf.append(lines[j])
-                if depth <= 0 and ";" in lines[j]:
-                    break
-                j += 1
-            out.append((i + 1, "\n".join(buf)))
+            win, j = _sink_window(lines, i)
+            out.append((i + 1, win))
             i = j + 1
         else:
             i += 1
     return out
 
 
+def _sink_ident(win):
+    """sink 的 RHS 若是裸标识符 (真正拼装在别处, 窗口里看不到插值) 则返回它, 否则 None。"""
+    parts = re.split(r"\.innerHTML\s*=", win, maxsplit=1)
+    if len(parts) < 2:
+        return None
+    _m = re.match(r"^([A-Za-z_$][A-Za-z0-9_$]*)\s*;$", parts[1].strip())
+    return _m.group(1) if _m else None
+
+
 _windows = _innerhtml_windows(_fe_text.split("\n"))
 _unwrapped = {}
+_n_inline = 0          # 窗口内至少有一个插值的 sink 数 (覆盖面自报)
+_ident_seen = {}       # 命中的标识符 sink: 标识符 -> 该 sink 的选择器
 for _ln, _win in _windows:
+    if re.search(r"\$\{", _win):
+        _n_inline += 1
     for _m in re.finditer(r"\$\{([^{}]*)\}", _win):
         _expr = _m.group(1).strip()
         if not any(c in _expr for c in ("esc(", "evoChip(", "Number(")):
             _unwrapped.setdefault(_expr, []).append(_ln)
-check("303 前端 innerHTML 插值转义审计 (未包裹者必须等于冻结白名单)",
-      len(_windows) >= 15 and set(_unwrapped) == set(_SAFE_INTERP),
-      f"sinks={len(_windows)} extra={sorted(set(_unwrapped) - set(_SAFE_INTERP))} "
-      f"missing={sorted(set(_SAFE_INTERP) - set(_unwrapped))}")
+    _ident = _sink_ident(_win)
+    if _ident:
+        _sel = re.search(r"\$\('([^']+)'\)", _win.split("\n")[0])
+        _ident_seen[_ident] = '#' + _sel.group(1) if _sel else _win.split("\n")[0].strip()[:48]
+_ident_bad = sorted(k for k in _ident_seen if k not in _IDENT_SINKS)
+check("303 前端 innerHTML 插值转义审计 (未包裹者必须等于冻结白名单; 标识符 sink 必须逐条登记)",
+      len(_windows) >= 15 and set(_unwrapped) == set(_SAFE_INTERP) and not _ident_bad,
+      f"sinks={len(_windows)} inline={_n_inline} ident={sorted(_ident_seen)} "
+      f"extra={sorted(set(_unwrapped) - set(_SAFE_INTERP))} "
+      f"missing={sorted(set(_SAFE_INTERP) - set(_unwrapped))} ident_bad={_ident_bad}")
 
 # 304 动效兜底与响应式断点不得被删
 check("304 前端保留 prefers-reduced-motion 兜底与既有响应式断点",
@@ -2075,6 +2125,40 @@ _steps.append(("回滚后再发布按 max+1 续号",
                _r.status_code == 200 and _r.json()["result"]["version"] == 2))
 _bad = [n for n, ok in _steps if not ok]
 check(f"306 端到端: 看板全链路 ({len(_steps)} 步)", len(_steps) == 9 and not _bad, f"failed={_bad}")
+
+# 307 #evo-list 的拼装处审计 (本 change 自己新增的渲染代码)。
+#     为什么必须单独查: `$('evo-list').innerHTML = html;` 右边是标识符, 303 的窗口看不见它;
+#     而 html 由 evoRefreshList 里 `let html=''` + 内部 walk() 的 `s += \`…\`` 累加而来 ——
+#     那正是服务端下发的资产名落地成 HTML 的地方, 也是转义最该被守住的地方。
+#     函数体级审计会掺入 note/fetch 等非 sink 文本, 所以只取函数体内的 `s +=` 那些 HTML 拼装行。
+def _function_body(text, name):
+    """按花括号配平取 `function NAME(...) {` / `async function NAME(...) {` 的函数体。"""
+    m = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\([^)]*\)\s*\{", text)
+    if not m:
+        return ""
+    i, depth = m.end(), 1
+    while i < len(text) and depth > 0:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    return text[m.end():i]
+
+
+_body = _function_body(_fe_text, "evoRefreshList")
+_accum = "\n".join(ln for ln in _body.split("\n") if re.search(r"\bs\s*\+=", ln))
+_accum_unwrapped = {m.group(1).strip() for m in re.finditer(r"\$\{([^{}]*)\}", _accum)
+                    if not any(c in m.group(1) for c in ("esc(", "evoChip(", "Number("))}
+# #evo-list 拼装行的未包裹插值: 逐条需能证明是内部量 (深度计数、由服务端布尔派生的内部字面量二选一)
+_SAFE_ACCUM = {
+    "'&nbsp;'.repeat(depth)": "内部缩进深度计数 (walk 的 depth 参数, 由本地递归层数决定)",
+    "tomb ? ' tomb' : ''": "由 EVO_META 的 deleted_at 派生的布尔, 两支都是内部字面量",
+}
+check("307 #evo-list 拼装行的插值转义审计 (本 change 自己的渲染)",
+      bool(_accum) and _accum_unwrapped == set(_SAFE_ACCUM),
+      f"lines={len(_accum.splitlines())} extra={sorted(_accum_unwrapped - set(_SAFE_ACCUM))} "
+      f"missing={sorted(set(_SAFE_ACCUM) - _accum_unwrapped)}")
 
 print()
 if fails:
