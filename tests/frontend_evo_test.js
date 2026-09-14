@@ -106,6 +106,13 @@ const CONTENT = over => Object.assign({
   editable: true, editable_reason: '', base_version: 3, deleted_at: '', renamed_to: '',
 }, over || {});
 
+// 模拟浏览器解析属性值: 先解实体, 再把解码结果当 JS 编译执行
+function decodeEntities(s) {
+  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                  .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+                  .replace(/&amp;/g, '&');
+}
+
 /* ---------------- 用例 ---------------- */
 (async () => {
   // 296 DOM 契约 (源码)
@@ -221,31 +228,77 @@ const CONTENT = over => Object.assign({
     html.indexOf('LCLONE_EVO_MAX_EDIT_BYTES') < 0 && html.indexOf('262144') < 0 &&
     html.indexOf('TextDecoder') < 0 && html.indexOf('Uint8Array') < 0);
 
-  // 304 任意名字都不破坏属性/内联处理器 (含引号 < > & 的资产名)
+  // 304 任意名字都不破坏属性/内联处理器
+  // 判据是**浏览器语义**: 属性值先解实体, 再编译成 JS, 真正调用后 openEvo 收到逐字相同的名字
   {
-    const nasty = 'a"b<c>&d.txt';
+    const NAMES = ['a"b<c>&d.txt', "it's.txt", 'back\\slash.txt', 'line\nbreak.txt',
+                   'tick`${x}.txt', 'literal&#39;.txt', 'sep\u2028line.txt', 'note.md'];
+    let bad = '', checked = 0, roundTrip = 0;
+    for (const nasty of NAMES) {
+      const { sandbox, byId } = loadSandbox();
+      sandbox.fetch = http([
+        { match: '/api/evolutions', reply: () => okJson({ items: [{ name: nasty, ext: 'txt', size: 3, mtime: 't', is_dir: false, content: 'x' }] }) },
+        { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: nasty, version: 2, editable: true, editable_reason: '', base_version: 2 }], dirs: {} }) },
+        { match: '/api/projects', reply: () => okJson({ items: [] }) },
+        { match: '/api/memories', reply: () => okJson({ items: [] }) },
+        { match: '/api/links', reply: () => okJson({ items: [] }) },
+        { match: '/api/pending', reply: () => okJson({ items: [] }) },
+      ]).f;
+      await sandbox.loadAll();           // 看板卡片路径 (行内 onclick)
+      await sandbox.openEvoExplorer();   // 清单路径 (data-name + 事件委托)
+      const graph = byId['graph'].innerHTML;
+      const list = byId['evo-list'].innerHTML;
+      // (a) 属性完整性: 反斜杠转义只按 [^"]* 抓取, 名字里有裸引号就会抓残 -> 必然编译失败
+      for (const raw of [...graph.matchAll(/onclick="([^"]*)"/g)].map(m => m[1])) {
+        checked++;
+        const dec = decodeEntities(raw);
+        let fn;
+        try { fn = new vm.Script('(function(){' + dec + '})()'); }
+        catch (e) { bad = 'PARSE ' + JSON.stringify(dec) + ' | ' + e.message; continue; }
+        const rec = [];
+        const ctx = { openEvo: n => rec.push(n), openMem() {}, toggleProj() {},
+                      openAddLevel() {}, prevPage() {}, nextPage() {} };
+        vm.createContext(ctx);
+        try { fn.runInContext(ctx); } catch (e) { bad = 'RUN ' + JSON.stringify(dec); continue; }
+        if (dec.indexOf('openEvo(') === 0) {
+          if (rec.length !== 1 || rec[0] !== nasty) bad = 'NAME ' + JSON.stringify(rec) + ' != ' + JSON.stringify(nasty);
+          else roundTrip++;
+        }
+      }
+      // (b) 清单行: data-name 解实体后必须逐字还原
+      const dn = [...list.matchAll(/data-name="([^"]*)"/g)].map(m => m[1]);
+      if (dn.length !== 1 || decodeEntities(dn[0]) !== nasty) bad = 'DATA-NAME ' + JSON.stringify(dn);
+      // (c) 含 < & " 的名字不得以原样出现在标记里
+      if (/[<>&"]/.test(nasty) && (list.indexOf(nasty) >= 0 || graph.indexOf(nasty) >= 0)) bad = 'RAW ' + nasty;
+    }
+    check('304 含引号/尖括号/换行/反斜杠的资产名不破坏属性与内联处理器',
+      checked > 0 && bad === '' && roundTrip >= NAMES.length,
+      `checked=${checked} roundTrip=${roundTrip} bad=${JSON.stringify(bad)}`);
+  }
+
+  // 305 未保存的编辑: 重新打开同一资产必须先确认, 取消则草稿保留
+  {
     const { sandbox, byId } = loadSandbox();
-    const h = http([
-      { match: '/api/evolutions', reply: () => okJson({ items: [{ name: nasty, ext: 'txt', size: 3, mtime: 't', is_dir: false, content: 'x' }] }) },
-      { match: '/api/evolution/index', reply: () => okJson({ items: [{ name: nasty, version: 2, editable: true, editable_reason: '', base_version: 2 }], dirs: {} }) },
-      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: nasty, base_version: 2 })) },
-      { match: '/api/projects', reply: () => okJson({ items: [] }) },
-      { match: '/api/memories', reply: () => okJson({ items: [] }) },
-      { match: '/api/links', reply: () => okJson({ items: [] }) },
-      { match: '/api/pending', reply: () => okJson({ items: [] }) },
-    ]);
-    sandbox.fetch = h.f;
-    await sandbox.loadAll();          // 走看板卡片路径渲染 graph
-    await sandbox.openEvoExplorer();  // 走文件清单路径渲染 evo-list
-    const graph = byId['graph'].innerHTML;
-    const list = byId['evo-list'].innerHTML;
-    const onclicks = [...graph.matchAll(/onclick="([^"]*)"/g)].map(m => m[1]);
-    let allParse = onclicks.length > 0, bad = '';
-    for (const c of onclicks) { try { new vm.Script(c); } catch (e) { allParse = false; bad = c; } }
-    check('304 含引号/尖括号的资产名不破坏属性与内联处理器',
-      allParse && list.indexOf('data-name="a&quot;b&lt;c&gt;&amp;d.txt"') >= 0 &&
-      list.indexOf(nasty) < 0,
-      `n=${onclicks.length} bad=${JSON.stringify(bad)} list=${list.slice(0, 140)}`);
+    sandbox.fetch = http([{ match: '/api/evolution/content', reply: () => okJson(CONTENT()) }]).f;
+    await sandbox.showEvo('note.md');
+    byId['evo-editor'].value = 'draft';
+    sandbox.confirm = () => false;          // 用户选择"不放弃"
+    await sandbox.showEvo('note.md');
+    check('305 未保存编辑时重新打开先确认 (取消则不丢草稿)',
+      byId['evo-editor'].value === 'draft',
+      `value=${JSON.stringify(byId['evo-editor'].value)}`);
+  }
+
+  // 306 清单接口不可达时: 不抛给调用方, 面板仍打开并给出提示 (Task 9 工具条依赖此点)
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = async () => { throw new Error('boom'); };
+    let threw = '';
+    try { await sandbox.openEvoExplorer(); } catch (e) { threw = String(e && e.message); }
+    check('306 清单加载失败时面板仍打开并提示 (不抛异常)',
+      threw === '' && byId['evo-exp'].classList.contains('on') &&
+      /失败/.test(byId['evo-note'].textContent),
+      `threw=${threw} note=${JSON.stringify(byId['evo-note'].textContent)}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
