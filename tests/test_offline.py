@@ -1967,6 +1967,16 @@ check("302 历史版本内容可取, base_version 恒为当前版本; 版本不�
 #          不再把多行模板提前截断 (窗口只会变长, 原先捕到的插值一个都不会漏)。
 #       F2 右边是**裸标识符**的 sink (`x.innerHTML = svg;` 这种拼装在别处的) 窗口内一个插值都没有,
 #          旧版会静默算通过 —— 现在必须逐条登记在 _IDENT_SINKS, 新增即 FAIL。
+#
+#     fix round 2 的三处收紧 (F1 自己引入的 fail-open + 两类静默盲区):
+#       F5 行尾注释 (`x.innerHTML = '';  // 说明`) 让"以 ';' 结尾"不成立 -> 窗口越过该行、
+#          把下一条语句的 sink 吞进来; 而"取窗口后整段跳过"又让被吞的 sink 从不作为 sink 被审视。
+#          三重根治: 结束条件剥离行尾注释 / 按**每处** `.innerHTML =` 建 sink / 兜底断言
+#          "一个窗口里出现 >1 处 sink 就直接 FAIL"(swallow=), 防止将来再吞。
+#       F6 分类 fail-closed: 每个 sink 必须"窗口内自带 ${...}(内联审计)" 或 "右侧是已登记的裸标识符"
+#          或 "右侧是纯字面量(没有动态值)"; 其余(拼接/三元/调用等看不透的动态 sink) 必须按
+#          (选择器, RHS 原文) 冻进 _DYN_SINKS。两张登记表都做**双向等号**(登记 == 实测), 防登记表腐烂。
+#       F7 修正冻结依据文本: created_at 的 INSERT 实为 7 处, 且唯一写它的是一条**测试自身的** UPDATE。
 _SAFE_INTERP = {
     "cntHtml": "调用方拼好的内部计数 HTML (只含数字与静态标记)",
     "msg": "上游已 esc(String(h.message)) (index.html:881)",
@@ -1978,12 +1988,16 @@ _SAFE_INTERP = {
             " /api/pending 原样下发 (web.py:281-283 dict(r)) -> 恒为整数, 不可能带 HTML",
     "(m.created_at||'').slice(0,16)":
         "memories.created_at = TEXT NOT NULL DEFAULT (datetime('now')) (db.py:48);"
-        " 全仓 4 处 INSERT 均不写该列 (memory.py:105/112/283/1029) 且没有任何 UPDATE ->"
-        " 恒为服务端时钟生成的 19 字符时间戳, 用户输入进不来",
+        " 全仓 7 处 INSERT INTO memories 的列清单**都不含**该列"
+        " (memory.py:105/112/283/1029, seed.py:128,"
+        " scripts/migrate_note_to_insight.py:45, scripts/cleanup_memories.py:97);"
+        " 唯一会写它的是**测试自身的** UPDATE memories SET created_at=datetime('now','-30 days')"
+        " (tests/test_offline.py:214, 只作用于测试库), 取值仍是服务端时钟"
+        " -> 恒为服务端时间戳, 用户输入进不来",
 }
 
-# F2: 右边是标识符(拼装在别处)的 sink —— 必须逐条在此登记, 并说明它由谁审计或为何是本 change 之外的例外。
-# 新增一条 = 新盲区 -> 必须让本检查失败, 而不是静默放过。
+# F2/F6: 右边是**裸标识符**(拼装在别处)的 sink —— 必须逐条在此登记, 并说明它由谁审计或为何是本 change 之外的例外。
+# 新增一条 = 新盲区 -> 必须让本检查失败, 而不是静默放过。双向等号: 登记了却不再出现 -> 也 FAIL。
 _IDENT_SINKS = {
     "cntHtml": "内部计数 HTML; 由 renderSidebar 传入 ('∞' 字面量 index.html:551 /"
                " `记忆 <b>${p.mem_count}</b>${pendTag}` :555, 计数来自服务端) -> 见 _SAFE_INTERP",
@@ -1993,62 +2007,128 @@ _IDENT_SINKS = {
     "html": "#evo-list 行拼装 —— 由检查 307 审计 (本 change 自己新增的渲染代码)",
 }
 
+# F6: 既不是内联审计(`${...}` 在窗口内)、也不是裸标识符的**动态** sink —— 值在别处拼装且形态看不透
+# (拼接 / 三元 / 调用)。必须按 (选择器, RHS 原文) 冻结登记: RHS 一变 (例如把 `= svg` 改成
+# `= '<svg>' + svg + '</svg>'`) 就匹配不上 -> FAIL。纯字面量 sink 无需登记 (没有动态值就没有转义问题)。
+_DYN_SINKS = {
+    ("#m-links", "build.length ? '链接：' + build.join('') : '链接：无'"):
+        "#m-links 的链接串: 由同函数 build.push 逐段拼装 (index.html:736-737:"
+        " onclick 里的 #{id} 是整数, 正文已 esc(content.slice(0,14))); 既有代码, 本 change 未触碰"
+        " —— 显式冻结为例外",
+}
 
-def _sink_window(lines, start):
-    """sink 语句窗口: 从 start 行扫到"花括号深度 <= 0 且右去空以 ';' 结尾"的第一行。
-    只看**行尾**的 ';' —— 属性/内联样式里夹着的 ';' 不再提前截断窗口。"""
+
+def _strip_comment(ln):
+    """剥离行尾 `//` 注释; **引号内**的 `//` 不是注释 —— index.html:696 的
+    `xmlns="http://www.w3.org/2000/svg"` 就在字符串字面量里 (已 grep 确认全文件仅此一处),
+    所以不能简单 split('//'), 必须引号感知地只截断**引号外**的 `//`。"""
+    q, i = "", 0
+    while i < len(ln):
+        c = ln[i]
+        if q:
+            if c == "\\":
+                i += 2
+                continue
+            if c == q:
+                q = ""
+        elif c in "'\"`":
+            q = c
+        elif c == "/" and i + 1 < len(ln) and ln[i + 1] == "/":
+            return ln[:i]
+        i += 1
+    return ln
+
+
+def _sink_window(lines, start, col=0):
+    """sink 语句窗口: 从 (start, col) 扫到"花括号深度 <= 0 且**去掉行尾注释后**以 ';' 结尾"的第一行。
+    F5: 注释必须剥离 —— `x.innerHTML = '';  // 说明` 的行尾不是 ';', 否则窗口会越过该行、
+    把下一条语句的 sink 一并吞进来 (那时被吞的 sink 就再也不会被当成 sink 审视)。
+    深度与结束判定只看 (start, col) 之后的部分, 但**首行原文照收**: 选择器 `$('#id')` 在 sink 左侧,
+    截掉就报不出是哪个 sink 了。"""
     depth, buf = 0, []
     for j in range(start, min(start + 60, len(lines))):
         ln = lines[j]
-        depth += ln.count("{") - ln.count("}")
+        code = _strip_comment(ln[col:] if j == start else ln)
+        depth += code.count("{") - code.count("}")
         buf.append(ln)
-        if depth <= 0 and ln.rstrip().endswith(";"):
+        if depth <= 0 and code.rstrip().endswith(";"):
             break
     return "\n".join(buf), j
 
 
-def _innerhtml_windows(lines):
-    out, i = [], 0
-    while i < len(lines):
-        if re.search(r"\.innerHTML\s*=", lines[i]):
-            win, j = _sink_window(lines, i)
-            out.append((i + 1, win))
-            i = j + 1
-        else:
-            i += 1
+def _sink_sites(lines):
+    """每处 `.innerHTML =` 各算一个 sink (同一行出现多次也各算一条)。
+    F5: 不再"取窗口后 i = j + 1 整段跳过" —— 那样被上一条窗口吞掉的 sink 永远不作为 sink 被审视。"""
+    out = []
+    for idx, ln in enumerate(lines):
+        for m in re.finditer(r"\.innerHTML\s*=", ln):
+            out.append((idx, m.start()))
     return out
 
 
-def _sink_ident(win):
-    """sink 的 RHS 若是裸标识符 (真正拼装在别处, 窗口里看不到插值) 则返回它, 否则 None。"""
+_STR_LIT = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
+_BARE_IDENT = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+
+def _sink_rhs(win):
+    """该 sink 的右侧表达式文本: 去注释、去结尾 ';'、空白归一 (用作冻结指纹)。"""
     parts = re.split(r"\.innerHTML\s*=", win, maxsplit=1)
     if len(parts) < 2:
-        return None
-    _m = re.match(r"^([A-Za-z_$][A-Za-z0-9_$]*)\s*;$", parts[1].strip())
-    return _m.group(1) if _m else None
+        return ""
+    _txt = "\n".join(_strip_comment(x) for x in parts[1].split("\n"))
+    return " ".join(_txt.strip().rstrip(";").split())
 
 
-_windows = _innerhtml_windows(_fe_text.split("\n"))
+def _sink_selector(win):
+    """报出是哪个 sink: 优先 `$('#id')`, 否则退回该行代码 (剥掉行尾注释, 免得把注释当选择器报出来)。"""
+    _first = _strip_comment(win.split("\n")[0])
+    _sel = re.search(r"\$\('([^']+)'\)", _first)
+    return '#' + _sel.group(1) if _sel else _first.strip()[:48]
+
+
+_lines = _fe_text.split("\n")
+_windows = []
+for _idx, _col in _sink_sites(_lines):
+    _win, _end = _sink_window(_lines, _idx, _col)
+    _windows.append((_idx + 1, _win))
+
 _unwrapped = {}
 _n_inline = 0          # 窗口内至少有一个插值的 sink 数 (覆盖面自报)
-_ident_seen = {}       # 命中的标识符 sink: 标识符 -> 该 sink 的选择器
+_ident_seen = {}       # 裸标识符 sink: 标识符 -> 该 sink 的选择器
+_dyn_seen = set()      # 其余动态 sink: (选择器, RHS 原文)
+_swallow = []          # F5 兜底: 一个窗口里出现 >1 处 sink = 又吞掉了下一条
 for _ln, _win in _windows:
+    _n_here = len(re.findall(r"\.innerHTML\s*=", _win))
+    if _n_here > 1:
+        _swallow.append(f"{_sink_selector(_win)}(L{_ln},{_n_here} sinks)")
+    _sel = _sink_selector(_win)
     if re.search(r"\$\{", _win):
         _n_inline += 1
-    for _m in re.finditer(r"\$\{([^{}]*)\}", _win):
-        _expr = _m.group(1).strip()
-        if not any(c in _expr for c in ("esc(", "evoChip(", "Number(")):
-            _unwrapped.setdefault(_expr, []).append(_ln)
-    _ident = _sink_ident(_win)
-    if _ident:
-        _sel = re.search(r"\$\('([^']+)'\)", _win.split("\n")[0])
-        _ident_seen[_ident] = '#' + _sel.group(1) if _sel else _win.split("\n")[0].strip()[:48]
-_ident_bad = sorted(k for k in _ident_seen if k not in _IDENT_SINKS)
-check("303 前端 innerHTML 插值转义审计 (未包裹者必须等于冻结白名单; 标识符 sink 必须逐条登记)",
-      len(_windows) >= 15 and set(_unwrapped) == set(_SAFE_INTERP) and not _ident_bad,
+        for _m in re.finditer(r"\$\{([^{}]*)\}", _win):
+            _expr = _m.group(1).strip()
+            if not any(c in _expr for c in ("esc(", "evoChip(", "Number(")):
+                _unwrapped.setdefault(_expr, []).append(_ln)
+        continue                       # 内联审计过 -> 不再要求 ident/dyn 登记
+    _rhs = _sink_rhs(_win)
+    if _BARE_IDENT.match(_rhs):
+        _ident_seen[_rhs] = _sel
+    elif re.search(r"[A-Za-z_$][A-Za-z0-9_$]*", _STR_LIT.sub("", _rhs)):
+        _dyn_seen.add((_sel, _rhs))    # 含标识符/调用 -> 动态且看不透, 必须冻结登记
+    # else: 纯字面量 (剥掉字符串后没有标识符) -> 没有动态值, 无需登记
+
+_ident_bad = sorted(set(_ident_seen) - set(_IDENT_SINKS))
+_ident_stale = sorted(set(_IDENT_SINKS) - set(_ident_seen))
+_dyn_bad = sorted(f"{_s} :: {_r}" for _s, _r in _dyn_seen - set(_DYN_SINKS))
+_dyn_stale = sorted(f"{_s} :: {_r}" for _s, _r in set(_DYN_SINKS) - _dyn_seen)
+check("303 前端 innerHTML 插值转义审计 (未包裹者必须等于冻结白名单; 每个 sink 必须内联审计或逐条登记)",
+      len(_windows) >= 18 and set(_unwrapped) == set(_SAFE_INTERP)
+      and not _ident_bad and not _ident_stale and not _dyn_bad and not _dyn_stale
+      and not _swallow,
       f"sinks={len(_windows)} inline={_n_inline} ident={sorted(_ident_seen)} "
       f"extra={sorted(set(_unwrapped) - set(_SAFE_INTERP))} "
-      f"missing={sorted(set(_SAFE_INTERP) - set(_unwrapped))} ident_bad={_ident_bad}")
+      f"missing={sorted(set(_SAFE_INTERP) - set(_unwrapped))} ident_bad={_ident_bad} "
+      f"ident_stale={_ident_stale} dyn={sorted(_dyn_seen)} dyn_bad={_dyn_bad} "
+      f"dyn_stale={_dyn_stale} swallow={_swallow}")
 
 # 304 动效兜底与响应式断点不得被删
 check("304 前端保留 prefers-reduced-motion 兜底与既有响应式断点",
@@ -2147,7 +2227,9 @@ def _function_body(text, name):
 
 
 _body = _function_body(_fe_text, "evoRefreshList")
-_accum = "\n".join(ln for ln in _body.split("\n") if re.search(r"\bs\s*\+=", ln))
+# F8: 从 `\bs\s*+=` 放宽到 `\b\w+\s*+=` —— 任何累加变量都纳入审计 (将来有人写 `t += '…' + raw`
+# 会因多出未登记的插值表达式而 FAIL, 而不是因为变量名不叫 s 就被漏掉)。下面的比较是**双向等号**。
+_accum = "\n".join(ln for ln in _body.split("\n") if re.search(r"\b\w+\s*\+=", ln))
 _accum_unwrapped = {m.group(1).strip() for m in re.finditer(r"\$\{([^{}]*)\}", _accum)
                     if not any(c in m.group(1) for c in ("esc(", "evoChip(", "Number("))}
 # #evo-list 拼装行的未包裹插值: 逐条需能证明是内部量 (深度计数、由服务端布尔派生的内部字面量二选一)
