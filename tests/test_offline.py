@@ -1687,6 +1687,93 @@ try:
 except ImportError as e:  # 无 fastapi 环境跳过
     print(f"SKIP 260-281 (缺依赖: {e})")
 
+# ---- 282-287: CLI / 后端适配器对齐 (delete / restore / rename + base_version 转发) ----
+_lb = evo_store.LocalBackend(conn)
+_lb.publish("cli-x.txt", "cli body")
+_lbx_cur = _lb.index()
+_lbx_v = [x for x in _lbx_cur if x["name"] == "cli-x.txt"][0]["version"]
+check("282 LocalBackend.delete 墓碑",
+      _lb.delete("cli-x.txt", base_version=_lbx_v)["changed"] is True
+      and "cli-x.txt" not in {x["name"] for x in _lb.index()})
+check("283 LocalBackend.restore 恢复",
+      _lb.restore("cli-x.txt")["changed"] is True
+      and "cli-x.txt" in {x["name"] for x in _lb.index()})
+check("284 LocalBackend.rename 改名",
+      _lb.rename("cli-x.txt", "cli-y.txt")["new_name"] == "cli-y.txt"
+      and "cli-y.txt" in {x["name"] for x in _lb.index()})
+# base_version 必须经适配器转发到领域层
+try:
+    _lb.publish("cli-y.txt", "other", base_version=999)
+    _lb_bv_ok = False
+except evo_store.VersionConflict:
+    _lb_bv_ok = True
+check("285 LocalBackend.publish 转发 base_version", _lb_bv_ok)
+
+# HttpBackend: 用 monkeypatch urlopen 断言打到正确的端点 (照 183-186 的写法)
+_seen2 = {}
+_orig_urlopen2 = urllib.request.urlopen
+
+
+class _FakeResp2:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_urlopen2(req, timeout=None):
+    _seen2["url"] = req.full_url
+    _seen2["method"] = req.get_method()
+    _seen2["body"] = req.data.decode("utf-8") if req.data else ""
+    if req.full_url.endswith("/api/evolution/rename"):
+        return _FakeResp2({"result": {"old_name": "a.txt", "new_name": "b.txt",
+                                      "version": 1, "hash": "h", "changed": True}})
+    return _FakeResp2({"result": {"name": "a.txt", "changed": True,
+                                  "deleted_at": "t", "version": 1}})
+
+
+urllib.request.urlopen = _fake_urlopen2
+try:
+    _hb2 = evo_store.HttpBackend("http://x", token="t")
+    _hb2.delete("a.txt", base_version=3)
+    _del_url, _del_body = _seen2["url"], _seen2["body"]
+    _hb2.rename("a.txt", "b.txt")
+    _ren_url = _seen2["url"]
+    _hb2.publish("a.txt", "c", base_version=4)
+    _pub_body = _seen2["body"]
+finally:
+    urllib.request.urlopen = _orig_urlopen2
+check("286 HttpBackend.delete/rename 打到正确端点",
+      _del_url.endswith("/api/evolution/delete") and "/api/evolution/rename" in _ren_url,
+      f"{_del_url} | {_ren_url}")
+check("287 HttpBackend 转发 base_version",
+      '"base_version": 3' in _del_body and '"base_version": 4' in _pub_body,
+      f"{_del_body[:60]} | {_pub_body[:60]}")
+
+
+# CLI 三个子命令
+def _cli_evo(*argv):
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        cli.main(["evolution", *argv, "--db", dbp, "--local"])
+    return _buf.getvalue()
+
+
+cli_out = _cli_evo("add", "cli-z.txt", "--content", "z body")
+cli_out = _cli_evo("delete", "cli-z.txt")
+check("288 CLI evolution delete", "已墓碑" in cli_out or "删除" in cli_out, cli_out[:80])
+cli_out = _cli_evo("restore", "cli-z.txt")
+check("289 CLI evolution restore", "已恢复" in cli_out or "恢复" in cli_out, cli_out[:80])
+cli_out = _cli_evo("rename", "cli-z.txt", "cli-w.txt")
+check("290 CLI evolution rename", "cli-w.txt" in cli_out, cli_out[:80])
+
 print()
 if fails:
     print("FAILED:", fails)

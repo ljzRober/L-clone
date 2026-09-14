@@ -663,11 +663,14 @@ def pull(backend, names: Optional[List[str]] = None, all_: bool = False,
 
 
 def publish_local(backend, name: str, message: str = "", kind: str = "",
-                  project_id: Optional[int] = None) -> dict:
+                  project_id: Optional[int] = None,
+                  base_version: Optional[int] = None) -> dict:
     """把本地缓存里的文件作为新版本推回服务器 (显式动作, 没有自动同步)。
 
     名字先过 `ensure_ext` 归一化 —— 否则 `noext` 会推成 `noext.txt`, 本地却按 `noext`
     记账, status 永远显示 untracked+missing (同时也堵住带 `/` 的路径穿越)。
+
+    `base_version` 是乐观锁, 原样透传给后端 (None = 不校验)。
     """
     fname = ensure_ext(name, kind)
     p = cache_dir() / fname
@@ -687,7 +690,8 @@ def publish_local(backend, name: str, message: str = "", kind: str = "",
             pass
     content = p.read_text(encoding="utf-8")
     out = backend.publish(name=fname, content=content, kind=kind,
-                          project_id=project_id, message=message)
+                          project_id=project_id, message=message,
+                          base_version=base_version)
     man = read_manifest()
     entries = dict(man.get("entries", {}))
     entries[out["name"]] = {"version": out["version"], "hash": out["hash"],
@@ -731,9 +735,22 @@ class LocalBackend:
 
     def publish(self, name: str, content: Optional[str] = None, *, kind: str = "",
                 project_id: Optional[int] = None, message: str = "",
-                source_ref: str = "", ref: str = "") -> dict:
+                source_ref: str = "", ref: str = "",
+                base_version: Optional[int] = None) -> dict:
         return publish(self.conn, name, content, kind=kind, project_id=project_id,
-                       ref=ref, message=message, source_ref=source_ref)
+                       ref=ref, message=message, source_ref=source_ref,
+                       base_version=base_version)
+
+    def delete(self, name: str, base_version: Optional[int] = None) -> dict:
+        return delete(self.conn, name, base_version=base_version)
+
+    def restore(self, name: str) -> dict:
+        return restore(self.conn, name)
+
+    def rename(self, name: str, new_name: str,
+               base_version: Optional[int] = None, message: str = "") -> dict:
+        return rename(self.conn, name, new_name,
+                      base_version=base_version, message=message)
 
     def history(self, name: str) -> List[dict]:
         return history(self.conn, name)
@@ -794,12 +811,29 @@ class HttpBackend:
 
     def publish(self, name: str, content: Optional[str] = None, *, kind: str = "",
                 project_id: Optional[int] = None, message: str = "",
-                source_ref: str = "", ref: str = "") -> dict:
+                source_ref: str = "", ref: str = "",
+                base_version: Optional[int] = None) -> dict:
         return self._req("POST", "/api/evolution/publish", {
             "name": name, "content": content, "kind": kind,
             "project_id": project_id, "message": message,
             "source_ref": source_ref, "ref": ref,
+            "base_version": base_version,
         }).get("result", {})
+
+    def delete(self, name: str, base_version: Optional[int] = None) -> dict:
+        return self._req("POST", "/api/evolution/delete",
+                         {"name": name, "base_version": base_version}).get("result", {})
+
+    def restore(self, name: str) -> dict:
+        return self._req("POST", "/api/evolution/restore",
+                         {"name": name}).get("result", {})
+
+    def rename(self, name: str, new_name: str,
+               base_version: Optional[int] = None, message: str = "") -> dict:
+        return self._req("POST", "/api/evolution/rename",
+                         {"name": name, "new_name": new_name,
+                          "base_version": base_version,
+                          "message": message}).get("result", {})
 
     def history(self, name: str) -> List[dict]:
         import urllib.parse

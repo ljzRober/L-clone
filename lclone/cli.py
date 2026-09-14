@@ -243,6 +243,11 @@ def cmd_evolution_status(args) -> None:
 def cmd_evolution_publish(args) -> None:
     backend, _ = _evo_ctx(args)
     if args.all:
+        # 批量推送时每个名字的版本号不同, 单独一个 --base-version 无从施加;
+        # 静默忽略会让用户误以为受乐观锁保护, 因此直接拒绝。
+        if getattr(args, "base_version", None) is not None:
+            raise SystemExit("--all 批量推送不能配 --base-version (各名字版本号不同);"
+                             " 请对单个名字 publish --base-version N")
         res = evolutions.publish_all(backend, message=args.message)
         for k, label in (("published", "已推送"), ("unchanged", "内容未变"),
                          ("failed", "失败")):
@@ -253,8 +258,9 @@ def cmd_evolution_publish(args) -> None:
     if not args.name:
         raise SystemExit("指定名字, 或加 --all 推送全部 dirty/未收录文件")
     try:
-        out = evolutions.publish_local(backend, args.name, message=args.message)
-    except ValueError as e:
+        out = evolutions.publish_local(backend, args.name, message=args.message,
+                                       base_version=getattr(args, "base_version", None))
+    except (evolutions.VersionConflict, ValueError) as e:
         raise SystemExit(str(e))
     tail = " (内容未变)" if not out.get("changed") else ""
     print(f"已推送 {out['name']} → v{out['version']}{tail}")
@@ -277,6 +283,35 @@ def cmd_evolution_rollback(args) -> None:
     except (ValueError, RuntimeError) as e:
         raise SystemExit(str(e))
     print(f"{out['name']} 已回滚到 v{out['version']} (内容未删除, 可再回滚回来)")
+
+
+def cmd_evolution_delete(args) -> None:
+    backend, _ = _evo_ctx(args)
+    try:
+        out = backend.delete(args.name, base_version=getattr(args, "base_version", None))
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+        raise SystemExit(str(e))
+    print(f"已墓碑 {out['name']}" if out.get("changed") else f"{out['name']} 已是墓碑态")
+
+
+def cmd_evolution_restore(args) -> None:
+    backend, _ = _evo_ctx(args)
+    try:
+        out = backend.restore(args.name)
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+        raise SystemExit(str(e))
+    print(f"已恢复 {out['name']}" if out.get("changed") else f"{out['name']} 本就活跃")
+
+
+def cmd_evolution_rename(args) -> None:
+    backend, _ = _evo_ctx(args)
+    try:
+        out = backend.rename(args.name, args.new_name,
+                             base_version=getattr(args, "base_version", None),
+                             message=args.message)
+    except (evolutions.VersionConflict, evolutions.NameConflict, ValueError) as e:
+        raise SystemExit(str(e))
+    print(f"已改名 {args.name} -> {out['new_name']} (v{out['version']})")
 
 
 def cmd_evolution_content(args) -> None:
@@ -724,6 +759,8 @@ def build_parser() -> argparse.ArgumentParser:
     sev_pub.add_argument("name", nargs="?", default=None)
     sev_pub.add_argument("--all", action="store_true", help="推送全部 dirty / 未收录文件")
     sev_pub.add_argument("--message", default="", help="版本说明")
+    sev_pub.add_argument("--base-version", type=int, default=None,
+                         help="乐观锁: 客户端看到的版本号 (不一致则拒绝)")
     _evo_common(sev_pub)
     sev_pub.set_defaults(func=cmd_evolution_publish)
 
@@ -738,6 +775,29 @@ def build_parser() -> argparse.ArgumentParser:
     sev_rb.add_argument("--to", type=int, required=True, help="目标版本号")
     _evo_common(sev_rb)
     sev_rb.set_defaults(func=cmd_evolution_rollback)
+
+    sev_del = sev_sub.add_parser("delete", parents=[parent],
+                                 help="墓碑删除 (可 restore 恢复)")
+    sev_del.add_argument("name")
+    sev_del.add_argument("--base-version", type=int, default=None,
+                         help="乐观锁: 客户端看到的版本号 (不一致则拒绝)")
+    _evo_common(sev_del)
+    sev_del.set_defaults(func=cmd_evolution_delete)
+
+    sev_rst = sev_sub.add_parser("restore", parents=[parent], help="恢复墓碑资产")
+    sev_rst.add_argument("name")
+    _evo_common(sev_rst)
+    sev_rst.set_defaults(func=cmd_evolution_restore)
+
+    sev_rn = sev_sub.add_parser("rename", parents=[parent],
+                                help="改名: 新名字发一版 + 旧名墓碑(renamed_to), 历史不迁移")
+    sev_rn.add_argument("name")
+    sev_rn.add_argument("new_name")
+    sev_rn.add_argument("--base-version", type=int, default=None,
+                        help="乐观锁: 旧名字的版本号 (不一致则拒绝)")
+    sev_rn.add_argument("--message", default="", help="版本说明")
+    _evo_common(sev_rn)
+    sev_rn.set_defaults(func=cmd_evolution_rename)
 
     sev_ct = sev_sub.add_parser("content", parents=[parent], help="打印某版本原文")
     sev_ct.add_argument("name")
