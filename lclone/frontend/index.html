@@ -235,7 +235,7 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
   .layer { width:auto; }
   .main { padding:14px; }
   .evo-body { grid-template-columns:1fr; }
-  .evo-editor, .evo-preview { max-height:38vh; }
+  .evo-editor, .evo-preview { min-height:24vh; max-height:38vh; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
 
@@ -729,11 +729,16 @@ function evoRender(d) {
              : '该资产不可编辑，仅可预览内容。');
 }
 
-// 打开资产: 内容与可编辑性都取自服务端 (前端不自行判断)
+// 未保存编辑的判定基准 = 上次从服务端载入的内容
+function evoDirty() { return !!(EVO_CUR && $('evo-editor').value !== EVO_CUR.loaded); }
+function evoConfirmDiscard(what) {
+  if (!evoDirty()) return true;
+  return confirm('「' + EVO_CUR.name + '」有未保存的编辑，' + what + '会放弃它们。要继续吗？');
+}
+
+// 打开资产: 切资产 / 重新载入同一资产都不得静默丢弃草稿
 async function showEvo(name) {
-  // 有未保存编辑时先确认: 任何重载动作都不得静默丢弃草稿 (含 409 后的"刷新重试"路径)
-  if (EVO_CUR && EVO_CUR.name === name && $('evo-editor').value !== EVO_CUR.loaded &&
-      !confirm('「' + name + '」有未保存的编辑，重新载入会放弃它们。要继续吗？')) return;
+  if (!evoConfirmDiscard('重新载入')) return;
   document.querySelectorAll('#evo-list .evo-row').forEach(el => el.classList.remove('on'));
   const row = Array.from(document.querySelectorAll('#evo-list .evo-row')).find(el => el.dataset.name === name);
   if (row) row.classList.add('on');
@@ -753,6 +758,8 @@ async function showEvo(name) {
 // 保存: 带 base_version 走显式发布 (乐观锁); 409 时保留编辑区内容, 只提示刷新
 async function evoSave() {
   if (!EVO_CUR) return;
+  // 服务端判定不可编辑 -> 一律不发发布请求 (调用方可能绕过被隐藏的按钮, 不能只靠 UI 挡着)
+  if (!EVO_CUR.editable) { evoNote('该资产不可编辑，不能保存。', true); return; }
   const name = EVO_CUR.name, base = EVO_CUR.base_version;
   const content = $('evo-editor').value;
   evoNote('保存中…');
@@ -770,7 +777,7 @@ async function evoSave() {
   if (r.status === 409) {
     // 冲突: 编辑区内容**保持不动** (SHALL NOT 丢弃用户已编辑的内容), 只提示服务器版本
     const cur = (data && data.detail && data.detail.current_version != null) ? data.detail.current_version : null;
-    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}。你的编辑仍在编辑区 —— 可先复制，再点左侧条目刷新查看服务器版本。`, true);
+    evoNote(`保存被拒: 服务器已有 ${cur != null ? 'v' + cur : '更新版本'}，你的视图已过期。编辑内容仍在编辑区，可先复制；刷新查看服务器版本后再点保存即为重试。`, true);
     return;
   }
   if (!r.ok) {
@@ -787,9 +794,13 @@ async function evoSave() {
 }
 
 /* ---- 进化文件目录 (file-explorer) ---- */
-const EVO_ET = { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
-                 db:'et-db', json:'et-db', txt:'et-txt' };
-function evoChip(ext) { return '<span class="evo-ic ' + (EVO_ET[ext] || 'et-txt') + '">' + (ext || '·').slice(0,3) + '</span>'; }
+// 无原型表: ext 来自文件名 (可控), 走原型链会把 constructor 之类解析成 Object 的成员
+const EVO_ET = Object.assign(Object.create(null), { sh:'et-sh', py:'et-py', md:'et-md', yml:'et-yml', yaml:'et-yml',
+                 db:'et-db', json:'et-db', txt:'et-txt' });
+function evoChip(ext) {
+  const cls = EVO_ET[ext] || 'et-txt';
+  return '<span class="evo-ic ' + cls + '">' + esc((ext || '·').slice(0, 3)) + '</span>';
+}
 
 async function evoRefreshList() {
   let items, idx = {};
@@ -799,6 +810,8 @@ async function evoRefreshList() {
     // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
     try { idx = await (await fetch('/api/evolution/index')).json(); } catch (e) { idx = {}; }
   } catch (e) {
+    EVO_META = {};
+    $('evo-path').textContent = '服务器版本库（清单不可用）';
     $('evo-list').innerHTML = '<div class="evo-empty">资产清单加载失败</div>';
     return (e && e.message) || String(e);
   }
@@ -843,6 +856,8 @@ function evoReset() {
   evoNote('可编辑资产点开后可直接改，保存会追加新版本。');
 }
 async function openEvoExplorer(name) {
+  // 面板入口 (看板卡片 / 工具条「进化」) 也必须过闸门: evoReset() 会清空编辑区
+  if (!evoConfirmDiscard('打开进化面板')) return;
   const err = await evoRefreshList();
   evoReset();
   $('evo-exp').classList.add('on');
