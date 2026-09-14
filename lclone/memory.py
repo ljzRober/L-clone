@@ -32,6 +32,11 @@ LEVELS = ("insight",)
 # 供 _filter_item 在 LLM 成卡之后再做一道兜底过滤。
 DID_MARKERS = gate.DID_MARKERS
 
+# 「元报告」回声: 这类文本说的是「这一轮有没有提炼出卡片」, 不是知识本身。
+# 提炼通道自己的报告 (如子代理回给父会话的「记忆提炼结果：空…」) 一旦被当成会话内容
+# 再捕获, 就会被原样存成一条洞察 —— 事故 #761。
+META_REPORT_MARKERS = ("Send to parent", "记忆提炼结果", "未提炼任何")
+
 # 链接语法: 在记忆内容里写 [[m:12]] 即链接到记忆 #12
 LINK_RE = re.compile(r"\[\[m:(\d+)\]\]")
 
@@ -155,9 +160,15 @@ def _filter_item(item: dict) -> Optional[dict]:
     返回过滤后的 item (固定 level=insight); None 表示不记忆。
     1. 排除「做了什么」: 命中 DID_MARKERS (代码改动/接口/重构/bug) → 归 git & spec。
     2. 内容过短(< 4 字)视为琐碎 → 丢弃 (仅拦空壳/单字噪音)。
+    3. 排除「没提炼出东西」的元响应与元报告回声 —— 事故 #761 里模型回了
+       「空 + 一段解释」, 长度远超 4 字却没有任何知识内容, 仅靠长度规则拦不住。
     """
     content = (item.get("content") or "").strip()
     if not content:
+        return None
+    if llm.is_empty_response(content):
+        return None
+    if any(mk in content for mk in META_REPORT_MARKERS):
         return None
     if _has_marker(content, DID_MARKERS):
         return None
@@ -259,6 +270,9 @@ def _capture_impl(conn: sqlite3.Connection, text: str,
         return [], verdict
 
     items = llm.extract_memories(text)
+    # auto 卡的「用户轮证据」基准: 用户显式点名要记的内容豁免这道 (人已经背书了)
+    user_text = gate.user_turns(text)
+    explicit = bool(set(verdict.hits) & set(gate.EXPLICIT_MARKERS))
     reason = f"来自会话 #{session_id}"
     ref = f"session:{session_id}"
     ids = []
@@ -272,6 +286,9 @@ def _capture_impl(conn: sqlite3.Connection, text: str,
             continue
         content = (it.get("content") or "").strip()
         if not content:
+            continue
+        # 用户轮证据: 助手自己排查出来的环境近况/通用常识不成卡 (见 gate.has_user_evidence)
+        if not explicit and not gate.has_user_evidence(content, user_text):
             continue
         if _is_text_duplicate(conn, content, project_id):
             continue

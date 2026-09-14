@@ -59,6 +59,21 @@ function log(msg) {
 
 // 插件走后端 HTTP, 不再需要本机 lclone 命令 (也无需 LCLONE_CMD)。
 
+// 本插件自己注入的会话消息 (skill 全文 + bootstrap 记忆) 的行首标记, 见 buildBootText。
+const INJECTION_HEADS = ['【lclone-memory skill 全文】', '【记忆】', '⚠️ [lclone-memory]']
+
+// 这条消息是插件自己塞进去的, 还是真人说的?
+// 注入消息同样以 user/message 事件出现 (agent.steer 带 source.kind='plugin'), 若被当作用户轮
+// 累积, 闸门会命中「记住/记一下/remember」这些 skill 自带的触发词并走显式记忆旁路 —— 每个新
+// 会话首轮都白跑一次 LLM 提炼, 还会产出垃圾待确认 (事故 #761)。两道判据: 来源标记 + 行首标记。
+function isInjectedMessage(event) {
+  const d = event.data || {}
+  const src = d.source || (d.message && d.message.source)
+  if (event.type === 'user/message' && src && src.kind === 'plugin') return true
+  const text = extractText(event).trim()
+  return INJECTION_HEADS.some((h) => text.startsWith(h))
+}
+
 function extractText(event) {
   const d = event.data || {}
   let blocks = []
@@ -465,7 +480,9 @@ export function apply(ctx) {
       injectSessionStart(ctx, session.id, cwd)
     }
     // 同时捕获用户消息与助手回复: 分类器据此判断「用户定了什么 + 助手是否确认/落地」。
-    if (event.type === 'user/message' || event.type === 'assistant/message') {
+    // 插件自己注入的 skill/记忆消息不算会话内容, 直接丢弃 (见 isInjectedMessage)。
+    if ((event.type === 'user/message' || event.type === 'assistant/message')
+        && !isInjectedMessage(event)) {
       const text = extractText(event)
       if (text) {
         const cur = buffers.get(session.id) || { user: [], assistant: [] }

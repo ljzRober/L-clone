@@ -15,10 +15,16 @@
   - 否定作用域: 信号词前 3 字内出现 不/没/无需/不用/取消 → 该命中不计;
     但「不错 / 不但 / 不仅 / 不如 / 不少」里的「不」不算否定。
   - 疑问句优先于强信号: 「为什么必须这样？」是提问, 不是决策。
+  - 宿主注入块 (skill 全文 / bootstrap 记忆) 先剥掉: 那是插件塞进会话的, 不是用户说的话。
+    不剥的话, 注入文本会用自己的触发词命中显式记忆旁路 (skill 描述里就写着「记住」「记一下」,
+    工具表里就写着 `remember`), 于是每个新会话首轮都被无脑送进 LLM 提炼。
+  - auto 卡片还要过**用户轮证据** (has_user_evidence): 主张在用户轮里找不到出处的助手
+    单方面结论不成卡; 用户显式点名要记的内容豁免。
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
@@ -40,11 +46,19 @@ MIN_CHARS = 12
 # 的句子被长度闸门误杀
 MIN_SIGNAL_CHARS = 6
 
-# 单次 capture 最多成卡几条 (确定性护栏, 防"一轮塞一堆")
-MAX_PER_CAPTURE = 2
+# 单次 capture 最多成卡几条 (确定性护栏, 防"一轮塞一堆")。
+# 1 = **默认一条都不产出**, 只有确实命中准入的才成卡; 旧值 2 在实践中被当成配额填满
+# (每轮稳定顶格产出 2 张常识/近况卡, 把待确认列表变成用户的体力活)。
+MAX_PER_CAPTURE = 1
 
 # 用户显式要求记忆 → 旁路闸门 (长度/噪声/负信号都不拦)
 EXPLICIT_MARKERS = ("记住", "记一下", "记下来", "记下", "remember")
+
+# 宿主注入块的行首标记: 插件把「lclone-memory skill 全文 + bootstrap 记忆」当 user 消息
+# 塞进会话 (见 integrations/dsh/dsh/index.js buildBootText)。这些字不是用户输入, 必须在
+# 判定前剥掉 —— 否则 EXPLICIT_MARKERS 会被注入文本自己触发 (skill 的触发词里写着
+# 「记住」「记一下」, 工具表里写着 `remember`), 每个新会话首轮都会白跑一次 LLM 提炼。
+INJECTION_HEADS = ("【lclone-memory skill 全文】", "【记忆】", "⚠️ [lclone-memory]")
 
 # 强信号 1 (最高优先): 政策/规则语气 —— 明确"定下规则", 压过「做了什么」。
 # 「回滚策略定为保留三个版本」是规则, 不是工作日志, 不能被 DID 吃掉。
@@ -109,17 +123,49 @@ _LINE_NOISE_PREFIX = ("$ ", ">>> ", "Traceback", '  File "', "  at ")
 _ASCII_RE_CACHE: Dict[str, re.Pattern] = {}
 
 
+def _is_injection_head(line: str) -> bool:
+    """该行是否开启一个宿主注入块 (允许行首先带「用户：」这类角色标记)。"""
+    s = line
+    m = _ROLE_LINE_RE.match(s)
+    if m:
+        s = s[m.end():]
+    return s.lstrip().startswith(INJECTION_HEADS)
+
+
+def strip_injection(text: str) -> str:
+    """剥掉宿主注入块, 返回剩下的会话文本。
+
+    一个注入块 = 从标记行起, 到下一个角色标记行 (或文本结束) 为止。skill 全文里没有
+    行首的角色标记, 所以块边界稳定; 万一日后被注入内容自带角色标记, 也只是提前结束
+    剥离, 不会误吃用户后面说的话。
+    """
+    kept: List[str] = []
+    skipping = False
+    for line in (text or "").splitlines():
+        if _is_injection_head(line):
+            skipping = True
+            continue
+        if skipping:
+            if _ROLE_LINE_RE.match(line):
+                skipping = False        # 角色标记 = 注入块结束
+            else:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def user_turns(text: str) -> str:
     """只取文本里的**用户轮**内容; 没有角色标记时原样返回。
 
     宿主统一用 `用户：` / `助手：` 标注 (见 DSH 插件的 buildCaptureText)。助手轮
-    多为「做了什么」, 是噪声主源, 剔除后闸门判定显著更准。
+    多为「做了什么」, 是噪声主源, 剔除后闸门判定显著更准; 宿主注入的 skill/记忆块
+    同理先剥掉 (见 strip_injection), 它们不是用户说的话。
 
     **只在行首认角色标记**: 正文里引用「用户：/助手：」(讨论标记格式本身时很常见)
     不算角色切换, 否则一段正常内容会被切碎。切不出用户轮时退回原文,
     避免把畸形输入判成"无内容"而静默丢弃。
     """
-    t = text or ""
+    t = strip_injection(text)
     if not _USER_LINE_RE.search(t):
         return t
     out: List[str] = []
@@ -194,6 +240,43 @@ def _signal_live(text: str, marker: str) -> bool:
 
 def _live(text: str, markers) -> Tuple[str, ...]:
     return tuple(m for m in markers if m in text and _signal_live(text, m))
+
+
+# ---------------------------------------------------------------- 用户轮证据 (auto 通道准入)
+# 卡片是「用户提出 + 助手确认」的产物, 所以它的主张理应在**用户轮**里有出处。
+# 只判话题重合不够: 助手在排查里自己得出的环境近况 (skill 装在哪 / 目录有没有 .git /
+# 容器里跑的是代码还是卷 / 某开关的当前值) 与通用设计常识, 跟用户轮只是同主题, 却没有
+# 任何一句是用户说的 —— 这类卡片正是待确认列表被废话淹没的主因。
+# 判据刻意宽松 (默认命中 1 个特征片段就算有出处): 目的是拦"整张卡都是助手自己查出来的",
+# 不是要求逐字复述; 用户显式点名要记的内容不走这条 (人已经背书了, 见 memory._capture_impl)。
+EVIDENCE_RATIO = 0.15
+_EVIDENCE_ASCII_RE = re.compile(r"[a-z][a-z0-9_.\-]{2,}")
+_EVIDENCE_CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,}")
+
+
+def _evidence_grams(text: str) -> set:
+    """特征片段集合: ASCII 词 (>=3 字符) + 汉字二元组。"""
+    t = (text or "").lower()
+    grams = {m.group(0) for m in _EVIDENCE_ASCII_RE.finditer(t)}
+    for run in _EVIDENCE_CJK_RE.findall(t):
+        grams.update(run[i:i + 2] for i in range(len(run) - 1))
+    return grams
+
+
+def has_user_evidence(content: str, user_text: str) -> bool:
+    """卡片主张在用户轮里有没有出处 (auto 通道准入, 代码强制)。
+
+    取不到用户轮、或卡片本身没有特征片段时一律放行 (无证据可比就不拦, 交给别的闸门),
+    避免畸形输入被静默丢弃。
+    """
+    u = (user_text or "").strip()
+    if not u:
+        return True
+    grams = _evidence_grams(content)
+    if not grams:
+        return True
+    need = max(1, math.ceil(EVIDENCE_RATIO * len(grams)))
+    return len(grams & _evidence_grams(u)) >= need
 
 
 def _policy_signals(text: str) -> Tuple[str, ...]:

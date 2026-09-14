@@ -136,9 +136,48 @@ def judge_insight(text: str) -> bool:
     return re.match(r"^\s*1(?!\d)", raw or "") is not None
 
 
+# ---------------------------------------------------------------- 提炼结果的元响应/形状校验
+# 提炼提示词明确要求「宁可少提甚至不提; 没有就输出空」, 所以模型回一个「空」字是**正常且
+# 预期**的结果, 必须在落库前认出来。事故 #761: 模型回的是「空 + 一段解释」(把整段输入
+# 当成元报告复述), 而旧词表只认固定短语、下游 _filter_item 只拦 <4 字, 于是这段没有任何
+# 知识内容的元响应被存成了一条待确认洞察。
+EMPTY_RESPONSES = (
+    "空", "无", "没有", "无内容", "暂无", "n/a", "na", "none", "null", "nil", "nothing",
+)
+# 正文里出现这些短语同样说明"没提炼出东西", 无论它落在哪个位置
+NO_CONTENT_MARKERS = (
+    "无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
+    "没有可提炼", "无内容", "无相关", "暂无", "未提炼", "没有值得记忆", "无需记忆",
+)
+# 卡片形状: 提示词强制四段分行 (要点/背景·为什么/影响·以后注意/归属), 一段标题都没有
+# 就不是卡 —— 多半是模型的元报告或对输入的回声, 不能当知识收下
+CARD_SECTIONS = ("要点", "背景", "影响", "归属")
+
+
+def _meta_key(text: str) -> str:
+    """归一化比对键: 去空白/标点/大小写 (「空。」与「空」等价)。"""
+    return re.sub(r"[\s\W_]+", "", text or "").lower()
+
+
+def _first_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def is_empty_response(text: str) -> bool:
+    """整段是否是「没有可提炼内容」的元响应。
+
+    只看**首个非空行**: 这样既拦得住「空 + 一段解释」这种真实形态, 又不会误伤正文里
+    出现「空」字的正常卡片 (卡片首行按格式是「要点：…」)。
+    """
+    key = _meta_key(_first_line(text))
+    return key == "" or key in {_meta_key(x) for x in EMPTY_RESPONSES}
+
+
 def extract_memories(text: str) -> List[dict]:
     """从一段工作内容中提炼记忆条目 (L1 层, 自动捕获用), 只产出 insight。
-
     返回 [{"level": "insight", "content": str, "confidence": float}]。
 
     insight = 一条原子化、自包含、内容丰富的知识/见解/教训——一个决定 / 一条经验 /
@@ -169,7 +208,12 @@ def extract_memories(text: str) -> List[dict]:
         "多条之间用一行 `====` 分隔。只输出这些块, 不要其它解释。\n"
         "不要逐字转录对话/代码 (那是 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
         "准入只收四类: 决策 / 约定 / 规则 / 教训。一般事实、过程描述、进度汇报一律不提炼。\n"
-        "一次最多提炼 2 条; 宁可少提甚至不提; 没有就输出空。\n"
+        "以下同样一律不提炼:\n"
+        "  - 助手自己排查出来的环境近况: 工具/skill 装在哪、目录有没有 .git、容器里跑的是代码\n"
+        "    还是卷、某个开关的当前值 —— 一次 ls / git status / docker inspect 就能重新得到;\n"
+        "  - 通用设计/编程常识 (跟本项目具体决策无关的普适做法);\n"
+        "  - 用户轮里找不到出处的助手单方面结论: 卡片主张必须在用户轮里有对应说法。\n"
+        "默认一条都不提炼; 最多 1 条; 没有就只输出「空」一个字 (不要再写任何解释)。\n"
         "边界: 描述「做了什么」(代码改动/接口变化/重构/修 bug/新增端点) 一律不提炼 (归 git/spec);\n"
         "能写成带 WHEN/THEN 的 requirement 的契约也不提炼 (那是 spec)。\n"
         "输入以「用户：」/「助手：」标注; 仅用户提出、助手确认/落地/持续推进的选择才提炼为 insight。\n"
@@ -189,10 +233,12 @@ def extract_memories(text: str) -> List[dict]:
             body = m.group(2).strip()
         if not body or len(body) < 4:
             continue
-        # 过滤 LLM 的「无内容」元响应 (如「无值得提炼…」「没有值得记…」)
-        if any(mk in body for mk in
-               ("无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
-                "没有可提炼", "无内容", "无相关", "暂无")):
+        # 过滤「无内容」元响应: 整块就是空哨兵 (「空」/「无」/「none」…), 或正文里
+        # 自报没提炼出东西 (「无值得提炼…」「未提炼…」)
+        if is_empty_response(body) or any(mk in body for mk in NO_CONTENT_MARKERS):
+            continue
+        # 形状校验: 连一段标题都没有的多半是元报告/回声, 不是四段卡, 不收
+        if not any(sec in body for sec in CARD_SECTIONS):
             continue
         out.append({"level": "insight", "content": body, "confidence": 0.9})
     return out

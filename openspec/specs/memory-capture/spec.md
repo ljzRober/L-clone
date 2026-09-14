@@ -13,7 +13,7 @@ lclone 的自动捕获 SHALL 把内容提炼为**洞察(insight)**，不再分�
 - `candidate` SHALL 直接交 LLM 提炼成卡，SHALL NOT 额外判定；
 - `uncertain` SHALL 先做一次极便宜的 yes/no 判定，判否即丢弃。
 
-闸门判定 SHALL 只在**用户轮**（按 `用户：`/`助手：` 切分）上做；SHALL 遵循否定作用域（信号词前 3 字内出现 `不`/`没`/`无需`/`不用`/`取消` 时该命中不计）；用户显式要求（`记住`/`记一下`/`记下来`）SHALL 旁路闸门。落库前 SHALL 过 `_filter_item`（排除「做了什么」、过短琐碎丢弃），SHALL 再做向量去重与**归一化文本去重**（去空白标点后前 80 字相同视为重复），且单轮成卡 SHALL NOT 超过 2 条。insight 进 pending 待人工确认。
+闸门判定 SHALL 只在**用户轮**（按 `用户：`/`助手：` 切分）上做，且 SHALL 先剥掉**宿主注入块**（插件注入的 skill 全文 / bootstrap 记忆区，行首标记见 `gate.INJECTION_HEADS`）再判定——注入块不是用户说的话，其自带的触发词（skill 描述里的「记住」「记一下」与工具表里的 `remember`）SHALL NOT 命中显式要求旁路；SHALL 遵循否定作用域（信号词前 3 字内出现 `不`/`没`/`无需`/`不用`/`取消` 时该命中不计）；用户显式要求（`记住`/`记一下`/`记下来`）SHALL 旁路闸门。落库前 SHALL 过 `_filter_item`（排除「做了什么」、过短琐碎丢弃、排除「无内容」元响应与元报告回声），SHALL 再做向量去重与**归一化文本去重**（去空白标点后前 80 字相同视为重复），且单轮成卡 SHALL NOT 超过 1 条（默认一条都不产出）。**auto 通道的卡片 SHALL 过「用户轮证据」**（`gate.has_user_evidence`：卡片主张要在用户轮里有出处，助手单方面查出的环境近况与通用常识不成卡）；用户显式要求记忆的轮次 SHALL 豁免该证据检查。insight 进 pending 待人工确认。
 
 #### Scenario: 捕获记录
 
@@ -77,8 +77,28 @@ THEN 旁路闸门（长度与噪声都不拦），直接按 candidate 处理
 
 #### Scenario: 单轮成卡上限
 
-WHEN 一次 capture 的 LLM 提炼结果超过 2 条 insight
-THEN 只写入前 2 条，其余丢弃
+WHEN 一次 capture 的 LLM 提炼结果超过 1 条 insight
+THEN 只写入第 1 条，其余丢弃（默认一条都不产出，上限不是配额）
+
+#### Scenario: 注入块不算用户轮
+
+WHEN capture 文本里含宿主注入块（`【lclone-memory skill 全文】` / `【记忆】`）
+THEN 判定前剥掉该块；即便块内含「记住」「记一下」`remember` 也不按显式要求旁路
+
+#### Scenario: 用户轮证据
+
+WHEN auto 通道提炼出的卡片主张在用户轮里找不到出处（助手自己排查出的环境近况、通用常识）
+THEN 不成卡、不进待确认；用户显式说「记一下」的轮次豁免此检查
+
+#### Scenario: 无内容元响应不成卡
+
+WHEN 提炼器回「空」「无」`none` 这类空哨兵，或回一段带解释的「空」（未提炼任何卡片）
+THEN 一条都不落库，也不进待确认
+
+#### Scenario: 卡片形状校验
+
+WHEN 提炼结果缺少四段卡标题（要点/背景·为什么/影响·以后注意/归属）
+THEN 视为元报告或对输入的回声，不成卡
 
 #### Scenario: 归一化文本去重
 
@@ -302,7 +322,7 @@ THEN 返回"无候选/未发现矛盾"，不做矛盾判定
 
 ### Requirement: 闸门标准单一来源
 
-记忆准入的判定标准（信号词表、长度下限、单轮上限、否定作用域）SHALL 集中在 `lclone/gate.py` 的常量块，作为唯一标准源（SSOT）；其它模块 SHALL NOT 复制该词表（「做了什么」标记由 `gate.DID_MARKERS` 别名引用）。闸门模块 SHALL 只依赖标准库，SHALL NOT 依赖 `llm`/`db`/`config`，以便离线单测与跨宿主复用。
+记忆准入的判定标准（信号词表、长度下限、单轮上限、否定作用域、宿主注入块标记、用户轮证据阈值）SHALL 集中在 `lclone/gate.py` 的常量块，作为唯一标准源（SSOT）；其它模块 SHALL NOT 复制该词表（「做了什么」标记由 `gate.DID_MARKERS` 别名引用，「无内容」元响应词表由 `llm.EMPTY_RESPONSES`/`llm.NO_CONTENT_MARKERS` 承担）。闸门模块 SHALL 只依赖标准库，SHALL NOT 依赖 `llm`/`db`/`config`，以便离线单测与跨宿主复用。
 
 #### Scenario: 标准改动点唯一
 

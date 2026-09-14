@@ -620,7 +620,7 @@ llm_mod.extract_memories = lambda t: [
     {"level": "insight", "content": f"决定统一口径第 {i} 版"} for i in range(5)]
 _cap_ids = mem_mod.capture(conn, "决定统一口径五条一起来", project_id=pid)
 llm_mod.extract_memories = _orig_ex_cap
-check("134 单轮成卡上限 2 条", len(_cap_ids) == 2, f"{len(_cap_ids)} 条")
+check("134 单轮成卡上限 1 条 (默认不产出)", len(_cap_ids) == 1, f"{len(_cap_ids)} 条")
 
 check("135 归一化判重键忽略标点空白",
       mem_mod._norm_for_dup("决定了 凭证统一走网关鉴权。")
@@ -2392,6 +2392,89 @@ check("309 乐观锁在同一排他事务内: 同 base_version 的并发写不�
       and evo_store.resolve(_rc_a, "race.txt")["content"] == "B-body",
       f"entered={_rc_entered_ok} A={_rc_res.get('A')!r} B={_rc_res.get('B')!r} "
       f"cur=v{_rc_cur['version']} hist={_rc_hist}")
+
+# ---- 回归: 宿主注入块不得算「用户轮」; 提炼器自报「空」不得成卡 (事故 #761) ----
+# 现象: 插件把「skill 全文 + bootstrap 记忆」当 user 消息塞进会话, 闸门在它身上命中
+# 「记住/记一下/remember」→ 走显式记忆旁路 → 每个新会话首轮都白跑一次提炼; 模型回
+# 「空 + 一段解释」时又没有任何哨兵/形状校验, 于是元响应被存成一条待确认洞察。
+_inj = ("【lclone-memory skill 全文】(会话主导)\n"
+        "# L-clone 对话自动记忆\n"
+        "触发词：「记住」「记一下」「上次做到哪」\n"
+        "| `remember` | 主动记忆 |\n"
+        "\n【记忆】\n【全局记忆】\n- 要点：示例卡片\n")
+_v310 = gate.classify("用户：" + _inj + "\n\n助手：好的")
+check("310 注入块不算用户轮 (不触发显式记忆旁路)",
+      _v310.kind == gate.SKIP and _v310.hits == (), f"{_v310.kind} {_v310.hits}")
+check("311 注入块与真实决策同轮时仍识别决策",
+      gate.classify("用户：决定统一口径，以后都按这个来\n\n" + _inj + "\n\n助手：好").kind
+      == gate.CANDIDATE,
+      str(gate.classify("用户：决定统一口径，以后都按这个来\n\n" + _inj + "\n\n助手：好")))
+check("311b 没有角色标记时也剥注入块",
+      gate.hits(gate.user_turns(_inj), gate.EXPLICIT_MARKERS) == (),
+      str(gate.hits(gate.user_turns(_inj), gate.EXPLICIT_MARKERS)))
+
+_orig_chat = llm_mod.chat
+_orig_backend = llm_mod.backend
+llm_mod.backend = lambda: "api"
+llm_mod.chat = lambda *a, **k: (
+    "空\n\nSend to parent: 记忆提炼结果：空（未提炼任何 insight 卡片）。\n"
+    "- 原因：本轮既无用户拍板的决策，也无助手确认/落地。")
+_e312 = llm_mod.extract_memories("用户：x\n\n助手：y")
+check("312 提炼器回「空 + 解释」不成卡", _e312 == [], str(_e312)[:80])
+llm_mod.chat = lambda *a, **k: "这是一段普通叙述，没有卡片结构，也没有结论。"
+_e313a = llm_mod.extract_memories("x")
+llm_mod.chat = lambda *a, **k: (
+    "要点：测试先行\n背景/为什么：先红后绿才证明断言有效\n"
+    "影响/以后注意：回归可查\n归属：无")
+_e313b = llm_mod.extract_memories("x")
+llm_mod.chat, llm_mod.backend = _orig_chat, _orig_backend
+check("313 无四段形状的回声不成卡; 四段卡照常成卡",
+      _e313a == [] and len(_e313b) == 1, f"{len(_e313a)}/{len(_e313b)}")
+check("314 元报告回声不进准入 (正常洞察不受影响)",
+      mem_mod._filter_item({"level": "insight", "content": "空\n\nSend to parent: 记忆提炼结果：空"}) is None
+      and mem_mod._filter_item({"level": "insight", "content": "Web 面板分页每行三个"}) is not None)
+# 整链路回放: 注入块 + 真实用户轮 (命中强信号→candidate) + 模型回「空」→ 一条都不该落库
+_orig_chat315 = llm_mod.chat
+_orig_backend315 = llm_mod.backend
+llm_mod.backend = lambda: "api"
+llm_mod.chat = lambda *a, **k: "空\n\nSend to parent: 记忆提炼结果：空（未提炼任何 insight 卡片）。"
+_ids315 = mem_mod.capture(conn, "用户：这份评审 brief 以后都按这个格式派发\n\n" + _inj,
+                          project_id=pid, session_key="inc761")
+llm_mod.chat, llm_mod.backend = _orig_chat315, _orig_backend315
+check("315 事故回放: 注入块 + 模型回「空」→ 0 条落库", _ids315 == [], str(_ids315))
+
+# ---- (a) 用户轮证据: 助手单方面查出的近况/常识不成卡, 用户拍板过的照常成卡 ----
+check("316 助手单方面结论在用户轮里没有出处",
+      not gate.has_user_evidence(
+          "要点：DSH 里 skill 能否被管理取决于投递路径，散装 skill 只能手动覆盖。",
+          "帮我把 sp-spec 这个 skill 的用法理一下"))
+check("317 用户拍板过的主张有出处",
+      gate.has_user_evidence("要点：记忆统一用 SQLite 存\n背景/为什么：单机部署",
+                             "决定了记忆统一用 SQLite 存，以后都这样"))
+_orig_ex_ev = llm_mod.extract_memories
+llm_mod.extract_memories = lambda t: [
+    {"level": "insight",
+     "content": "要点：junction 直连可以让编辑立即生效\n背景/为什么：DSH 跟随符号链接\n"
+                "影响/以后注意：仓库改动会立刻上线\n归属：无"}]
+_ev_ids = mem_mod.capture(conn, "决定了 sp-spec 的发布方式改为镜像覆盖",
+                          project_id=pid, session_key="ev316")
+llm_mod.extract_memories = lambda t: [
+    {"level": "insight",
+     "content": "要点：发布方式改成镜像覆盖\n背景/为什么：目录没有 .git 只能整体覆盖\n"
+                "影响/以后注意：每次发布前核对差分为空\n归属：无"}]
+_ev_ids2 = mem_mod.capture(conn, "决定了发布方式改成镜像覆盖整个目录",
+                           project_id=pid, session_key="ev317")
+llm_mod.extract_memories = _orig_ex_ev
+check("318 近况类卡片在 capture 链路被拦下", _ev_ids == [], str(_ev_ids))
+check("319 有用户轮出处的卡片照常成卡", len(_ev_ids2) == 1, str(_ev_ids2))
+# 用户显式点名要记时豁免证据检查 (人说"记一下"就是背书, 不该因为措辞不同被丢)
+llm_mod.extract_memories = lambda t: [
+    {"level": "insight",
+     "content": "要点：覆盖发布前必须先备份\n背景/为什么：镜像覆盖不可逆\n"
+                "影响/以后注意：脚本里自动备份\n归属：无"}]
+_ev_ids3 = mem_mod.capture(conn, "记一下", project_id=pid, session_key="ev318")
+llm_mod.extract_memories = _orig_ex_ev
+check("320 用户显式要求记忆时豁免证据检查", len(_ev_ids3) == 1, str(_ev_ids3))
 
 print()
 if fails:
