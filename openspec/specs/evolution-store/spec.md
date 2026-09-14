@@ -39,7 +39,7 @@ THEN 索引中的 `kind` SHALL 记为该类型（script/tool/model），SHALL NO
 
 ### Requirement: 本地只读缓存与同步
 
-本地进化目录 SHALL 只是**可复现的缓存**：`pull` SHALL 按清单取内容、校验哈希后写文件，并更新本地清单（`.lclone-manifest.json`）；对本地已被修改（内容与清单哈希不一致）的文件，`pull` SHALL 拒绝覆盖并报告为 `dirty`，只有显式 `--force` 才覆盖（覆盖前 SHOULD 另存 `<name>.dirty.bak`）。`status` SHALL 给出六种状态：`in-sync` / `behind` / `dirty` / `missing` / `untracked` / `deleted`（`deleted` = 服务器已把该名字标为墓碑而本地仍留有副本；它 SHALL NOT 被当作可上传的 `untracked`，恢复须走显式 `restore`）。删除整个本地缓存目录后，`pull --all` SHALL 能完全还原。
+本地进化目录 SHALL 只是**可复现的缓存**：`pull` SHALL 按清单取内容、校验哈希后写文件，并更新本地清单（`.lclone-manifest.json`）；对本地已被修改（内容与清单哈希不一致）的文件，`pull` SHALL 拒绝覆盖并报告为 `dirty`，只有显式 `--force` 才覆盖（覆盖前 SHOULD 另存 `<name>.dirty.bak`）。`status` SHALL 给出六种状态：`in-sync` / `behind` / `dirty` / `missing` / `untracked` / `deleted`（`deleted` = 服务器已把该名字标为墓碑，**无论本地是否仍留有副本**；它 SHALL NOT 被当作可上传的 `untracked`，恢复须走显式 `restore`）。删除整个本地缓存目录后，`pull --all` SHALL 能完全还原。
 
 #### Scenario: 拉取校验哈希
 

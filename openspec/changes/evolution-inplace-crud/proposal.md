@@ -23,7 +23,7 @@
 
 ### Modified Capabilities
 
-- `evolution-store`：新增「可编辑内容判定」「看板原地增删改查」「乐观锁并发控制」「墓碑删除与恢复」「改名语义」五条需求。既有「版本化内容寻址存储」与「版本历史与回滚」两条硬边界**不变**，故本 delta 只使用 `## ADDED Requirements`。
+- `evolution-store`：新增「可编辑内容判定」「看板原地增删改查」「乐观锁并发控制」「墓碑删除与恢复」「改名语义」五条需求（走 `## ADDED Requirements`）；并**修改**「本地只读缓存与同步」一条 —— `status` 的状态集由五种扩为六种（新增 `deleted`，使"服务器已墓碑而本地仍有副本"的名字不再被当作可上传的 `untracked`，也让 `publish --all` 不再复活已删资产）（走 `## MODIFIED Requirements`，采用 early-sync：基线已同步为同一文本，归档时重复套用是 no-op）。既有「版本化内容寻址存储」与「版本历史与回滚」两条硬边界**不变**。
 
 ## Impact
 
