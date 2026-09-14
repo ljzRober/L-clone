@@ -17,3 +17,4 @@ venv/
 lclone-plugin.log
 lclone-web.log
 lclone-web.pid
+.superpowers/
