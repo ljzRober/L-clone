@@ -161,6 +161,23 @@ def get_blob(h: str) -> Optional[str]:
     return data.decode("utf-8", errors="replace")
 
 
+def get_blob_bytes(h: str) -> Optional[bytes]:
+    """按哈希取**原始字节**(不解码), 供可编辑判定用; 缺失或哈希不匹配返回 None。
+
+    与 `get_blob` 的区别: 后者用 errors="replace" 解码, 非法 UTF-8 会被替换成
+    替换字符而不是暴露出来 —— 因此判定二进制必须走本函数。
+    """
+    if not h:
+        return None
+    p = _blob_path(h)
+    if not p.is_file():
+        return None
+    data = p.read_bytes()
+    if hashlib.sha256(data).hexdigest() != h:
+        return None
+    return data
+
+
 def blob_count() -> int:
     """blob 文件数 (诊断/测试用; 不计入写坏的 .tmp 残留)。"""
     root = blob_dir()

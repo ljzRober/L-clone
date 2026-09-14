@@ -1537,6 +1537,104 @@ check("259 墓碑目标名仍可作改名目的地 (续用自身历史, 墓碑�
       and not evo_store.current(conn, _rc_t_dst)["deleted_at"],
       f"{_rc_t} hist={_rc_t_hist}")
 
+# ---- 260-274: REST 原地增删改查 + 乐观锁 409 + 可编辑性下发 ----
+try:
+    from fastapi.testclient import TestClient
+    import tempfile as _tf2
+    _dbp2 = os.path.join(_tf2.mkdtemp(prefix="evocrud_"), "w.db")
+    from lclone import web as _wm2
+    _tc2 = TestClient(_wm2.create_app(_dbp2))
+
+    _r = _tc2.post("/api/evolution/publish", json={"name": "u.txt", "content": "v1"})
+    _v1 = _r.json()["result"]["version"]
+    check("260 REST publish 后 index 下发 editable/base_version",
+          (lambda it: it["editable"] is True and it["editable_reason"] == ""
+           and it["base_version"] == _v1)(
+              [x for x in _tc2.get("/api/evolution/index").json()["items"]
+               if x["name"] == "u.txt"][0]))
+    # 乐观锁: 陈旧 base_version -> 409 且带 current_version
+    _c = _tc2.post("/api/evolution/publish",
+                   json={"name": "u.txt", "content": "v2", "base_version": 999})
+    check("261 REST 陈旧 base_version -> 409",
+          _c.status_code == 409 and _c.json()["detail"]["current_version"] == _v1,
+          f"{_c.status_code} {_c.text[:80]}")
+    check("262 REST 冲突不产生新版本",
+          _tc2.get("/api/evolution/history?name=u.txt").json()["items"][0]["version"] == _v1)
+    # 删除 -> 默认清单不可见 / include_deleted 可见
+    _tc2.post("/api/evolution/delete", json={"name": "u.txt", "base_version": _v1})
+    check("263 REST 删除后默认 index 不可见",
+          "u.txt" not in [x["name"] for x in _tc2.get("/api/evolution/index").json()["items"]])
+    _inc2 = [x for x in _tc2.get("/api/evolution/index?include_deleted=true").json()["items"]
+             if x["name"] == "u.txt"]
+    check("264 REST include_deleted 可见且带 deleted_at",
+          len(_inc2) == 1 and bool(_inc2[0]["deleted_at"]), str(_inc2))
+    # 对已墓碑资产带 base_version 的 DELETE -> 409 (不是幂等 200)
+    _c2 = _tc2.post("/api/evolution/delete", json={"name": "u.txt", "base_version": _v1})
+    check("265 REST 对已墓碑资产带 base_version 的 DELETE -> 409",
+          _c2.status_code == 409 and _c2.json()["detail"]["deleted"] is True,
+          f"{_c2.status_code} {_c2.text[:80]}")
+    check("266 REST restore 恢复",
+          _tc2.post("/api/evolution/restore", json={"name": "u.txt"}).json()["result"]["changed"] is True
+          and "u.txt" in [x["name"] for x in _tc2.get("/api/evolution/index").json()["items"]])
+    # 改名
+    _rn2 = _tc2.post("/api/evolution/rename",
+                     json={"name": "u.txt", "new_name": "u2.txt"}).json()["result"]
+    check("267 REST 改名 -> 新名字 v1 且旧名消失",
+          _rn2["new_name"] == "u2.txt" and _rn2["version"] == 1
+          and "u.txt" not in [x["name"] for x in _tc2.get("/api/evolution/index").json()["items"]])
+    check("268 REST 改名到空白目标 -> 400",
+          _tc2.post("/api/evolution/rename",
+                    json={"name": "u2.txt", "new_name": "   "}).status_code == 400)
+    # 目标名冲突 -> 409
+    _tc2.post("/api/evolution/publish", json={"name": "busy.txt", "content": "b"})
+    check("269 REST 改名目标活跃 -> 409",
+          _tc2.post("/api/evolution/rename",
+                    json={"name": "u2.txt", "new_name": "busy.txt"}).status_code == 409)
+    # 二进制 -> editable false / binary
+    _tc2.post("/api/evolution/publish", json={"name": "bin.txt", "content": "abc\x00def"})
+    _bin = [x for x in _tc2.get("/api/evolution/index").json()["items"] if x["name"] == "bin.txt"][0]
+    check("270 REST 含 NUL 内容 -> editable=false / binary",
+          _bin["editable"] is False and _bin["editable_reason"] == "binary", str(_bin))
+    # content 也下发 editable/base_version
+    _cc = _tc2.get("/api/evolution/content?name=busy.txt").json()
+    check("271 REST content 下发 editable/base_version",
+          _cc["editable"] is True and _cc["base_version"] == 1,
+          str({k: _cc[k] for k in ("editable", "base_version")}))
+    # /api/evolutions 形状不变
+    _its = _tc2.get("/api/evolutions").json()["items"]
+    _need = {"name", "ext", "size", "mtime", "is_dir", "children", "content"}
+    check("272 REST /api/evolutions 形状不变",
+          bool(_its) and _need <= set(_its[0].keys()), str(sorted(_its[0].keys())))
+
+    # 关键陷阱回归: **非法 UTF-8 且无 NUL** —— 若用 get_blob (errors="replace") 判定,
+    # 非法字节会被静默替换成替换字符, 于是永远判成可编辑。内容只能从 API 进 (JSON 必为
+    # 合法 UTF-8), 所以直接造一个哈希匹配、字节非法的 blob 并挂上索引行来复现该场景。
+    import hashlib as _hl2
+    import sqlite3 as _sq2
+    _bad_raw = b"abc\xff\xfe def"          # 非法 UTF-8, 且不含 NUL
+    _bad_h = _hl2.sha256(_bad_raw).hexdigest()
+    _bp2 = evo_store._blob_path(_bad_h)
+    _bp2.parent.mkdir(parents=True, exist_ok=True)
+    _bp2.write_bytes(_bad_raw)
+    _db2 = _sq2.connect(_dbp2)
+    _db2.execute("INSERT INTO evo_versions(name, version, hash, size, kind, project_id,"
+                 " ref, message, source_ref) VALUES (?,?,?,?,?,?,?,?,?)",
+                 ("bad-utf8.bin", 1, _bad_h, len(_bad_raw), "other", None, "", "", ""))
+    _db2.execute("INSERT INTO evo_current(name, version, updated_at, deleted_at, renamed_to)"
+                 " VALUES (?,?,?,'','')", ("bad-utf8.bin", 1, "2026-01-01 00:00:00"))
+    _db2.commit()
+    _db2.close()
+    _badrow = [x for x in _tc2.get("/api/evolution/index").json()["items"]
+               if x["name"] == "bad-utf8.bin"][0]
+    check("273 REST 非法 UTF-8 (无 NUL) -> editable=false / binary",
+          _badrow["editable"] is False and _badrow["editable_reason"] == "binary",
+          str({k: _badrow[k] for k in ("editable", "editable_reason")}))
+    check("274 get_blob(replace 解码) 掩盖非法 UTF-8, get_blob_bytes 暴露原始字节",
+          evo_store.get_blob(_bad_h) is not None
+          and evo_store.get_blob_bytes(_bad_h) == _bad_raw)
+except ImportError as e:  # 无 fastapi 环境跳过
+    print(f"SKIP 260-274 (缺依赖: {e})")
+
 print()
 if fails:
     print("FAILED:", fails)

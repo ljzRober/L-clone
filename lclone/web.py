@@ -89,11 +89,55 @@ class EvoPublishIn(BaseModel):
     message: str = ""
     ref: str = ""
     source_ref: str = ""
+    base_version: Optional[int] = None
+
+
+class EvoDeleteIn(BaseModel):
+    name: str
+    base_version: Optional[int] = None
+
+
+class EvoRestoreIn(BaseModel):
+    name: str
+
+
+class EvoRenameIn(BaseModel):
+    name: str
+    new_name: str
+    base_version: Optional[int] = None
+    message: str = ""
 
 
 class EvoRollbackIn(BaseModel):
     name: str
     version: int
+
+
+# ================================================================ 冲突映射 / 可编辑性
+def _evo_conflict(e: Exception):
+    """领域异常 → HTTPException: 乐观锁/命名冲突一律 409, 其余 400。"""
+    from fastapi import HTTPException
+    if isinstance(e, evo_mod.VersionConflict):
+        return HTTPException(409, {"error": str(e),
+                                   "current_version": e.current_version,
+                                   "deleted": getattr(e, "deleted", False)})
+    if isinstance(e, evo_mod.NameConflict):
+        return HTTPException(409, {"error": str(e), "name": e.name})
+    return HTTPException(400, str(e))
+
+
+def _editability_of(row: dict):
+    """行 → (editable, editable_reason)。原因码仅 "", binary, too_large, ref, missing。
+
+    必须走 `get_blob_bytes` 拿**原始字节**: `get_blob` 用 errors="replace" 解码,
+    非法 UTF-8 会被替换成替换字符, 拿去判定会把二进制资产误判成可编辑。
+    """
+    if row.get("ref"):
+        return False, "ref"
+    raw = evo_mod.get_blob_bytes(row.get("hash") or "")
+    if raw is None:
+        return False, "missing"
+    return evo_mod.editability(raw)
 
 
 # ================================================================ FastAPI
@@ -242,12 +286,13 @@ def create_app(db_path: Optional[str] = None):
         return {"items": [dict(r) for r in items]}
 
     @app.get("/api/evolutions")
-    def evolutions(name: Optional[str] = None,
+    def evolutions(name: Optional[str] = None, include_deleted: bool = False,
                    conn: sqlite3.Connection = Depends(get_db)):
         """进化资产目录树 (含 content/size/mtime)。
 
         响应形状**保持不变** (前端零改动), 但底层已从"扫目录"换成"读版本索引 + blob":
         每个条目额外带 version/hash/kind/untracked, 便于看板展示版本与未收录文件。
+        `include_deleted=True` 时把墓碑资产一并列出 (形状不变, 只是多几行)。
         """
         def add_content(node):
             if node.get("is_dir"):
@@ -255,18 +300,34 @@ def create_app(db_path: Optional[str] = None):
             else:
                 node["content"] = mem_mod.read_evolution_file(node["name"], conn) or ""
             return node
-        items = [add_content(f) for f in mem_mod.list_evolution_files(conn)]
+        items = [add_content(f) for f in
+                 mem_mod.list_evolution_files(conn, include_deleted=include_deleted)]
         return {"items": items}
 
     # ------------------------------------------------ 进化资产: 版本化存储 (服务器权威)
     @app.get("/api/evolution/index")
-    def evo_index(conn: sqlite3.Connection = Depends(get_db)):
+    def evo_index(include_deleted: bool = False,
+                  conn: sqlite3.Connection = Depends(get_db)):
         """当前版本清单 (每个进化资产一行) + 服务器侧目录。
 
         `dirs` 是**服务器**的真实路径 —— 看板由服务器提供, 该显示服务器的库位置,
         而不是写死一个客户端相对路径。
+
+        每项追加可编辑性判定 (`editable`/`editable_reason`) 与乐观锁所需的
+        `base_version` (= 当前版本号, 供前端写操作回传)、墓碑字段 (`deleted_at`/
+        `renamed_to`)。判定结果由服务端唯一权威下发, 前端只镜像。
         """
-        return {"items": evo_mod.ls(conn),
+        items = []
+        for row in evo_mod.ls(conn, include_deleted=include_deleted):
+            row = dict(row)
+            ok, reason = _editability_of(row)
+            row["editable"] = ok
+            row["editable_reason"] = reason
+            row["base_version"] = row.get("version")
+            row["deleted_at"] = row.get("deleted_at") or ""
+            row["renamed_to"] = row.get("renamed_to") or ""
+            items.append(row)
+        return {"items": items,
                 "dirs": {"content": str(evo_mod.blob_dir()),
                          "cache": str(evo_mod.cache_dir(create=False))}}
 
@@ -278,12 +339,24 @@ def create_app(db_path: Optional[str] = None):
     @app.get("/api/evolution/content")
     def evo_content(name: str, version: Optional[int] = None,
                     conn: sqlite3.Connection = Depends(get_db)):
-        """取某版本的原文 (version 省略取当前版本)。"""
+        """取某版本的原文 (version 省略取当前版本)。
+
+        返回形状在既有 `name/version/hash/content/ref` 之上**追加** `editable`/
+        `editable_reason`/`base_version`/`deleted_at`/`renamed_to`。
+        `base_version` 恒为**当前版本号** (`current()` 的 version, 与请求的 version
+        无关) —— 前端据此回传写操作做乐观锁; 读历史版本时改的仍是当前版本。
+        """
         row = evo_mod.resolve(conn, name, version)
         if row is None:
             raise HTTPException(404, f"进化资产不存在: {name}")
+        cur = evo_mod.current(conn, name) or {}
+        ok, reason = _editability_of(row)
         return {"name": row["name"], "version": row["version"], "hash": row["hash"],
-                "content": row["content"], "ref": row["ref"]}
+                "content": row["content"], "ref": row["ref"],
+                "editable": ok, "editable_reason": reason,
+                "base_version": cur.get("version"),
+                "deleted_at": cur.get("deleted_at") or "",
+                "renamed_to": cur.get("renamed_to") or ""}
 
     @app.get("/api/evolution/history")
     def evo_history(name: str, conn: sqlite3.Connection = Depends(get_db)):
@@ -292,13 +365,51 @@ def create_app(db_path: Optional[str] = None):
 
     @app.post("/api/evolution/publish")
     def evo_publish(body: EvoPublishIn, conn: sqlite3.Connection = Depends(get_db)):
-        """发布一版内容 (内容未变则不新增版本); ref 类只记引用。"""
+        """发布一版内容 (内容未变则不新增版本); ref 类只记引用。
+
+        `base_version` 为乐观锁 (None = 不校验): 陈旧视图 → 409, **绝不静默覆盖**。
+        """
         try:
             out = evo_mod.publish(conn, body.name, body.content, kind=body.kind,
                                      project_id=body.project_id, ref=body.ref,
-                                     message=body.message, source_ref=body.source_ref)
+                                     message=body.message, source_ref=body.source_ref,
+                                     base_version=body.base_version)
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(400, str(e))
+            raise _evo_conflict(e)
+        return {"result": out}
+
+    @app.post("/api/evolution/delete")
+    def evo_delete(body: EvoDeleteIn, conn: sqlite3.Connection = Depends(get_db)):
+        """墓碑删除 (可恢复)。带 `base_version` 时对**已墓碑**资产同样判 409。
+
+        该行为是刻意的: 带 base_version 的重复删除不是幂等 200 —— 调用方读到的是
+        "当时还活着"的视图, 返回 200 会让它误以为删除是本次生效的 (lost update)。
+        """
+        try:
+            out = evo_mod.delete(conn, body.name, base_version=body.base_version)
+        except Exception as e:  # noqa: BLE001
+            raise _evo_conflict(e)
+        return {"result": out}
+
+    @app.post("/api/evolution/restore")
+    def evo_restore(body: EvoRestoreIn, conn: sqlite3.Connection = Depends(get_db)):
+        """恢复墓碑资产 (清 deleted_at / renamed_to), 幂等。"""
+        try:
+            out = evo_mod.restore(conn, body.name)
+        except Exception as e:  # noqa: BLE001
+            raise _evo_conflict(e)
+        return {"result": out}
+
+    @app.post("/api/evolution/rename")
+    def evo_rename(body: EvoRenameIn, conn: sqlite3.Connection = Depends(get_db)):
+        """改名 = 新名字发 v1 (继承当前内容) + 旧名墓碑记 renamed_to; 历史不迁移。"""
+        if not (body.new_name or "").strip():
+            raise HTTPException(400, "new_name 不能为空")
+        try:
+            out = evo_mod.rename(conn, body.name, body.new_name,
+                                 base_version=body.base_version, message=body.message)
+        except Exception as e:  # noqa: BLE001
+            raise _evo_conflict(e)
         return {"result": out}
 
     @app.post("/api/evolution/rollback")

@@ -465,11 +465,16 @@ def _scan_cache_tree() -> List[dict]:
     return out
 
 
-def list_evolution_files(conn: Optional[sqlite3.Connection] = None) -> List[dict]:
-    """目录 UI 用清单: 优先读版本索引 (含本地未收录文件); 无连接时退回扫目录。"""
+def list_evolution_files(conn: Optional[sqlite3.Connection] = None,
+                         include_deleted: bool = False) -> List[dict]:
+    """目录 UI 用清单: 优先读版本索引 (含本地未收录文件); 无连接时退回扫目录。
+
+    `include_deleted` 透传给 `evolutions.tree` —— 默认 False 保持既有调用方行为不变;
+    兜底扫目录路径没有索引, 无从判断墓碑, 因此仅在拿不到索引时使用。
+    """
     if conn is not None:
         try:
-            return evolutions.tree(conn)
+            return evolutions.tree(conn, include_deleted=include_deleted)
         except Exception:
             pass
     return _scan_cache_tree()
