@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS recall_log (
   recalled_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 人工确认留痕: keep/edit/delete/promote 的动作记录 (准入质量指标用, 见
+-- docs/记忆准入门控调研.md §3.2)。**故意不加外键**: delete 会真删 memories 行, 若级联
+-- 清理这段留痕, "队列精确率"就永远算不出来 —— 留痕必须比被删的记忆活得久。
+CREATE TABLE IF NOT EXISTS review_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id  INTEGER NOT NULL,
+  action     TEXT NOT NULL,                -- keep | edit | delete | promote
+  project_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 项目墓碑: proj rm 不删行、不加状态字段, 只在此登记移除事件;
 -- 读取时(recall/ask/proj list)据此决定"该项目已死, 记忆不再加载"
 CREATE TABLE IF NOT EXISTS project_removals (
@@ -159,6 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_specs_proj ON specs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_source ON memory_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_memlinks_target ON memory_links(target_id);
 CREATE INDEX IF NOT EXISTS idx_recall_log_mem ON recall_log(memory_id);
+CREATE INDEX IF NOT EXISTS idx_review_log_at ON review_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 """
 

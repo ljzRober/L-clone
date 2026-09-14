@@ -573,6 +573,54 @@ def cmd_pending(args) -> None:
                      ensure_ascii=False))
 
 
+def cmd_stats(args) -> None:
+    """准入质量指标: 队列精确率 / 每会话复核负担 / 复用率 (见 docs/记忆准入门控调研.md §3)。
+
+    这些是**内部相对指标**, 只在"准入改动前后对比"时有效 —— 没有公开基准可作绝对标尺。
+    路由与 evolution 命令同一约定: 设了 LCLONE_WEB_URL 就查远端 (真实数据在那边), `--local` 强制本地。
+    """
+    days = max(1, int(getattr(args, "days", 7)))
+    url = "" if getattr(args, "local", False) else (config.get("LCLONE_WEB_URL") or "").strip()
+    if url:
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            f"{url.rstrip('/')}/api/stats?days={days}",
+            headers={"X-API-Key": config.get("LCLONE_API_KEY") or ""})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                m = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001 - 远端不可达要给人话, 不是栈
+            raise SystemExit(f"读取远端指标失败: {e}")
+        print(f"(大脑: {url})")
+    else:
+        m = mem_mod.queue_metrics(_conn(args), days=days)
+    _print_metrics(m)
+
+
+def _print_metrics(m: dict) -> None:
+    r = m["reviewed"]
+    print(f"窗口: 最近 {m['days']} 天")
+    print(f"队列精确率: {_fmt_pct(m['queue_precision'])}"
+          f"  (保留 {r['keep'] + r['edit'] + r['promote']} / 删除 {r['delete']},"
+          f" 共 {m['decided']} 次拍板; ≥0.5 健康, <0.3 说明人在无脑点)")
+    print(f"复核负担:   {_fmt_num(m['review_burden'])} 张/会话"
+          f"  (新成卡 {m['cards_created']} / 会话 {m['sessions']}; 目标 ≤5)")
+    print(f"复用率:     {_fmt_pct(m['reuse_rate'])}"
+          f"  (被召回过的 {m['recalled']} / active {m['active']})")
+    if m["decided"] == 0:
+        print("提示: 还没有'拍板'留痕 —— 精确率需要 keep/delete 动作才可算;"
+              " 本次之前的历史删除没有留痕 (review_log 后加), 只能从今天起累积。")
+
+
+def _fmt_pct(v) -> str:
+    return "—" if v is None else f"{v * 100:.1f}%"
+
+
+def _fmt_num(v) -> str:
+    return "—" if v is None else f"{v:.2f}"
+
+
 def cmd_auth(args) -> None:
     """访问令牌管理: create / list / revoke / test。"""
     from . import auth as auth_mod
@@ -952,6 +1000,13 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("proposal", help="新提议")
     ss.add_argument("--project", required=True)
     ss.set_defaults(func=cmd_supervise)
+
+    sst = sub.add_parser("stats", parents=[parent],
+                         help="准入质量指标 (队列精确率/复核负担/复用率)")
+    sst.add_argument("--days", type=int, default=7, help="统计窗口天数 (默认 7)")
+    sst.add_argument("--local", action="store_true",
+                     help="强制用本地 DB (默认: 设了 LCLONE_WEB_URL 就走远端 HTTP)")
+    sst.set_defaults(func=cmd_stats)
 
     sa = sub.add_parser("ask", parents=[parent], help="带记忆的问答")
     sa.add_argument("question")

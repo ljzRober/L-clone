@@ -360,6 +360,12 @@ def review(conn: sqlite3.Connection, memory_id: int, action: str,
     用于"确认弹窗里把项目级洞察升到全局层再落地"的一步操作。
     """
     action = action.lower()
+    # 先留痕再动数据: delete 会真删 memories 行, 留痕必须在删除之前写入 (指标靠它回算)
+    conn.execute(
+        "INSERT INTO review_log(memory_id, action, project_id)"
+        " SELECT ?, ?, project_id FROM memories WHERE id=?",
+        (memory_id, action, memory_id),
+    )
     if action == "keep":
         conn.execute(
             "UPDATE memories SET status='active', confirmed_at=datetime('now')"
@@ -393,6 +399,56 @@ def review(conn: sqlite3.Connection, memory_id: int, action: str,
 def set_status(conn: sqlite3.Connection, memory_id: int, status: str) -> None:
     conn.execute("UPDATE memories SET status=? WHERE id=?", (status, memory_id))
     conn.commit()
+
+
+def queue_metrics(conn: sqlite3.Connection, days: int = 7) -> dict:
+    """准入质量指标 (内部相对指标, 见 docs/记忆准入门控调研.md §3.2)。
+
+    三个能从库里确定性算出来的数:
+
+      - queue_precision  队列精确率 = 保留 /(保留+删除), 只统计窗口内**已拍板**的动作。
+                         类比告警疲劳: 低精度的人工队列会被无脑点掉 (综述里误报告警被绕过 49-96%)。
+      - review_burden    每会话复核负担 = 窗口内新成卡数 / 窗口内出现过卡片的会话数。
+      - reuse_rate       复用率 = 被召回过的 active 卡占比。
+
+    垃圾率 (卡在来源轮里找不到支持) 需要来源对话文本, 库里没有, 故不在此提供 —— 别用别的指标冒充它。
+    冷启动说明: review_log 是后加的, 历史删除没有留痕, 所以精确率只对留痕之后发生的动作有效;
+    在 `decided == 0` 时返回 None 而不是 0.0, 避免把"没数据"读成"精度为零"。
+    """
+    days = max(1, int(days))
+    since = f"-{days} days"
+    acts = {r["action"]: r["c"] for r in conn.execute(
+        "SELECT action, COUNT(*) c FROM review_log WHERE created_at >= datetime('now', ?)"
+        " GROUP BY action", (since,))}
+    kept = sum(acts.get(a, 0) for a in ("keep", "edit", "promote"))
+    deleted = acts.get("delete", 0)
+    decided = kept + deleted
+
+    cards = conn.execute(
+        "SELECT COUNT(*) c FROM memories WHERE created_at >= datetime('now', ?)",
+        (since,)).fetchone()["c"]
+    # 会话数按 source_ref(session:N) 去重 —— 同一次 capture 产出的卡共享同一个会话引用
+    sess = conn.execute(
+        "SELECT COUNT(DISTINCT source_ref) c FROM memories"
+        " WHERE created_at >= datetime('now', ?) AND source_ref <> ''",
+        (since,)).fetchone()["c"]
+    active = conn.execute(
+        "SELECT COUNT(*) c FROM memories WHERE status='active'").fetchone()["c"]
+    recalled = conn.execute(
+        "SELECT COUNT(DISTINCT memory_id) c FROM recall_log").fetchone()["c"]
+    return {
+        "days": days,
+        "reviewed": {"keep": acts.get("keep", 0), "edit": acts.get("edit", 0),
+                     "promote": acts.get("promote", 0), "delete": deleted},
+        "decided": decided,
+        "queue_precision": round(kept / decided, 3) if decided else None,
+        "cards_created": cards,
+        "sessions": sess,
+        "review_burden": round(cards / sess, 2) if sess else None,
+        "active": active,
+        "recalled": recalled,
+        "reuse_rate": round(recalled / active, 3) if active else None,
+    }
 
 
 # ---------------------------------------------------------------- 进化资产 (evolution)

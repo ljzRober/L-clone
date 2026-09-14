@@ -582,7 +582,11 @@ check("126 gate 显式「记住」旁路", gate.classify("记住：用 SQLite").
 check("127 gate 短决策句不被长度误杀",
       gate.classify("决定统一口径").kind == gate.CANDIDATE)
 check("128 gate 无信号判不确定",
-      gate.classify("今天看了一下午的日志文件内容").kind == gate.UNCERTAIN)
+      gate.classify("日志文件里的时间戳格式有点乱").kind == gate.UNCERTAIN)
+check("128b gate 短时性措辞判跳过 (可重测的近况)",
+      gate.classify("今天看了一下午的日志文件内容").kind == gate.SKIP
+      and "今天" in gate.classify("今天看了一下午的日志文件内容").hits,
+      str(gate.classify("今天看了一下午的日志文件内容")))
 check("129 gate 只看用户轮",
       gate.classify("用户：决定统一口径\n\n助手：好的，我修复了三个 bug 并重构了模块")
       .kind == gate.CANDIDATE)
@@ -611,7 +615,7 @@ check("131 gate skip 时完全不调 LLM",
 _rep = mem_mod.capture_report(conn, "决定了记忆统一用 SQLite 存", project_id=pid)
 check("132 capture_report 带闸门诊断",
       _rep["gate"]["kind"] == "candidate" and _rep["ids"], str(_rep))
-_rep2 = mem_mod.capture_report(conn, "今天看了一下午的日志文件内容", project_id=pid)
+_rep2 = mem_mod.capture_report(conn, "日志文件里的时间戳格式有点乱", project_id=pid)
 check("133 uncertain 档经 LLM 判定后仍可成卡",
       _rep2["gate"]["kind"] == "uncertain", str(_rep2["gate"]))
 
@@ -2475,6 +2479,65 @@ llm_mod.extract_memories = lambda t: [
 _ev_ids3 = mem_mod.capture(conn, "记一下", project_id=pid, session_key="ev318")
 llm_mod.extract_memories = _orig_ex_ev
 check("320 用户显式要求记忆时豁免证据检查", len(_ev_ids3) == 1, str(_ev_ids3))
+
+# ---- 第 0 步三条规则 + 两个度量 (调研落地, 见 docs/记忆准入门控调研.md §5) ----
+# ① 短时性措辞: 只在没有决定性信号时才算负信号 (「现在效果不错，统一按这个来」是规则)
+check("321 短时性措辞不与决策信号同现时判跳过",
+      gate.classify("这次先这样，明天再看看服务还稳不稳").kind == gate.SKIP
+      and gate.classify("这次决定统一用 SQLite 存").kind == gate.CANDIDATE,
+      str(gate.classify("这次先这样，明天再看看服务还稳不稳")))
+# ② 自包含性: 只有一句「要点」的残卡不成卡
+_orig_chat_s = llm_mod.chat
+_orig_backend_s = llm_mod.backend
+llm_mod.backend = lambda: "api"
+llm_mod.chat = lambda *a, **k: "要点：测试先行\n归属：无"
+_e321a = llm_mod.extract_memories("x")
+llm_mod.chat = lambda *a, **k: "要点：测试先行\n背景/为什么：先红后绿\n影响/以后注意：可回归\n归属：无"
+_e321b = llm_mod.extract_memories("x")
+# ③ 归属为空 → 结构性拒绝
+llm_mod.chat = lambda *a, **k: "要点：测试先行\n背景/为什么：先红后绿\n归属："
+_e321c = llm_mod.extract_memories("x")
+llm_mod.chat, llm_mod.backend = _orig_chat_s, _orig_backend_s
+check("322 残卡(只有要点)不成卡; 四段齐备照常成卡",
+      _e321a == [] and len(_e321b) == 1, f"{len(_e321a)}/{len(_e321b)}")
+check("323 归属为空 → 结构性拒绝", _e321c == [], str(_e321c)[:60])
+
+# ④ 人工确认留痕: delete 会真删记忆行, 留痕必须活下来 (否则精确率永远算不出)
+_m_keep = mem_mod.remember(conn, "指标测试用洞察 A", project_id=pid)
+_m_del = mem_mod.remember(conn, "指标测试用洞察 B", project_id=pid)
+mem_mod.review(conn, _m_keep, "keep")
+mem_mod.review(conn, _m_del, "delete")
+_left = conn.execute("SELECT COUNT(*) c FROM memories WHERE id=?", (_m_del,)).fetchone()["c"]
+_logged = {r["memory_id"]: r["action"] for r in conn.execute(
+    "SELECT memory_id, action FROM review_log WHERE memory_id IN (?, ?)",
+    (_m_keep, _m_del))}
+check("324 确认动作留痕且删除后仍在",
+      _left == 0 and _logged.get(_m_keep) == "keep" and _logged.get(_m_del) == "delete",
+      f"left={_left} logged={_logged}")
+
+_met = mem_mod.queue_metrics(conn, days=7)
+check("325 queue_metrics 算出精确率/负担/复用率",
+      _met["reviewed"]["keep"] >= 1 and _met["reviewed"]["delete"] >= 1
+      and 0 < _met["queue_precision"] < 1 and _met["review_burden"] is not None
+      and _met["reuse_rate"] is not None, str(_met))
+_empty_conn = db_mod.init(os.path.join(tmp, "metrics_empty.db"))
+_me = mem_mod.queue_metrics(_empty_conn, days=7)
+check("326 无拍板留痕时指标为 None (不把'没数据'读成 0)",
+      _me["queue_precision"] is None and _me["review_burden"] is None
+      and _me["reuse_rate"] is None, str(_me))
+_empty_conn.close()
+
+_cli_buf = io.StringIO()
+with contextlib.redirect_stdout(_cli_buf):
+    cli.main(["stats", "--db", dbp, "--days", "7"])
+check("327 CLI stats 打印四个指标",
+      "队列精确率" in _cli_buf.getvalue() and "复核负担" in _cli_buf.getvalue()
+      and "复用率" in _cli_buf.getvalue(), _cli_buf.getvalue()[:120])
+try:
+    check("328 /api/stats 已注册 (远端可查真实指标)",
+          "/api/stats" in {r.path for r in app.routes})
+except NameError:
+    print("SKIP 328 (fastapi 未安装)")
 
 print()
 if fails:

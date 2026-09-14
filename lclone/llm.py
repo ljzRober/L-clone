@@ -152,6 +152,14 @@ NO_CONTENT_MARKERS = (
 # 卡片形状: 提示词强制四段分行 (要点/背景·为什么/影响·以后注意/归属), 一段标题都没有
 # 就不是卡 —— 多半是模型的元报告或对输入的回声, 不能当知识收下
 CARD_SECTIONS = ("要点", "背景", "影响", "归属")
+# 自包含性 (Letta: "Store self-contained facts or summaries, not conversational fragments"):
+# 只有一句"要点"的卡离开原始对话就读不懂, 必须同时还带背景或影响中的至少一段。
+CARD_REQUIRED = "要点"
+CARD_SUPPORTING = ("背景", "影响")
+# 归属字段 (MemInsight 的字段级规则: "If an attribute has a none or unspecified value skip
+# this attribute"): 归属填不出来说明连"这条属于谁/哪一层"都说不清, 应结构性拒绝,
+# 而不是推给人判断。值可以是 无 / 全局 / src:path / m:NN / [[spec:id]]。
+CARD_SCOPE_RE = re.compile(r"^\s*归属\s*[:：]\s*(\S.*)$", re.M)
 
 
 def _meta_key(text: str) -> str:
@@ -239,6 +247,12 @@ def extract_memories(text: str) -> List[dict]:
             continue
         # 形状校验: 连一段标题都没有的多半是元报告/回声, 不是四段卡, 不收
         if not any(sec in body for sec in CARD_SECTIONS):
+            continue
+        # 自包含性: 必须有点要 + (背景 或 影响); 只有一句结论的残卡不收
+        if CARD_REQUIRED not in body or not any(s in body for s in CARD_SUPPORTING):
+            continue
+        # 归属: 必须有归属段且值非空 (填不出来 = 连归属都说不清, 结构性拒绝)
+        if not CARD_SCOPE_RE.search(body):
             continue
         out.append({"level": "insight", "content": body, "confidence": 0.9})
     return out

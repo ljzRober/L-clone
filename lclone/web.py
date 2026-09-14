@@ -282,6 +282,15 @@ def create_app(db_path: Optional[str] = None):
     def pending(conn: sqlite3.Connection = Depends(get_db)):
         return {"items": [dict(r) for r in mem_mod.pending_memories(conn)]}
 
+    @app.get("/api/stats")
+    def stats(days: int = 7, conn: sqlite3.Connection = Depends(get_db)):
+        """准入质量指标 (队列精确率/复核负担/复用率)。
+
+        内部相对指标: 只在准入改动前后对比时有效, 没有公开基准可作绝对标尺
+        (见 docs/记忆准入门控调研.md §3)。无数据时字段为 null, 不是 0。
+        """
+        return mem_mod.queue_metrics(conn, days=days)
+
     @app.get("/api/memories")
     def memories(project_id: Optional[int] = None,
                  level: Optional[str] = None, status: str = "active",

@@ -32,6 +32,7 @@ lclone conflicts [--project id]                    # 矛盾检测: 找疑似互�
 lclone promote <id>                                # 洞察上升: 项目 -> 全局层 (生命周期无限)
 lclone demote <id> --project <id|name>             # 洞察下降: 挂到指定项目(含项目间横搬)
 lclone suggest [--dup-threshold 0.92] [--stale-days 7] [--unused-days 30]  # 删除提示
+lclone stats [--days 7]                             # 准入质量指标: 队列精确率/复核负担/复用率
 lclone organize                                    # 整理: LLM 语义合并相近洞察 (不跨项目/等级)
 lclone memories [--project id] [--level insight] [--status active|pending] [--limit 20]
 lclone pending                                     # 打印待确认洞察数 (非交互, 供插件探测)
@@ -96,6 +97,11 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 - **整理合并**: `organize` 让 LLM 把"语义相近、说的是同一件事"的洞察合并成一条综合描述;硬约束为**同项目 + 同等级**才能合并, 跨区域由代码校验拒绝。
 - **矛盾检测**: `conflicts` 找疑似互相矛盾/规则改版的 active 洞察对, 由 LLM 判定;只提示, 不自动改。
 - **删除提示**: `suggest` 用算法扫描候选 (疑似重复/长期未确认草稿/长期未召回/已移除项目记忆), 每条给出删除命令; **删除始终由你手动执行**。
+- **准入质量指标**: `stats [--days 7]` 打印三个**内部相对指标** —— 队列精确率 (`keep/(keep+delete)`,
+  ≥0.5 健康, <0.3 说明人在无脑点)、每会话复核负担 (新成卡/会话, 目标 ≤5)、复用率 (被召回过的
+  active 卡占比)。每次确认动作 (keep/edit/delete/promote) 都会写进 `review_log` 留痕 ——
+  **delete 会真删记忆行, 留痕故意不加外键, 所以它比被删的记忆活得久**, 否则精确率永远算不出来。
+  这三个数只用于"准入改动前后对比", 没有公开基准可作绝对标尺 (见 `docs/记忆准入门控调研.md` §3)。
 
 ## 模型 API 配置参考
 

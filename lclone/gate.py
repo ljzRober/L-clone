@@ -90,6 +90,19 @@ CHAT_MARKERS = (
     "你好", "谢谢", "多谢", "好的", "嗯", "收到", "继续", "可以了", "没问题",
 )
 
+# 负信号: 短时性/会话性措辞 —— "这次/今天/目前/临时" 这类话只在当下成立, 属于
+# 一次 `ls`/`git status`/重读上下文就能重新得到的近况, 不该进长期记忆
+# (OpenAI Agents SDK cookbook 的同类规则: "Drop session-only / ephemeral notes";
+#  Letta 的工具描述: "do not write 'today' or 'recently'")。
+# **只作负信号, 不作一票否决**: 真正决定了规则/边界的句子常常带"现在/这次"
+# (如「现在效果不错，统一按这个来」), 所以命中决策/教训信号时此项不计。
+EPHEMERAL_MARKERS = (
+    "这次", "本次", "今天", "今晚", "刚刚", "刚才", "目前", "当前",
+    "临时", "这几天", "本周", "这周", "眼下",
+    "for now", "right now", "this time", "this trip", "for this booking",
+    "today", "tonight", "tomorrow",
+)
+
 # 负信号: 疑问句结尾
 ASK_SUFFIXES = ("？", "?")
 
@@ -301,7 +314,8 @@ def _lesson_signals(text: str) -> Tuple[str, ...]:
 def classify(text: str) -> Verdict:
     """把一段 capture 文本判成 skip / candidate / uncertain (纯函数, 无副作用)。
 
-    优先级: 显式要求 > 疑问句 > 政策/规则/教训 > 文本长度 > 「做了什么」 > 含糊措辞 > 寒暄。
+    优先级: 显式要求 > 疑问句 > 政策/规则/教训 > 短时性措辞 > 文本长度 > 「做了什么」 >
+    含糊措辞 > 寒暄。
     「做了什么」压在**含糊**决策词 (确定/约定) 之上, 是为了让工作日志稳定落在 skip;
     但压不过政策语气与教训语气 —— 「回滚策略定为…」「踩坑的原因在于…」是知识, 不是流水账。
     """
@@ -324,6 +338,12 @@ def classify(text: str) -> Verdict:
     # 决定性语气优先于长度与「做了什么」: 「决定统一口径」只有 6 字但必须收
     if decisive and len(clean) >= MIN_SIGNAL_CHARS:
         return Verdict(CANDIDATE, decisive, "命中政策/规则/教训强信号")
+
+    # 短时性措辞 (且没有任何决定性信号) → 近况, 不收。位置刻意放在 decisive 之后:
+    # 「现在效果不错，统一按这个来」是规则, 不能因为一个"现在"被丢掉。
+    eph = hits(clean, EPHEMERAL_MARKERS)
+    if eph:
+        return Verdict(SKIP, eph, "短时/会话性措辞, 属可重测的近况")
 
     if len(clean) < MIN_CHARS:
         # 短句: 有「做了什么」证据算工作日志; 含糊决策词也放行 (如「确定用 SQLite」)
