@@ -39,6 +39,11 @@ a.navbtn { text-decoration:none; color:var(--dim); border:1px solid var(--line);
            padding:6px 12px; font-size:12px; }
 a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 
+/* ---- 鉴权: 401 = 未授权, 不是"没有数据" ---- */
+/* 只在服务端真的回过 401 时点亮 (由 fetch 包装器置位), 不做"localStorage 空就提示"的猜测 */
+#api-key.need { border-color:var(--warn)!important; box-shadow:0 0 0 2px rgba(251,191,36,.14); }
+#auth-note { font-family:var(--mono); font-size:11px; color:var(--warn); }
+
 /* ---- 记忆工作台 ---- */
 .shell { display:flex; flex:1 1 auto; min-height:0; }
 .sidebar { width:252px; flex:0 0 auto; border-right:1px solid var(--line); padding:14px 10px 26px;
@@ -299,6 +304,8 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
          onchange="saveKey()"
          onkeydown="if(event.key==='Enter'){event.preventDefault();saveKey();}"
          style="background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;font-family:var(--mono);width:150px">
+  <!-- 401 才会写这里 (响应驱动), 平时空白; 与输入框高亮一起构成"未授权"的唯一提示位 -->
+  <span id="auth-note" aria-live="polite"></span>
   <span class="sp"></span>
   <button class="ghost" id="btn-pending" onclick="openPending()" title="查看并处理待确认洞察">待确认 <b id="pending-n">0</b></button>
   <a class="navbtn" href="/ask">问答 →</a>
@@ -416,15 +423,55 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
 <script>
 const $ = id => document.getElementById(id);
 
-// —— 鉴权: 后台启用 LCLONE_API_KEY 时, 为所有 /api 请求自动带 X-API-Key ——
+// —— 鉴权: 401 是"未授权", 不是"没有数据" ——
+// 服务端对 /api/* 与 /mcp 用同一道闸门 (auth.py: env LCLONE_API_KEY 或库中受管 token)。
+// 这里只承担一件事: 把 401 显式翻译出来 —— 让每个面板都不再把未授权谎报成空清单。
+// 状态只由**服务端响应**驱动 (不再靠"localStorage 里有没有 key"去猜)。
+let AUTH_REQUIRED = false;   // 本页生命周期内回过 401; 注入/重输 key 后页面重载会自然清零
+
+function markAuthRequired() {
+  if (AUTH_REQUIRED) return;
+  AUTH_REQUIRED = true;
+  const el = document.getElementById('api-key');
+  if (el) { el.classList.add('need'); el.placeholder = '未授权 · 粘贴 API Key'; }
+  const note = document.getElementById('auth-note');
+  if (note) note.textContent = '未授权：需要 API Key';
+  showKeyHint(true);
+  evoRenderAuthNeeded();   // 面板(即使尚未打开)的文案必须是实话, 不能留"0 个资产"
+}
+function clearAuthRequired() {
+  if (!AUTH_REQUIRED) return;
+  AUTH_REQUIRED = false;
+  const el = document.getElementById('api-key');
+  if (el) { el.classList.remove('need'); el.placeholder = 'API Key'; }
+  const note = document.getElementById('auth-note');
+  if (note) note.textContent = '';
+}
+// 读接口统一入口: 401 抛「未授权」, 绝不把 401 的响应体当空数据渲染
+async function getJSON(url) {
+  const res = await fetch(url);
+  if (res.status === 401) { markAuthRequired(); throw new Error('未授权（需要 API Key）'); }
+  return res.json();
+}
+// 写接口同理: 401 必须抛错, 否则调用方会报出"已保存/已删除"这种假成功
+async function postJSON(url, body) {
+  const hasBody = body !== undefined;
+  const res = await fetch(url, { method: 'POST',
+    headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined });
+  if (res.status === 401) { markAuthRequired(); throw new Error('未授权（需要 API Key）'); }
+  return res.json();
+}
+// 有 key 就给所有 /api 请求带上; 同时把 401 记成"未授权"(响应仍原样返回给调用方)
 (function () {
   const KEY = (localStorage.getItem('lclone_api_key') || '').trim();
-  if (!KEY) return;
   const __f = window.fetch;
-  window.fetch = function (input, init) {
+  window.fetch = async function (input, init) {
     init = Object.assign({}, init || {});
-    init.headers = Object.assign({}, init.headers, { 'X-API-Key': KEY });
-    return __f.call(this, input, init);
+    if (KEY) init.headers = Object.assign({}, init.headers, { 'X-API-Key': KEY });
+    const res = await __f.call(this, input, init);
+    if (res && res.status === 401) markAuthRequired();
+    return res;
   };
 })();
 function saveKey() {
@@ -455,17 +502,17 @@ const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
 const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
 let CUR_MID = null;
 const API = {
-  projects: async () => (await (await fetch('/api/projects')).json()).items,
-  memories: async qs => (await fetch('/api/memories' + qs)).json(),
-  links: async () => (await fetch('/api/links')).json(),
-  remember: async body => (await fetch('/api/remember', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  promote: async id => (await fetch('/api/memories/'+id+'/promote', {method:'POST'})).json(),
-  demote: async (id, project_id) => (await fetch('/api/memories/'+id+'/demote', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({project_id})})).json(),
-  review: async body => (await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  addProject: async body => (await fetch('/api/projects', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})).json(),
-  sync: async id => (await fetch('/api/projects/'+id+'/sync', {method:'POST'})).json(),
-  removeProject: async id => (await fetch('/api/projects/'+id+'/remove', {method:'POST'})).json(),
-  restoreProject: async id => (await fetch('/api/projects/'+id+'/restore', {method:'POST'})).json(),
+  projects: async () => (await getJSON('/api/projects')).items,
+  memories: async qs => getJSON('/api/memories' + qs),
+  links: async () => getJSON('/api/links'),
+  remember: async body => postJSON('/api/remember', body),
+  promote: async id => postJSON('/api/memories/' + id + '/promote'),
+  demote: async (id, project_id) => postJSON('/api/memories/' + id + '/demote', { project_id }),
+  review: async body => postJSON('/api/review', body),
+  addProject: async body => postJSON('/api/projects', body),
+  sync: async id => postJSON('/api/projects/' + id + '/sync'),
+  removeProject: async id => postJSON('/api/projects/' + id + '/remove'),
+  restoreProject: async id => postJSON('/api/projects/' + id + '/restore'),
 };
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
                           .replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -476,23 +523,37 @@ window.addEventListener('unhandledrejection', e => {
 });
 const LN = { insight:'洞察', evolution:'进化' };
 
-function showKeyHint() {
+// auth=true 只在服务端真回过 401 时说"鉴权"; 其余失败如实说"加载失败", 不冒充鉴权提示
+function showKeyHint(auth) {
   const g = document.getElementById('graph');
-  if (g) g.innerHTML =
-    '<div style="text-align:center;margin:90px 24px;color:var(--dim);line-height:1.9">' +
-    '后台已开启鉴权（LCLONE_API_KEY）。<br>' +
-    '请在顶部 <b>API Key</b> 框粘贴 <code>LCLONE_API_KEY</code> 后回车，' +
-    '页面会自动刷新并加载记忆工作台。' +
-    '</div>';
+  if (!g) return;
+  g.innerHTML = auth
+    ? '<div style="text-align:center;margin:90px 24px;color:var(--dim);line-height:1.9">' +
+      '后端返回 <b>401 未授权</b>（后台已启用 LCLONE_API_KEY 鉴权，或当前 Key 已失效）。<br>' +
+      '请在顶部 <b>API Key</b> 框粘贴 <code>LCLONE_API_KEY</code> 后回车，' +
+      '页面会自动刷新并加载记忆工作台。' +
+      '</div>'
+    : '<div style="text-align:center;margin:90px 24px;color:var(--dim);line-height:1.9">' +
+      '记忆数据加载失败。<br>' +
+      '请确认后端服务在运行，然后点工具栏「刷新」重试。' +
+      '</div>';
 }
 async function loadAll() {
-  if (!localStorage.getItem('lclone_api_key')) { showKeyHint(); return; }
-  const [p, m, l, pend, evos] = await Promise.all([
-    API.projects(), API.memories('?status=active&limit=500'), API.links(),
-    (await fetch('/api/pending')).json(),
-    (await fetch('/api/evolutions')).json(),
-  ]);
-  if (!Array.isArray(p) || !m || !Array.isArray(m.items)) { showKeyHint(); return; }
+  // 不再以"localStorage 里有没有 key"作闸门: 那会把免鉴权的本地部署也误判成要输 key,
+  // 而"未授权"只能由服务端 401 说明 (getJSON 会置位并抛错)。
+  let p, m, l, pend, evos;
+  try {
+    [p, m, l, pend, evos] = await Promise.all([
+      API.projects(), API.memories('?status=active&limit=500'), API.links(),
+      getJSON('/api/pending'),
+      getJSON('/api/evolutions'),
+    ]);
+  } catch (e) {
+    showKeyHint(AUTH_REQUIRED);   // 401 时输入框/角标已由 markAuthRequired 点亮并给出台词
+    return;
+  }
+  if (!Array.isArray(p) || !m || !Array.isArray(m.items)) { showKeyHint(AUTH_REQUIRED); return; }
+  clearAuthRequired();   // 拉到了 = 鉴权通过, 撤掉上一次 401 的残留提示
   PROJS = p; MEMS = m.items; LINKS = (l && Array.isArray(l.items)) ? l.items : []; EVOS = (evos && evos.items) || [];
   // 进化资产 (文件式) 并入记忆流, 在「进化」档位按 文件名.类型 显示 (level=evolution)
   EVOS.forEach(e => {
@@ -1216,7 +1277,7 @@ async function evoToggleDeleted() {
   EVO_SHOW_DELETED = !EVO_SHOW_DELETED;
   evoSyncChrome();
   const err = await evoRefreshList();
-  evoNote(err ? ('资产清单加载失败: ' + err)
+  evoNote(err ? (AUTH_REQUIRED ? err : '资产清单加载失败: ' + err)
               : (EVO_SHOW_DELETED ? '已显示墓碑（已删除）资产：选中后可恢复。' : '已隐藏墓碑资产。'), !!err);
 }
 
@@ -1229,18 +1290,28 @@ function evoChip(ext) {
   return '<span class="evo-ic ' + cls + '">' + esc((ext || '·').slice(0, 3)) + '</span>';
 }
 
+// 清单读不到 ≠ 没有资产。401 / 网络失败都必须把面板文案改成实话,
+// 否则"服务器版本库 · 0 个资产"会让用户以为自己没有资产、被误导去用 CLI 沉淀。
+function evoRenderAuthNeeded() {
+  EVO_META = {};
+  const auth = AUTH_REQUIRED;
+  $('evo-path').textContent = auth ? '服务器版本库（需要 API Key）' : '服务器版本库（清单不可用）';
+  $('evo-list').innerHTML = auth
+    ? '<div class="evo-empty">未授权：需要 API Key<br><span style="color:var(--dim)">在顶部 API Key 框粘贴 LCLONE_API_KEY 后回车，页面会自动刷新。</span></div>'
+    : '<div class="evo-empty">资产清单加载失败<br><span style="color:var(--dim)">检查后端服务，或点工具栏「刷新」重试。</span></div>';
+  evoNote(auth ? '未授权：需要 API Key 才能读取服务器版本库。' : '资产清单加载失败。', true);
+}
 async function evoRefreshList() {
   let items, idx = {};
   const q = EVO_SHOW_DELETED ? '?include_deleted=true' : '';   // 墓碑只在显式要求时列举
   try {
-    const r = await (await fetch('/api/evolutions' + q)).json();
+    // 401 在这里抛「未授权」, 而不是把 {"error":"unauthorized"} 当成"空清单"
+    const r = await getJSON('/api/evolutions' + q);
     items = r.items || [];
     // 路径从服务器读 (看板由服务器提供, 该显示服务器的库位置, 不写死客户端路径)
-    try { idx = await (await fetch('/api/evolution/index' + q)).json(); } catch (e) { idx = {}; }
+    try { idx = await getJSON('/api/evolution/index' + q); } catch (e) { idx = {}; }
   } catch (e) {
-    EVO_META = {};
-    $('evo-path').textContent = '服务器版本库（清单不可用）';
-    $('evo-list').innerHTML = '<div class="evo-empty">资产清单加载失败</div>';
+    evoRenderAuthNeeded();
     return (e && e.message) || String(e);
   }
   EVO_META = {};
@@ -1295,7 +1366,7 @@ async function openEvoExplorer(name) {
   const err = await evoRefreshList();
   evoReset();
   $('evo-exp').classList.add('on');
-  if (err) evoNote('资产清单加载失败: ' + err, true);
+  if (err) evoNote(AUTH_REQUIRED ? err : ('资产清单加载失败: ' + err), true);
   if (name) await showEvo(name);
 }
 function closeEvoExp() { $('evo-exp').classList.remove('on'); }
@@ -1322,9 +1393,16 @@ async function delMem() {
 
 /* ---- 待确认洞察 (B 类确认关卡) ---- */
 async function openPending() {
-  const r = await (await fetch('/api/pending')).json();
-  const items = r.items || [];
   const box = $('pending-list');
+  let items = [];
+  try {
+    items = (await getJSON('/api/pending')).items || [];
+  } catch (e) {
+    // 401 / 网络失败不能在"待确认"里显示成"暂无" —— 那会让人以为真没有待确认项
+    box.innerHTML = '<div class="empty">读取失败：' + esc((e && e.message) || String(e)) + '</div>';
+    $('pending-modal').classList.add('on');
+    return;
+  }
   if (!items.length) box.innerHTML = '<div class="empty">暂无待确认洞察</div>';
   else box.innerHTML = items.map(m => `
     <div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px">
@@ -1409,19 +1487,21 @@ $('evo-nameinput').addEventListener('keydown', ev => {
 $('m-content').addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 (async function boot() {
-  const h = await (await fetch('/api/health')).json();
-  $('backend').textContent = '后端: ' + h.backend;
+  // /api/health 同样在鉴权闸门内: 401 时 h.ok 为 undefined, 不能显示成"后端: undefined"
+  let h = {};
+  try { h = await getJSON('/api/health'); } catch (e) { /* markAuthRequired 已置位并提示 */ }
+  $('backend').textContent = (h && h.ok) ? ('后端: ' + h.backend) : '后端: 未授权';
   await loadAll();
 })();
 
 // 待确认角标实时刷新: 后台插件会持续捕获, 角标不能只靠页面加载时刷新一次
 setInterval(async () => {
   try {
-    const r = await (await fetch('/api/pending')).json();
+    const r = await getJSON('/api/pending');
     const n = (r.items || []).length;
     $('pending-n').textContent = n;
     $('btn-pending').classList.toggle('hot', n > 0);
-  } catch (e) { /* 忽略轮询失败 */ }
+  } catch (e) { /* 轮询失败: 保留上一次角标, 不自造 0 (401 已由 markAuthRequired 提示) */ }
 }, 30000);
 
 </script>
