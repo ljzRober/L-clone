@@ -112,6 +112,7 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .modal-bg { display:none; position:fixed; inset:0; background:rgba(4,6,10,.62); backdrop-filter:blur(3px);
             z-index:40; align-items:center; justify-content:center; }
 .modal-bg.on { display:flex; }
+.modal-bg.on-top { z-index:60; }   /* 从引用条点进的记忆弹窗: 浮在进化面板之上 */
 .modal { width:min(520px,92vw); background:var(--surface); border:1px solid var(--line);
          border-radius:14px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,.5);
          max-height:88vh; overflow-y:auto; }
@@ -414,6 +415,7 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
           </div>
           <div class="evo-hlist" id="evo-hist-list"></div>
         </div>
+        <div class="evo-refs" id="evo-refs"></div>
         <div class="evo-note" id="evo-note"></div>
       </div>
     </div>
@@ -792,7 +794,7 @@ function zoom(f) {
 function zoomFit() { const svg = $('graph-svg'); if (svg) { svg.style.transform = 'scale(1)'; svg.style.transformOrigin = '0 0'; } }
 
 /* ---- 记忆弹窗 (查看/编辑/迁移/删除) ---- */
-function openMem(mid) {
+function openMem(mid, above) {
   const m = MEMS.find(x => x.id === mid); if (!m) return;
   CUR_MID = mid;
   $('m-title').textContent = '记忆详情';
@@ -806,12 +808,18 @@ function openMem(mid) {
   const build = [];
   outs.forEach(t => { const tm = MEMS.find(x => x.id === t); build.push(`<span>→ <a onclick="openMem(${t})">#${t}${tm ? ' · ' + esc(tm.content.slice(0, 14)) : ''}</a></span>`); });
   ins.forEach(s => { const sm = MEMS.find(x => x.id === s); build.push(`<span>← <a onclick="openMem(${s})">#${s}${sm ? ' · ' + esc(sm.content.slice(0, 14)) : ''}</a></span>`); });
+  // 进化资产引用: 洞察正文里的 [[evo:名字]] → 芯片, 点击跳到进化面板并选中该资产
+  (m.content.match(/\[\[evo:([^\]\n]+)\]\]/g) || []).forEach(tag => {
+    const name = tag.slice(6, -2);
+    build.push(`<span>→ <a onclick="openEvo('${esc(name)}')">${esc(name)}</a>（进化资产）</span>`);
+  });
   $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
   $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
+  $('modal').classList.toggle('on-top', !!above);   // 从引用条进入才置顶
   $('modal').classList.add('on');
 }
 // 进化资产的唯一编辑面 = 进化面板 (避免"看板卡片"与"面板"两处编辑入口分叉)
-function openEvo(name) { closeModal(); openEvoExplorer(name); }
+function openEvo(name) { closeModal(); $('modal').classList.remove('on-top'); openEvoExplorer(name); }
 
 /* ---- 进化资产编辑器 (可编辑性由服务端判定, 前端只镜像) ---- */
 const EVO_REASON = { binary:'二进制内容 · 只读', too_large:'超过可编辑上限 · 只读',
@@ -831,6 +839,29 @@ function evoNote(msg, isErr) {
   el.classList.toggle('err', !!isErr);
 }
 function evoReasonText(code) { return EVO_REASON[code] || ('不可编辑: ' + (code || '未知')); }
+// 反向引用条: 哪个洞察在支撑当前资产 (方向 ← 表示"被谁指向")。
+// 计数为 0 不隐藏而是显式说明"无人引用"——零引用是本次核查暴露过的问题, 不能靠隐身掩盖。
+function evoRenderRefs(name) {
+  const box = $('evo-refs');
+  if (!box) return;
+  const m = (EVO_META && EVO_META[name]) || null;
+  const refs = (m && Array.isArray(m.refs)) ? m.refs : null;
+  if (!refs) {
+    box.innerHTML = '';
+    return;
+  }
+  if (!refs.length) {
+    box.innerHTML = '<span class="evo-refs-empty">← 暂无洞察引用该资产（孤儿资产）</span>';
+    return;
+  }
+  const chips = refs.map(r => {
+    const who = r.project_name ? '项目「' + esc(r.project_name) + '」' : '全局层';
+    return `<button class="evo-ref" data-ref="${r.id}">← #${r.id} · ${esc(who)}</button>`;
+  }).join('');
+  // 外壳与芯片用 + 拼接而非模板插值: 含 ${} 的 sink 会落进 303 的 _unwrapped 白名单(本 change
+  // 无权扩), 而拼接形态能按 (选择器, RHS) 显式冻进 _DYN_SINKS —— 一处写清理由的可审计例外。
+  $('evo-refs').innerHTML = '<span class="evo-refs-sum">← ' + refs.length + ' 条洞察引用它：</span>' + chips;
+}
 
 // 409 分诊的**唯一出口** (publish 新建/保存、delete/restore、rename、rollback 共用) ——
 // 服务端把三种冲突都放在 detail 里 (web.py 的 _evo_conflict):
@@ -958,6 +989,7 @@ async function showEvo(name) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     evoRender(await r.json());
     await evoHistLoad(name);   // 先渲染资产再加载历史; 历史加载失败不影响资产渲染
+    evoRenderRefs(name);               // 反向引用随资产一起渲染 (历史预览不改它: 引用属于资产而非版本)
   } catch (e) {
     EVO_CUR = null;                   // 无选中态: 显隐交给 evoSyncChrome (不残留选择态按钮)
     $('evo-preview').textContent = '(读取失败)';
@@ -1336,7 +1368,9 @@ async function evoRefreshList() {
           const sz = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
           // 墓碑行: meta 前缀「已删除」, 改名场景指出新名字 (与其余动态内容一样经 esc)
           const tag = tomb ? ('已删除' + (m.renamed_to ? ' → ' + m.renamed_to : '') + ' · ') : '';
-          s += `<div class="evo-row${tomb ? ' tomb' : ''}" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(tag + v + sz)}</span></div>`;
+          const rc = (m.ref_count != null) ? m.ref_count : 0;
+          const refTag = tomb ? '' : ` · ${rc} 引用`;
+          s += `<div class="evo-row${tomb ? ' tomb' : ''}" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(tag + v + sz + refTag)}</span></div>`;
         }
       }
       return s;
@@ -1357,6 +1391,7 @@ function evoReset() {
   $('evo-editor').value = '';
   $('evo-preview').textContent = '点击左侧条目查看内容';
   $('evo-hist-list').innerHTML = '';
+  $('evo-refs').innerHTML = '';
   evoNote('可编辑资产点开后可直接改，保存会追加新版本。');
   evoSyncChrome();   // 显隐单一出口 (含 #evo-ver / #evo-editor / #evo-preview / #evo-back)
 }
@@ -1467,6 +1502,14 @@ $('modal').addEventListener('click', e => { if (e.target === $('modal')) closeMo
 $('evo-list').addEventListener('click', ev => {
   const row = ev.target && ev.target.closest ? ev.target.closest('.evo-row') : null;
   if (row && row.dataset.name) showEvo(row.dataset.name);
+});
+// 反向引用芯片: 只带整数 data-ref, 点击打开记忆弹窗并**置于进化面板之上** (above=true),
+// 关闭后仍回到面板 (面板本身没被关掉)。
+document.addEventListener('click', e => {
+  const chip = e.target.closest && e.target.closest('#evo-refs .evo-ref');
+  if (!chip) return;
+  const id = Number(chip.dataset.ref);
+  if (id) openMem(id, true);         // above=true: 弹窗浮在进化面板之上, 关闭后回到面板
 });
 // 历史行: 只带整数 data-prev / data-rollback (资产名绝不拼进行内处理器), 委托到 #evo-hist-list
 $('evo-hist-list').addEventListener('click', ev => {
