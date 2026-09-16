@@ -115,7 +115,7 @@ THEN 照常成卡——归属由数据库 project_id 表达，不再作为结构
 
 ### Requirement: 分工边界
 
-代码改动/接口变化/新增端点/重构/修 bug SHALL 归 git；需求/场景/⚠️边界变化 SHALL 归 sp-spec（openspec）；lclone 记忆 SHALL 只留**洞察(insight)**（原子化的知识/见解/教训）与**记录(note)**（过程事实）。边界判定遵循试金石：**内容能否改写成一条带 WHEN/THEN 的 requirement**。能 → 归 spec；不能（是理由/权衡/过程事实/偏好/经验教训）→ 归记忆。**引用纪律**：若 insight 明确对应仓库内某具体 spec / 源文件 / 进化资产，项目级记忆 SHALL 把 `[[spec:id]]` / `[[src:path]]` / `[[evo:名字]]` **就地写在提到它的那句话里**（link, not copy，权威内容留在仓库）；SHALL NOT 另起一行做引用列表（同一资产写两遍会渲染出两个相同引用、召回时也会重复带出）。全局级记忆无仓库上下文，不标此类链接（只有 `[[m:N]]`）。
+代码改动/接口变化/新增端点/重构/修 bug SHALL 归 git；需求/场景/⚠️边界变化 SHALL 归 sp-spec（openspec）；lclone 记忆 SHALL 只留**洞察(insight)**（原子化的知识/见解/教训）。边界判定遵循试金石：**内容能否改写成一条带 WHEN/THEN 的 requirement**。能 → 归 spec；不能（是理由/权衡/过程事实/偏好/经验教训）→ 归记忆。**引用纪律**：若 insight 明确对应仓库内某具体 spec / 源文件 / 进化资产，项目级记忆 SHALL 把 `[[spec:id]]` / `[[src:path]]` / `[[evo:名字]]` **就地写在提到它的那句话里**（link, not copy，权威内容留在仓库）；SHALL NOT 另起一行做引用列表（同一资产写两遍会渲染出两个相同引用、召回时也会重复带出）。全局级记忆无仓库上下文，不标此类链接（只有 `[[m:N]]`）。
 
 #### Scenario: 分类器排除代码改动
 
@@ -151,12 +151,12 @@ THEN 在 spec 建/改该 requirement；原记忆写入 `[[spec:id]]` 引用或�
 
 ### Requirement: 引用去重
 
-指向同一进化资产的引用 SHALL 在**一次召回**与**一次渲染**里只出现一次：一张洞察重复提及同一资产（例如正文里写了两遍 `[[evo:名字]]`）时，`insight→evolution` 边 SHALL 按资产名去重；召回顺边带出资产内容时 SHALL NOT 返回同一资产的多个副本；看板的引用芯片 SHALL 按资产名去重。去重键 SHALL 为**资产名**（不是版本号或内容哈希——同一资产的不同版本仍是同一资产）。
+指向同一进化资产的引用 SHALL 在**一次召回**里只出现一次：一张洞察重复提及同一资产（例如正文里写了两遍 `[[evo:名字]]`）时，`insight→evolution` 边 SHALL 按资产名去重；召回顺边带出资产内容时 SHALL NOT 返回同一资产的多个副本。去重键 SHALL 为**资产名**（不是版本号或内容哈希——同一资产的不同版本仍是同一资产）。
 
 #### Scenario: 同一张卡重复提及同一资产
 
 WHEN 一张洞察正文里出现两遍 `[[evo:tool.sh]]`
-THEN 反查与召回都只把它算作一次引用，看板只渲染一个芯片
+THEN 反查与召回都只把它算作一次引用
 
 #### Scenario: 两张卡指向同一资产
 
@@ -167,3 +167,26 @@ THEN 该资产的引用计数为 2（两条各算一次），但召回带出的�
 
 WHEN 同一资产已发布 v1 与 v2，洞察引用的是该资产名
 THEN 去重按名称进行，不因版本不同而重复带出
+
+### Requirement: 引用就地化
+
+`evolution_add` / `link_insight_to_evolution` 把一条**既有洞察**关联到某进化资产时，SHALL 把引用**就地追加**进卡片正文，SHALL NOT 在正文末尾另起一行：目标卡含「影响/以后注意」段时 SHALL 追加到该行的末尾（形如 `（关联资产：[[evo:名字]]）`），卡片行数 SHALL NOT 改变；目标卡没有该段时 SHALL 追加到**最后一个非空行**的末尾。重复关联同一资产 SHALL 幂等（卡片内容不变）。
+
+#### Scenario: 建链不新起行
+
+WHEN 通过 `evolution_add` / `link_insight_to_evolution` 把一个既有洞察关联到某资产
+THEN 引用追加在「影响/以后注意」那一行的末尾（形如 `（关联资产：[[evo:名字]]）`），卡片行数不变
+
+#### Scenario: 缺段兜底
+
+WHEN 目标卡没有「影响/以后注意」段
+THEN 追加到最后一个非空行末尾，SHALL NOT 新起一行
+
+### Requirement: 全局层注入上限
+
+会话首轮 bootstrap 注入【全局记忆】时 SHALL 最多注入最新 100 条全局洞察（默认 `global_limit=100`）；项目层上限 SHALL 保持 20 条不变；「每会话只注入一次」的既有语义 SHALL NOT 改变。
+
+#### Scenario: 默认上限 100
+
+WHEN 会话首轮 bootstrap 注入【全局记忆】
+THEN 最多注入最新 100 条全局洞察；项目层仍为 20 条，且「每会话只注入一次」的语义不变

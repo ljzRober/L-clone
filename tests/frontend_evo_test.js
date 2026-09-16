@@ -1186,28 +1186,40 @@ function decodeEntities(s) {
       + `draft=${JSON.stringify(byId['evo-editor'].value)}`);
   }
 
-  // 345 同一张卡重复提及同一资产 -> 记忆弹窗只出一个 [[evo:]] 芯片 (按名字去重)
+  // 345 同一张卡重复提及同一资产 -> 记忆弹窗只出一个 [[evo:]] 芯片 (按名字去重);
+  //     同一夹具带一条 [[m:N]] 链接, 让「#m-links 里不得有内联 handler / <a>」这条断言真正可被变异打红
   {
-    const { sandbox, byId } = loadSandbox();
+    const { sandbox, byId, docLs } = loadSandbox();
     sandbox.fetch = http([
       { match: '/api/projects', reply: () => okJson({ items: [] }) },
       { match: '/api/memories', reply: () => okJson({ items: [
         { id: 9, level: 'insight', project_id: null, created_at: 't', source_type: 'manual',
           content: '要点：用 dup.py 跑；再提 [[evo:dup.py]]，正文里又说 [[evo:dup.py]]。\n'
-            + '背景/为什么：验证去重 [[evo:dup.py]]。\n影响/以后注意：只应出一个芯片。' }] }) },
-      { match: '/api/links', reply: () => okJson({ items: [] }) },
+            + '背景/为什么：验证去重 [[evo:dup.py]]。\n影响/以后注意：只应出一个芯片。' },
+        { id: 3, level: 'insight', project_id: null, created_at: 't', source_type: 'manual',
+          content: '被指向的洞察' }] }) },
+      { match: '/api/links', reply: () => okJson({ items: [{ source_id: 9, target_id: 3 }] }) },
       { match: '/api/pending', reply: () => okJson({ items: [] }) },
       { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
       { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
     ]).f;
-    await sandbox.loadAll();          // 让 #9 进 MEMS, 否则 openMem 静默 return
+    await sandbox.loadAll();          // 让 #9/#3 进 MEMS, 否则 openMem 静默 return
     sandbox.openMem(9);
     const links = byId['m-links'].innerHTML;
     const chips = (links.match(/class="m-evo"/g) || []).length;
     const named = (links.match(/data-evo="dup\.py"/g) || []).length;
-    check('345 同一张卡重复提及同一资产只出一个芯片 (按名字去重)',
-      chips === 1 && named === 1 && links.indexOf('onclick') < 0,
-      `chips=${chips} named=${named} links=${links}`);
+    // [[m:N]] 链接芯片必须是 <button class="m-mem" data-mem="N"> (键盘可达), 不再是 <a onclick=...>
+    const memBtns = (links.match(/class="m-mem" data-mem="3"/g) || []).length;
+    check('345 同一张卡重复提及同一资产只出一个芯片; 记忆链接芯片为无内联 handler 的 button',
+      chips === 1 && named === 1 && memBtns === 1
+      && links.indexOf('onclick') < 0 && links.indexOf('<a') < 0,
+      `chips=${chips} named=${named} memBtns=${memBtns} links=${links}`);
+    // 345b 事件委托分支可达: 点 [[m:N]] 芯片 -> openMem(该 id) (与 341 的 m-evo 分支同构)
+    const n = docClick(docLs, { '#m-links .m-mem': { dataset: { mem: '3' } } });
+    check('345b 点 [[m:N]] 芯片经委托分支打开该记忆 (dataset.mem 逐字传到 openMem)',
+      n > 0 && byId['m-content'].value === '被指向的洞察'
+      && byId['m-meta'].textContent.indexOf('#3') >= 0,
+      `n=${n} content=${JSON.stringify(byId['m-content'].value)} meta=${byId['m-meta'].textContent}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));

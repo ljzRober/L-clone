@@ -330,7 +330,7 @@ tmp_home = pathlib.Path(tempfile.mkdtemp(prefix="brain_home_"))
 res = install_mod.install_skill(tmp_home)
 check("63 install_skill 装到临时家目录",
       "已安装" in res and (tmp_home / ".agents/skills/lclone-memory/SKILL.md").exists())
-items = doctor.check_all(home=tmp_home)
+items = doctor.check_all(home=tmp_home, db_path=dbp)
 names = {i["name"] for i in items}
 check("64 doctor 返回清单", "skill 已装" in names and "配置 .env" in names)
 skill_ok = next(i for i in items if i["name"] == "skill 已装")
@@ -2049,9 +2049,10 @@ _IDENT_SINKS = {
 # `= '<svg>' + svg + '</svg>'`) 就匹配不上 -> FAIL。纯字面量 sink 无需登记 (没有动态值就没有转义问题)。
 _DYN_SINKS = {
     ("#m-links", "build.length ? '链接：' + build.join('') : '链接：无'"):
-        "#m-links 的链接串: 由同函数 build.push 逐段拼装 (index.html:736-737:"
-        " onclick 里的 #{id} 是整数, 正文已 esc(content.slice(0,14))); 既有代码, 本 change 未触碰"
-        " —— 显式冻结为例外",
+        "#m-links 的链接串: 由同函数 build.push 逐段拼装 (index.html:825-831:"
+        " 记忆链接芯片 <button class=\"m-mem\" data-mem> 与 [[evo:]] 芯片 <button class=\"m-evo\""
+        " data-evo> 都不含行内 handler, #{id} 是整数, 正文已 esc(content.slice(0,14)));"
+        " RHS 原文本 change 未触碰 —— 显式冻结为例外",
     # --- 下面三条是**基线 52366a0 遗留**的未登记 sink (该 commit 只改 index.html, 没同步本登记表),
     #     与 insight-evolution-backlinks 无关; 三条都无新增转义面, 按本检查的规则显式冻结 ---
     ("#evo-list",
