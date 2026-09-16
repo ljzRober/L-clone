@@ -2746,7 +2746,7 @@ llm_mod.chat = lambda *a, **k: "要点：结论。\n背景/为什么：因为。
 check("348 归属为空不再构成拒绝 (旧规则已删)", len(llm_mod.extract_memories("用户：x\n助手：y")) == 1)
 llm_mod.chat, llm_mod.backend = _orig_chat_345, _orig_backend_345
 
-# 引用去重: 同一张卡重复提及同一资产 → 只带出一次
+# 引用去重: 同一张卡重复提及同一资产 → 只带出一次; **两张卡**指向同一资产 → recall 也只带出一次
 _dup_conn = db_mod.init(os.path.join(tmp, "dupevo.db"))
 _dup_pid = proj_mod.add_project(_dup_conn, "dup", str(demo_root), "")
 mem_mod.create_evolution(_dup_conn, name="dup-tool.py", kind="tool", content="print(1)",
@@ -2755,19 +2755,76 @@ _dup_ins = mem_mod.remember(_dup_conn,
     "要点：用 dup-tool 跑；再提一次 [[evo:dup-tool.py]]，正文里又说 [[evo:dup-tool.py]]。\n"
     "背景/为什么：验证去重。\n影响/以后注意：只应带出一次。", level="insight",
     project_id=None, confirmed=True)
+# 第二张卡也指向同一资产: 只有它在场, 才能独立锁住 recall 循环里的 seen_evo (跨卡去重)
+_dup_ins2 = mem_mod.remember(_dup_conn,
+    "要点：第二张卡也指向同一资产 [[evo:dup-tool.py]]。\n"
+    "背景/为什么：跨卡只该带出一个资产条目。\n影响/以后注意：反向引用按卡计数。",
+    level="insight", project_id=None, confirmed=True)
 _evs = mem_mod.evolutions_for_insight(_dup_conn, _dup_ins)
 check("349 evolutions_for_insight 按资产名去重", len(_evs) == 1, f"n={len(_evs)}")
+# 反向引用按**卡**计数: 两张卡各算一次, 第一张卡里的两遍只算一次 → 恰好 2
+_dup_refs = mem_mod.insights_for_evolution(_dup_conn, "dup-tool.py")
+check("349b insights_for_evolution 按卡计数 (卡内重复不重复计数)",
+      len(_dup_refs) == 2 and {r["id"] for r in _dup_refs} == {_dup_ins, _dup_ins2},
+      f"n={len(_dup_refs)} ids={sorted(r['id'] for r in _dup_refs)}")
 _rl = mem_mod.recall(_dup_conn, "dup-tool 去重", k=5, project_id=None, follow_links=True)
 _evo_hits = [x for x in _rl if x.get("via_evolution")]
-check("350 recall 边扩展同一资产只出现一次",
-      len(_evo_hits) == len({x.get("evo_name") for x in _evo_hits}), f"hits={len(_evo_hits)}")
+check("350 recall 边扩展同一资产只出现一次 (含跨卡)",
+      len(_evo_hits) == len({x.get("evo_name") for x in _evo_hits})
+      and sum(1 for x in _evo_hits if x.get("evo_name") == "dup-tool.py") == 1,
+      f"hits={len(_evo_hits)} names={[x.get('evo_name') for x in _evo_hits]}")
 _dup_conn.close()
+
+# 引用就地追加 (link_insight_to_evolution): 不再末尾新起一行, 而是挂到「影响/以后注意」段末尾
+_lki_conn = db_mod.init(os.path.join(tmp, "linkinplace.db"))
+_lki_src = "要点：用统一脚本跑。\n背景/为什么：省事。\n影响/以后注意：记得加执行位。"
+_lki_ins = mem_mod.remember(_lki_conn, _lki_src, level="insight",
+                            project_id=None, confirmed=True)
+mem_mod.create_evolution(_lki_conn, name="x.sh", kind="script", content="echo x",
+                         project_id=None)
+mem_mod.link_insight_to_evolution(_lki_conn, _lki_ins, "x.sh")
+_lki_after = _lki_conn.execute("SELECT content FROM memories WHERE id=?",
+                               (_lki_ins,)).fetchone()["content"]
+_lki_lines = _lki_after.splitlines()
+check("352 引用就地追加: 行数不变 (不再新起一行)",
+      _lki_after.count("\n") == _lki_src.count("\n")
+      and len(_lki_lines) == len(_lki_src.splitlines()),
+      f"lines={len(_lki_lines)} vs {len(_lki_src.splitlines())} content={_lki_after!r}")
+_lki_impact = next((ln for ln in _lki_lines if ln.strip().startswith("影响")), "")
+check("353 引用落在「影响/以后注意」段末尾",
+      _lki_impact.rstrip().endswith("（关联资产：[[evo:x.sh]]）")
+      and _lki_impact.rstrip().startswith("影响/以后注意：记得加执行位。"),
+      _lki_impact)
+mem_mod.link_insight_to_evolution(_lki_conn, _lki_ins, "x.sh")
+_lki_again = _lki_conn.execute("SELECT content FROM memories WHERE id=?",
+                               (_lki_ins,)).fetchone()["content"]
+check("354 就地链接幂等 (重复调用内容不变)",
+      _lki_again == _lki_after and _lki_again.count("[[evo:x.sh]]") == 1,
+      f"count={_lki_again.count('[[evo:x.sh]]')}")
+check("355 就地链接后可顺边反查资产",
+      any(e["name"] == "x.sh" for e in mem_mod.evolutions_for_insight(_lki_conn, _lki_ins))
+      and any(r["id"] == _lki_ins
+              for r in mem_mod.insights_for_evolution(_lki_conn, "x.sh")))
+_lki_conn.close()
 
 # 全局层上限默认 100
 import inspect as _insp
 check("351 bootstrap 全局层默认上限 100",
       _insp.signature(mem_mod.bootstrap).parameters["global_limit"].default == 100
       and _insp.signature(mem_mod.bootstrap).parameters["project_limit"].default == 20)
+# 上限必须是**行为**可测的: 连写 25 张各带独有指纹的全局卡, 默认值若退回 20, 会有 5 张的指纹
+# 在注入文本里缺席 (只断言签名默认值挡不住"读了但被截断"的回归)。
+_bl_conn = db_mod.init(os.path.join(tmp, "bootlimit.db"))
+_bl_fps = [f"BOOTFP{i:02d}ZQ" for i in range(25)]
+for _fp in _bl_fps:
+    mem_mod.remember(_bl_conn,
+                     f"要点：全局卡 {_fp}。\n背景/为什么：验证注入上限。\n影响/以后注意：都该注入。",
+                     level="insight", project_id=None, confirmed=True)
+_bl_text = mem_mod.bootstrap(_bl_conn)
+_bl_missing = [fp for fp in _bl_fps if fp not in _bl_text]
+check("356 bootstrap 默认上限 100 真的注入全部 25 张 (行为, 非仅签名)",
+      not _bl_missing, f"missing={_bl_missing}")
+_bl_conn.close()
 
 print()
 if fails:

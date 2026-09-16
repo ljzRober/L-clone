@@ -1186,6 +1186,30 @@ function decodeEntities(s) {
       + `draft=${JSON.stringify(byId['evo-editor'].value)}`);
   }
 
+  // 345 同一张卡重复提及同一资产 -> 记忆弹窗只出一个 [[evo:]] 芯片 (按名字去重)
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/projects', reply: () => okJson({ items: [] }) },
+      { match: '/api/memories', reply: () => okJson({ items: [
+        { id: 9, level: 'insight', project_id: null, created_at: 't', source_type: 'manual',
+          content: '要点：用 dup.py 跑；再提 [[evo:dup.py]]，正文里又说 [[evo:dup.py]]。\n'
+            + '背景/为什么：验证去重 [[evo:dup.py]]。\n影响/以后注意：只应出一个芯片。' }] }) },
+      { match: '/api/links', reply: () => okJson({ items: [] }) },
+      { match: '/api/pending', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+    ]).f;
+    await sandbox.loadAll();          // 让 #9 进 MEMS, 否则 openMem 静默 return
+    sandbox.openMem(9);
+    const links = byId['m-links'].innerHTML;
+    const chips = (links.match(/class="m-evo"/g) || []).length;
+    const named = (links.match(/data-evo="dup\.py"/g) || []).length;
+    check('345 同一张卡重复提及同一资产只出一个芯片 (按名字去重)',
+      chips === 1 && named === 1 && links.indexOf('onclick') < 0,
+      `chips=${chips} named=${named} links=${links}`);
+  }
+
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));
   process.exit(fails.length ? 1 : 0);
 })().catch(e => {
