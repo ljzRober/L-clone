@@ -9,7 +9,7 @@
 ## What it does
 
 - **Layered memory**: session stream (L0) → insights (L1) → project spec index (L2)
-- **Insight, not raw recording**: every memory is an **atomic, self-contained knowledge card** (a decision / an experience / an observation / a lesson) written in a 4-segment form — *point ｜ background/why ｜ impact/what to watch for ｜ attribution* — so each is independently readable
+- **Insight, not raw recording**: every memory is an **atomic, self-contained knowledge card** (a decision / an experience / an observation / a lesson) written in a 3-segment form — *point ｜ background/why ｜ impact/what to watch for* — so each is independently readable; references to evolution assets or specs are written inline
 - **Recall loop**: new sessions automatically recall related insights and answer "where did I leave off / what did we decide"
 - **Spec loop**: new proposals are checked against a project spec's boundary conditions, producing a ✅ pass / ⚠️ warn / ❌ fail report
 - **Write modes**: automatic capture (B, AI distills → you confirm) and active memory (C, your call); **insights take effect only after you approve them** — every entry is traceable to its source

@@ -34,7 +34,7 @@ def starter_dir() -> Path:
 
 
 def _parse_insights(path: Path) -> List[Tuple[str, str]]:
-    """解析 insights.md: 每个 `## 标题` 块一条, 标题作稳定 key, 其余为四段卡正文。"""
+    """解析 insights.md: 每个 `## 标题` 块一条, 标题作稳定 key, 其余为三段卡正文。"""
     if not path.exists():
         return []
     text = path.read_text(encoding="utf-8")
