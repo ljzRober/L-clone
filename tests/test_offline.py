@@ -2598,6 +2598,67 @@ check("334 反向引用只取 active",
       f"pend={_pend} act={_act}")
 _cl_conn.close()
 
+# ---- 335-337: index 的 ref_count/refs 在 REST 层留痕 (含零引用与 /api/evolutions 形状) ----
+try:
+    from fastapi.testclient import TestClient as _TCRef
+    _ref_root = tempfile.mkdtemp(prefix="evoref_")
+    _ref_dbp = os.path.join(_ref_root, "ref.db")
+    _ref_conn = db_mod.init(_ref_dbp)
+    _ref_pid = proj_mod.add_project(_ref_conn, "clref", str(demo_root), "")
+    _ref_mid = mem_mod.remember(
+        _ref_conn,
+        "要点：反向引用 REST 卡 [[evo:ref-smoke.txt]]。\n背景/为什么：验证 index 下发引用。\n"
+        "影响/以后注意：ref_count/refs 必须能反查。\n归属：无",
+        level="insight", project_id=_ref_pid, confirmed=True)
+    _ref_conn.close()
+    from lclone import web as _wm_ref
+    _tc_ref = _TCRef(_wm_ref.create_app(_ref_dbp))
+    _tc_ref.post("/api/evolution/publish", json={"name": "ref-smoke.txt", "content": "v1"})
+    _tc_ref.post("/api/evolution/publish", json={"name": "ref-orphan.txt", "content": "v1"})
+    _ref_items = {x["name"]: x for x in _tc_ref.get("/api/evolution/index").json()["items"]}
+    _ref_hit, _ref_orphan = _ref_items["ref-smoke.txt"], _ref_items["ref-orphan.txt"]
+    check("335 index 下发 ref_count/refs 且 refs 带 project_name",
+          _ref_hit["ref_count"] == 1 and len(_ref_hit["refs"]) == 1
+          and _ref_hit["refs"][0] == {"id": _ref_mid, "project_id": _ref_pid,
+                                      "project_name": "clref"},
+          str(_ref_hit.get("refs")))
+    check("336 零引用资产是 0/[] (不是 null 也不是字段缺失)",
+          _ref_orphan.get("ref_count") == 0 and _ref_orphan.get("refs") == [],
+          f"ref_count={_ref_orphan.get('ref_count')!r} refs={_ref_orphan.get('refs')!r}")
+    _ref_ev = [x for x in _tc_ref.get("/api/evolutions").json()["items"]
+               if x.get("name") == "ref-smoke.txt"]
+    check("337 /api/evolutions 形状不变 (条目不含 ref_count/refs)",
+          bool(_ref_ev) and "ref_count" not in _ref_ev[0] and "refs" not in _ref_ev[0],
+          "未找到 ref-smoke.txt" if not _ref_ev else str(sorted(_ref_ev[0])))
+except ImportError as _e_ref:  # 无 fastapi 环境跳过
+    print(f"SKIP 335-337 (fastapi 未安装: {_e_ref})")
+
+# ---- 338: seed dry_run 不依赖 embedder 可达 (桩化 embed_one 必须不被调用) ----
+_stub_conn = db_mod.init(os.path.join(tmp, "seed_dry_stub.db"))
+_orig_embed_one = mem_mod.llm.embed_one
+_stub_calls: list = []
+
+
+def _boom_embed_one(_text):
+    _stub_calls.append(_text)
+    raise AssertionError("dry_run 不应调用 embedder")
+
+
+try:
+    mem_mod.llm.embed_one = _boom_embed_one
+    _stub_rep = seed_mod.apply(_stub_conn, dry_run=True)
+    _stub_err = None
+except Exception as _e_stub:  # noqa: BLE001 - 桩抛出的异常即失败信号
+    _stub_rep, _stub_err = {}, _e_stub
+finally:
+    mem_mod.llm.embed_one = _orig_embed_one
+check("338 seed dry_run 不调用 embedder (无 embedder 也能出报告)",
+      _stub_err is None and not _stub_calls
+      and _stub_rep.get("starter_missing") is False
+      and len(_stub_rep.get("insights_added", [])) == 4,
+      f"err={_stub_err!r} calls={len(_stub_calls)} added={len(_stub_rep.get('insights_added', []))}")
+_stub_conn.close()
+
 print()
 if fails:
     print("FAILED:", fails)

@@ -114,10 +114,12 @@ def apply(conn: sqlite3.Connection, force: bool = False,
         if exists or (_seeded(conn, state_key) and not force):
             report["insights_skipped"].append(key)
             continue
-        emb = llm.embed_one(content)
+        emb = None if dry_run else llm.embed_one(content)
         # 库里已有语义/文本近乎相同的记忆 → 不种, 免得制造重复 (跨层: 任意项目里已有等价卡也算)
-        if mem_mod._is_text_duplicate(conn, content, None, cross_layer=True) \
-                or mem_mod._is_duplicate(conn, emb, None, cross_layer=True):
+        # 文本级查重零成本先做; 向量查重只在非 dry_run 做 (dry_run 不得依赖 embedder 可达)
+        dup = mem_mod._is_text_duplicate(conn, content, None, cross_layer=True) or (
+            emb is not None and mem_mod._is_duplicate(conn, emb, None, cross_layer=True))
+        if dup:
             report["insights_skipped"].append(key)
             if not dry_run:
                 _mark(conn, state_key)
