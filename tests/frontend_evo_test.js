@@ -56,7 +56,7 @@ El.prototype.closest = function () { return null; };
 
 const IDS = ['graph', 'graph-sum', 'graph-svg', 'pending-n', 'btn-pending', 'm-owner',
              'evo-exp', 'evo-list', 'evo-path', 'evo-pname', 'evo-ver', 'evo-reason',
-             'evo-editor', 'evo-save', 'evo-preview', 'evo-note'];
+             'evo-editor', 'evo-save', 'evo-preview', 'evo-note', 'evo-refs', 'modal'];
 
 function loadSandbox() {
   const byId = {};
@@ -70,12 +70,15 @@ function loadSandbox() {
     get() { return _edVal; },
     set(v) { _edVal = String(v == null ? '' : v).replace(/\r\n?/g, '\n'); },
   });
+  // document 级 click 委托 (引用芯片 / [[evo:]] 芯片都挂在这里): 桩原先直接丢弃监听,
+  // 于是这两条跳转路径在桩里**永不可达** —— 现记录并在 docClick() 里真正派发。
+  const docLs = {};
   const document = {
     getElementById(id) { if (!byId[id]) { byId[id] = new El('div'); byId[id].id = id; } return byId[id]; },
     createElement(t) { return new El(t); },
     querySelectorAll() { return []; },
     querySelector() { return null; },
-    addEventListener() {},
+    addEventListener(t, fn) { (docLs[t] = docLs[t] || []).push(fn); },
     body: new El('body'),
   };
   const alerts = [];
@@ -94,12 +97,20 @@ function loadSandbox() {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(code, sandbox, { filename: 'index.html', timeout: 5000 });
-  return { sandbox, byId, alerts };
+  return { sandbox, byId, alerts, docLs };
 }
 
 // 触发 #evo-list 的 click 处理器 (桩没有真 DOM 树, 用 closestMap 指定 .evo-row 命中)
 function click(byId, id, closestMap) {
   const fns = (byId[id] && byId[id]._ls && byId[id]._ls.click) || [];
+  const ev = { target: { closest: sel => closestMap[sel] || null } };
+  fns.forEach(fn => fn(ev));
+  return fns.length;
+}
+
+// 派发 document 上的 click 委托 (同样用 closestMap 指定命中的元素 —— 桩无真 DOM 树)
+function docClick(docLs, closestMap) {
+  const fns = (docLs && docLs.click) || [];
   const ev = { target: { closest: sel => closestMap[sel] || null } };
   fns.forEach(fn => fn(ev));
   return fns.length;
@@ -1017,6 +1028,162 @@ function decodeEntities(s) {
       notDirty && editorNorm && body.content === 'a\r\nb'
       && /未产生新版本/.test(byId['evo-note'].textContent),
       `dirty=${sandbox.evoDirty()} editor=${JSON.stringify(byId['evo-editor'].value)} sent=${JSON.stringify(body.content)} note=${byId['evo-note'].textContent}`);
+  }
+
+  // 339 引用条三态: 有引用 (芯片数 = refs 长度 + 层级文案) / 零引用显式 / 索引缺失(=未知, 不得留白)
+  {
+    const mk = async items => {
+      const s = loadSandbox();
+      s.sandbox.fetch = http([
+        { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+        { match: '/api/evolution/index', reply: () => okJson({ items, dirs: {} }) },
+      ]).f;
+      await s.sandbox.evoRefreshList();
+      return s;
+    };
+    const a = await mk([{ name: 'r.txt', version: 1, base_version: 1, editable: true,
+      ref_count: 3, refs: [
+        { id: 7, project_id: 2, project_name: 'proj' },
+        { id: 8, project_id: 3, project_name: '' },      // JOIN 落空: 仍是项目层, 不得标成全局层
+        { id: 9, project_id: null, project_name: null }] }]);
+    a.sandbox.evoRenderRefs('r.txt');
+    const withRefs = a.byId['evo-refs'].innerHTML;
+    const b = await mk([{ name: 'z.txt', version: 1, base_version: 1, editable: true,
+      ref_count: 0, refs: [] }]);
+    b.sandbox.evoRenderRefs('z.txt');
+    const zeroRefs = b.byId['evo-refs'].innerHTML;
+    // 索引请求失败 (无该路由 -> idx={}) / 该资产不在索引里 -> EVO_META 空 -> refs 未知
+    const c = loadSandbox();
+    c.sandbox.fetch = http([{ match: '/api/evolutions', reply: () => okJson({ items: [] }) }]).f;
+    await c.sandbox.evoRefreshList();
+    c.sandbox.evoRenderRefs('not-indexed.txt');
+    const unknown = c.byId['evo-refs'].innerHTML;
+    const chips = (withRefs.match(/class="evo-ref"/g) || []).length;
+    check('339 引用条三态: 有引用/零引用显式/元数据缺失给"未加载"而非留白',
+      chips === 3 && withRefs.indexOf('#7') >= 0 && withRefs.indexOf('项目「proj」') >= 0
+      && withRefs.indexOf('项目「」') >= 0 && withRefs.indexOf('全局层') >= 0
+      && /暂无洞察引用/.test(zeroRefs)
+      && unknown.length > 0 && /引用信息未加载/.test(unknown) && !/暂无洞察引用/.test(unknown),
+      `chips=${chips} with=${withRefs.slice(0, 200)} zero=${zeroRefs} unknown=${unknown}`);
+  }
+
+  // 340 点引用芯片 -> 用整数 data-ref 打开对应记忆弹窗并**置于面板之上** (document 委托真正可达)
+  {
+    const { sandbox, byId, docLs } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/projects', reply: () => okJson({ items: [] }) },
+      { match: '/api/memories', reply: () => okJson({ items: [
+        { id: 7, level: 'insight', project_id: null, content: '被引用的洞察',
+          created_at: 't', source_type: 'manual' }] }) },
+      { match: '/api/links', reply: () => okJson({ items: [] }) },
+      { match: '/api/pending', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+    ]).f;
+    await sandbox.loadAll();   // openMem 靠 MEMS.find: 先让 #7 进 MEMS, 否则静默 return 看不出问题
+    const n = docClick(docLs, { '#evo-refs .evo-ref': { dataset: { ref: '7' } } });
+    check('340 点引用芯片打开该记忆弹窗并置顶 (above=true)',
+      n > 0 && byId['modal'].classList.contains('on')
+      && byId['modal'].classList.contains('on-top')
+      && byId['m-content'].value === '被引用的洞察'
+      && byId['m-meta'].textContent.indexOf('#7') >= 0,
+      `n=${n} onTop=${byId['modal'].classList.contains('on-top')} `
+      + `content=${JSON.stringify(byId['m-content'].value)} meta=${byId['m-meta'].textContent}`);
+  }
+
+  // 341 点记忆详情里的 [[evo:]] 芯片 -> 用 dataset.evo 打开发送该名字的进化面板 (委托分支可达)
+  {
+    const { sandbox, byId, docLs } = loadSandbox();
+    const h = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [], dirs: {} }) },
+      // 资产内容没有路由 -> showEvo 落到"读取失败", 但请求 URL 已经证明名字逐字传到了这里
+    ]);
+    sandbox.fetch = h.f;
+    byId['modal'].classList.add('on'); byId['modal'].classList.add('on-top');   // 从引用条进来时是置顶态
+    const n = docClick(docLs, { '#m-links .m-evo': { dataset: { evo: 'note.md' } } });
+    await new Promise(r => setTimeout(r, 0));
+    const hit = h.seen.find(x => x.url.indexOf('/api/evolution/content') >= 0) || {};
+    check('341 点资产芯片用 dataset.evo 调 openEvo 并打开面板 (置顶态被清)',
+      n > 0 && hit.url.indexOf('name=' + encodeURIComponent('note.md')) >= 0
+      && byId['evo-exp'].classList.contains('on')
+      && !byId['modal'].classList.contains('on-top') && !byId['modal'].classList.contains('on'),
+      `n=${n} url=${hit.url} exp=${byId['evo-exp'].classList.contains('on')} `
+      + `onTop=${byId['modal'].classList.contains('on-top')}`);
+  }
+
+  // 342 关闭弹窗必须清掉置顶态 (否则关掉后仍压着进化面板)
+  {
+    const { sandbox, byId } = loadSandbox();
+    byId['modal'].classList.add('on'); byId['modal'].classList.add('on-top');
+    sandbox.closeModal();
+    check('342 closeModal 清掉 on 与 on-top',
+      !byId['modal'].classList.contains('on') && !byId['modal'].classList.contains('on-top'),
+      `cls=${JSON.stringify(byId['modal']._cls)}`);
+  }
+
+  // 343 清单行引用计数: 真的 0 才显示「0 引用」, 取不到 (索引里没有该字段) 就不显示计数
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.fetch = http([
+      { match: '/api/evolutions', reply: () => okJson({ items: [
+        { name: 'zero.txt', ext: 'txt', size: 1, mtime: 't', is_dir: false, content: 'a' },
+        { name: 'some.txt', ext: 'txt', size: 1, mtime: 't', is_dir: false, content: 'b' },
+        { name: 'unk.txt', ext: 'txt', size: 1, mtime: 't', is_dir: false, content: 'c' }] }) },
+      { match: '/api/evolution/index', reply: () => okJson({ items: [
+        { name: 'zero.txt', version: 1, base_version: 1, editable: true, ref_count: 0, refs: [] },
+        { name: 'some.txt', version: 2, base_version: 2, editable: true, ref_count: 3, refs: [] },
+        { name: 'unk.txt', version: 1, base_version: 1, editable: true }], dirs: {} }) },
+    ]).f;
+    await sandbox.evoRefreshList();
+    const list = byId['evo-list'].innerHTML;
+    const seg = n => { const i = list.indexOf(n); return i < 0 ? '(缺行)' : list.slice(i, i + 160); };
+    const zeroSeg = seg('zero.txt'), someSeg = seg('some.txt'), unkSeg = seg('unk.txt');
+    check('343 引用计数: 真 0 显式显示, 取不到不显示 (不对未知断言 0)',
+      zeroSeg.indexOf('· 0 引用') >= 0 && someSeg.indexOf('· 3 引用') >= 0
+      && unkSeg.indexOf('引用') < 0,
+      `zero=${zeroSeg} | some=${someSeg} | unk=${unkSeg}`);
+  }
+
+  // 344 记忆增删改后刷新引用信息: 引用条跟着变, 但**不得**丢编辑器草稿、不得多弹一次放弃确认
+  // (I2: 若用 showEvo 刷新, evoConfirmDiscard 会弹框并重载编辑器内容 = 草稿被丢)
+  {
+    const { sandbox, byId } = loadSandbox();
+    let refsNow = [{ id: 7, project_id: null, project_name: null }];
+    let idxCalls = 0;
+    const h = http([
+      { match: '/api/evolution/content', reply: () => okJson(CONTENT({ name: 'a.md', content: 'body', base_version: 1 })) },
+      { match: '/api/evolution/history', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [
+        { name: 'a.md', ext: 'md', size: 4, mtime: 't', is_dir: false, content: 'body' }] }) },
+      { match: '/api/evolution/index', reply: () => { idxCalls++; return okJson({ items: [
+        { name: 'a.md', version: 1, base_version: 1, editable: true,
+          ref_count: refsNow.length, refs: refsNow }], dirs: {} }); } },
+      { match: '/api/projects', reply: () => okJson({ items: [] }) },
+      { match: '/api/memories', reply: () => okJson({ items: [
+        { id: 7, level: 'insight', project_id: null, content: '被引用的洞察',
+          created_at: 't', source_type: 'manual' }] }) },
+      { match: '/api/links', reply: () => okJson({ items: [] }) },
+      { match: '/api/pending', reply: () => okJson({ items: [] }) },
+      { match: '/api/review', reply: () => { refsNow = []; return okJson({ ok: true }); } },
+    ]);
+    sandbox.fetch = h.f;
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return true; };
+    await sandbox.loadAll();
+    await sandbox.openEvoExplorer('a.md');          // 面板打开并选中 a.md -> EVO_SEL='a.md'
+    sandbox.openMem(7, true);                       // 走引用条入口打开记忆弹窗 (CUR_MID=7)
+    byId['evo-editor'].value = '我的未保存草稿';      // 面板里还有未保存草稿
+    const before = idxCalls;
+    await sandbox.delMem();                         // 删掉该记忆 -> 引用条应刷新为 0
+    const refsHtml = byId['evo-refs'].innerHTML;
+    check('344 删记忆后引用条刷新 (不丢草稿, 不多弹放弃确认)',
+      idxCalls > before && confirms === 1
+      && refsHtml.indexOf('暂无洞察引用') >= 0
+      && byId['evo-editor'].value === '我的未保存草稿'
+      && !byId['modal'].classList.contains('on-top'),
+      `idx ${before}->${idxCalls} confirms=${confirms} refs=${refsHtml} `
+      + `draft=${JSON.stringify(byId['evo-editor'].value)}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));

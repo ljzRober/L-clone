@@ -629,6 +629,7 @@ async function delProject(p) {
   catch (e) { alert('删除失败: ' + ((e && e.message) || e)); return; }
   EXPANDED.delete(p.id);
   await loadAll();
+  await refreshEvoMetaIfOpen();   // 墓碑式删除会改变该项目记忆的加载状态 -> 引用条要跟着刷
   alert(`已删除项目「${p.name}」(数据保留, 可撤销)`);
 }
 
@@ -861,7 +862,9 @@ function evoRenderRefs(name) {
   const m = (EVO_META && EVO_META[name]) || null;
   const refs = (m && Array.isArray(m.refs)) ? m.refs : null;
   if (!refs) {
-    box.innerHTML = '';
+    // refs 缺失 = 该资产不在索引里、或索引请求失败: 这是「未知」。
+    // 清空等于把信息藏起来, 写 0 又是对未知的肯定断言 —— 故给一个区别于零引用的显式文案。
+    box.innerHTML = '<span class="evo-refs-empty">← 引用信息未加载（该资产不在索引中，或索引请求失败）</span>';
     return;
   }
   if (!refs.length) {
@@ -869,12 +872,22 @@ function evoRenderRefs(name) {
     return;
   }
   const chips = refs.map(r => {
-    const who = r.project_name ? '项目「' + r.project_name + '」' : '全局层';
+    // 层级判据与 openMem 一致用 project_id (project_name 只在 JOIN 命中时才有值,
+    // 用 project_name 判会把 JOIN 落空/项目硬删的项目卡错标成「全局层」)
+    const who = r.project_id ? '项目「' + (r.project_name || '') + '」' : '全局层';
     return `<button class="evo-ref" data-ref="${r.id}">← #${r.id} · ${esc(who)}</button>`;
   }).join('');
   // 外壳与芯片用 + 拼接而非模板插值: 含 ${} 的 sink 会落进 303 的 _unwrapped 白名单(本 change
   // 无权扩), 而拼接形态能按 (选择器, RHS) 显式冻进 _DYN_SINKS —— 一处写清理由的可审计例外。
   $('evo-refs').innerHTML = '<span class="evo-refs-sum">← ' + refs.length + ' 条洞察引用它：</span>' + chips;
+}
+
+// 记忆增删改后刷新引用信息: 只重画清单与引用条, 不动编辑器草稿。
+// 不能复用 showEvo —— 它会过 evoConfirmDiscard 弹确认框并重载编辑器内容 (草稿被丢)。
+async function refreshEvoMetaIfOpen() {
+  if (!$('evo-exp').classList.contains('on')) return;   // 面板没开就不必拉
+  await evoRefreshList();
+  if (EVO_SEL) evoRenderRefs(EVO_SEL);
 }
 
 // 409 分诊的**唯一出口** (publish 新建/保存、delete/restore、rename、rollback 共用) ——
@@ -1007,6 +1020,7 @@ async function showEvo(name) {
   } catch (e) {
     EVO_CUR = null;                   // 无选中态: 显隐交给 evoSyncChrome (不残留选择态按钮)
     $('evo-preview').textContent = '(读取失败)';
+    $('evo-refs').innerHTML = '';     // 读资产失败时不得残留上一个资产的引用芯片
     evoSyncChrome();
     evoNote('读取失败: ' + ((e && e.message) || e), true);
   }
@@ -1382,8 +1396,8 @@ async function evoRefreshList() {
           const sz = (n.size ? (n.size>1024?(n.size/1024).toFixed(1)+'k':n.size+'b') : '') + ' · ' + (n.mtime||'');
           // 墓碑行: meta 前缀「已删除」, 改名场景指出新名字 (与其余动态内容一样经 esc)
           const tag = tomb ? ('已删除' + (m.renamed_to ? ' → ' + m.renamed_to : '') + ' · ') : '';
-          const rc = (m.ref_count != null) ? m.ref_count : 0;
-          const refTag = tomb ? '' : ` · ${rc} 引用`;
+          // 取不到 ref_count 就不显示计数 —— 写 0 是对未知的肯定断言 (只有真的 0 才显示「0 引用」)
+          const refTag = tomb ? '' : (m.ref_count != null ? ` · ${m.ref_count} 引用` : '');
           s += `<div class="evo-row${tomb ? ' tomb' : ''}" data-name="${esc(n.name)}">${evoChip(n.ext)}<span class="evo-name">${esc(n.name)}</span><span class="evo-meta">${esc(tag + v + sz + refTag)}</span></div>`;
         }
       }
@@ -1425,19 +1439,19 @@ async function saveEdit() {
   if (CUR_MID == null) return saveAdd();
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
   await API.review({ id: CUR_MID, action: 'edit', content });
-  await loadAll(); closeModal(); alert('已保存 #' + CUR_MID);
+  await loadAll(); await refreshEvoMetaIfOpen(); closeModal(); alert('已保存 #' + CUR_MID);
 }
 async function applyMove() {
   if (CUR_MID == null) return;
   const owner = $('m-owner').value;
   if (owner === '') await API.promote(CUR_MID); else await API.demote(CUR_MID, Number(owner));
-  await loadAll(); closeModal(); alert('已移动 #' + CUR_MID + (owner === '' ? ' → 全局层' : ' → 项目'));
+  await loadAll(); await refreshEvoMetaIfOpen(); closeModal(); alert('已移动 #' + CUR_MID + (owner === '' ? ' → 全局层' : ' → 项目'));
 }
 async function delMem() {
   if (CUR_MID == null) return;
   if (!confirm('确定删除记忆 #' + CUR_MID + ' 吗？')) return;
   await API.review({ id: CUR_MID, action: 'delete' });
-  await loadAll(); closeModal(); alert('已删除 #' + CUR_MID);
+  await loadAll(); await refreshEvoMetaIfOpen(); closeModal(); alert('已删除 #' + CUR_MID);
 }
 
 /* ---- 待确认洞察 (B 类确认关卡) ---- */
@@ -1467,7 +1481,7 @@ async function openPending() {
 function closePending() { $('pending-modal').classList.remove('on'); }
 async function confirmPending(id, action) {
   await API.review({ id, action });
-  await loadAll(); openPending();
+  await loadAll(); await refreshEvoMetaIfOpen(); openPending();
 }
 
 /* ---- 添加记忆 / 注册项目 ---- */
@@ -1491,7 +1505,7 @@ async function saveAdd() {
   const body = { content, level };
   if ($('m-owner').value) body.project_id = Number($('m-owner').value);
   const r = await API.remember(body);
-  await loadAll(); closeModal(); alert('已记住 #' + r.id);
+  await loadAll(); await refreshEvoMetaIfOpen(); closeModal(); alert('已记住 #' + r.id);
 }
 function toggleReg() { $('reg-form').classList.toggle('on'); }
 async function organize() {
@@ -1499,7 +1513,7 @@ async function organize() {
   const btn = event && event.target;
   try {
     const r = await (await fetch('/api/organize', {method:'POST'})).json();
-    await loadAll();
+    await loadAll(); await refreshEvoMetaIfOpen();
     alert(`整理完成: 合并 ${r.merged} 组, 删除 ${r.removed} 条冗余记忆`);
   } catch (e) { alert('整理失败: ' + ((e && e.message) || e)); }
 }

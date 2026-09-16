@@ -17,7 +17,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import db as db_mod
 from . import evolutions
@@ -125,10 +125,29 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "insight",
 
 
 # ---------------------------------------------------------------- B 自动捕获 + 确认
+def _dup_scopes(conn: sqlite3.Connection, project_id: Optional[int],
+                cross_layer: bool) -> List[Tuple[str, list]]:
+    """判重扫描范围 —— **每层各自取各自的 LIMIT 窗口**。
+
+    共用一个 LIMIT 时, id 小的全局层会被活跃项目挤出窗口, 跨层比对静默失效。
+    返回 [(WHERE 片段, 参数), ...]; 调用方对每个范围独立执行 `ORDER BY id DESC LIMIT ?`。
+    """
+    if project_id is None:
+        if not cross_layer:
+            return [(" AND project_id IS NULL", [])]
+        scopes = [(" AND project_id IS NULL", [])]
+        for r in conn.execute("SELECT id FROM projects").fetchall():
+            scopes.append((" AND project_id=?", [r["id"]]))
+        return scopes
+    if cross_layer:
+        return [(" AND project_id=?", [project_id]), (" AND project_id IS NULL", [])]
+    return [(" AND project_id=?", [project_id])]
+
+
 def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
                   project_id: Optional[int] = None,
                   threshold: float = 0.92, limit: int = 300,
-                  cross_layer: bool = False) -> bool:
+                  *, cross_layer: bool = False) -> bool:
     """写入去重: 与同一归属内已有的记忆向量相似度 >= threshold 视为重复。
 
     对 active + pending 都去重 (避免 post-commit 等反复触发时堆积重复草稿);
@@ -137,24 +156,16 @@ def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
     cross_layer=True 时扩大**扫描范围**（阈值与规则不变）:
       - project_id 非空 → 该项目 + 全局层 (全局层在任何会话都加载, 已覆盖即重复);
       - project_id 为 None → 全部层级 (种子等通用内容不该与任何层的既有卡重复)。
+    每个层级**独立**取 `limit` 条窗口 (_dup_scopes), 共用一个窗口会把全局层挤出。
     """
     q = ("SELECT embedding FROM memories"
          " WHERE status IN ('active','pending') AND embedding IS NOT NULL")
-    params: list = []
-    if project_id is None:
-        if not cross_layer:
-            q += " AND project_id IS NULL"
-    elif cross_layer:
-        q += " AND (project_id=? OR project_id IS NULL)"
-        params.append(project_id)
-    else:
-        q += " AND project_id=?"
-        params.append(project_id)
-    q += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-    for r in conn.execute(q, params).fetchall():
-        if r["embedding"] and _cosine(emb, unpack_vec(r["embedding"])) >= threshold:
-            return True
+    for where, params in _dup_scopes(conn, project_id, cross_layer):
+        rows = conn.execute(q + where + " ORDER BY id DESC LIMIT ?",
+                            params + [limit]).fetchall()
+        for r in rows:
+            if r["embedding"] and _cosine(emb, unpack_vec(r["embedding"])) >= threshold:
+                return True
     return False
 
 
@@ -209,31 +220,23 @@ def _norm_for_dup(content: str) -> str:
 
 def _is_text_duplicate(conn: sqlite3.Connection, content: str,
                        project_id: Optional[int] = None,
-                       cross_layer: bool = False,
+                       *, cross_layer: bool = False,
                        limit: int = 300) -> bool:
     """同一归属内, 归一化文本相同的记忆视为重复 (active + pending 都查)。
 
-    cross_layer 语义与 `_is_duplicate` 完全一致 (只扩扫描范围, 不改判重规则)。
+    cross_layer 语义与 `_is_duplicate` 完全一致 (只扩扫描范围, 不改判重规则,
+    且每个层级独立取窗口)。
     """
     key = _norm_for_dup(content)
     if not key:
         return False
-    q = ("SELECT content FROM memories WHERE status IN ('active','pending')")
-    params: list = []
-    if project_id is None:
-        if not cross_layer:
-            q += " AND project_id IS NULL"
-    elif cross_layer:
-        q += " AND (project_id=? OR project_id IS NULL)"
-        params.append(project_id)
-    else:
-        q += " AND project_id=?"
-        params.append(project_id)
-    q += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-    for r in conn.execute(q, params).fetchall():
-        if _norm_for_dup(r["content"]) == key:
-            return True
+    q = "SELECT content FROM memories WHERE status IN ('active','pending')"
+    for where, params in _dup_scopes(conn, project_id, cross_layer):
+        rows = conn.execute(q + where + " ORDER BY id DESC LIMIT ?",
+                            params + [limit]).fetchall()
+        for r in rows:
+            if _norm_for_dup(r["content"]) == key:
+                return True
     return False
 
 

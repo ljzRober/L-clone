@@ -856,18 +856,18 @@ _st = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
 check("172 本地改过 → status=dirty", _st.get("ver-demo.sh") == "dirty", str(_st.get("ver-demo.sh")))
 _dres = evo_store.pull(_backend, ["ver-demo.sh"])
 check("173 pull 拒绝覆盖 dirty 文件",
-      _dres["skipped_dirty"] == ["ver-demo.sh"]
+      _dres.get("skipped_dirty") == ["ver-demo.sh"]
       and _cache_file.read_text(encoding="utf-8") == "echo 我手改的", str(_dres))
 _fres = evo_store.pull(_backend, ["ver-demo.sh"], force=True)
 check("174 --force 才覆盖 (旧文件另存 .dirty.bak)",
-      _fres["written"] == ["ver-demo.sh"]
+      _fres.get("written") == ["ver-demo.sh"]
       and _cache_file.read_text(encoding="utf-8") == "echo v1"
       and (_cache_file.with_name(_cache_file.name + ".dirty.bak")).is_file(),
       str(_fres))
 
 _cache_file.write_text("echo 从本地推上去的新内容", encoding="utf-8")
 _pub = evo_store.publish_local(_backend, "ver-demo.sh", message="从本地推")
-check("175 publish_local 推新版本 v3", _pub["version"] == 3 and _pub["changed"], str(_pub))
+check("175 publish_local 推新版本 v3", _pub.get("version") == 3 and _pub.get("changed"), str(_pub))
 _st2 = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
 check("176 推送后回到 in-sync", _st2.get("ver-demo.sh") == "in-sync", str(_st2.get("ver-demo.sh")))
 
@@ -877,7 +877,7 @@ _st3 = {r["name"]: r["state"] for r in evo_store.status(_backend.manifest())}
 check("177 本地有服务器没有 → untracked", _st3.get("hand-made.md") == "untracked", str(_st3))
 _allres = evo_store.publish_all(_backend, message="批量推")
 check("178 publish --all 推送 dirty/untracked",
-      "hand-made.md" in [x["name"] for x in _allres["published"]], str(_allres))
+      "hand-made.md" in [x["name"] for x in _allres.get("published") or []], str(_allres))
 
 _mig = evo_store.cache_dir() / "legacy-tool.py"
 _mig.write_text("print('legacy')", encoding="utf-8")
@@ -967,7 +967,7 @@ try:
 finally:
     urllib.request.urlopen = _orig_urlopen
 check("185 HttpBackend 解析 manifest/content",
-      _man["x.sh"]["version"] == 2 and _cont == "echo x", f"{_man}")
+      _man.get("x.sh", {}).get("version") == 2 and _cont == "echo x", f"{_man}")
 check("186 HttpBackend 带 Bearer 鉴权头",
       _seen.get("auth") == "Bearer tok-xyz", str(_seen.get("auth")))
 
@@ -1026,7 +1026,7 @@ _orig_blob.write_text("本地内容(与服务器不同)", encoding="utf-8")
 evo_store.publish(conn, "lie.sh", "远程内容")
 _lie = evo_store.pull(_LieBackend(conn), ["lie.sh"], force=True)
 check("194 pull 校验哈希失败 → 不落盘且不覆盖本地",
-      _lie["hash_mismatch"] == ["lie.sh"]
+      _lie.get("hash_mismatch") == ["lie.sh"]
       and _orig_blob.read_text(encoding="utf-8") == "本地内容(与服务器不同)", str(_lie))
 
 _m1 = evo_store.publish(conn, "meta.sh", "echo meta", kind="script")
@@ -2077,10 +2077,11 @@ _DYN_SINKS = {
     # --- 本 change (insight-evolution-backlinks) 新增的一处 sink ---
     ("#evo-refs",
      "'<span class=\"evo-refs-sum\">← ' + refs.length + ' 条洞察引用它：</span>' + chips"):
-        "#evo-refs 反向引用条外壳 (index.html:877, 本 change 新增): 动态量只有两个 ——"
+        "#evo-refs 反向引用条外壳 (index.html:882, 本 change 新增): 动态量只有两个 ——"
         " refs.length (数组长度, 恒为整数) 与 chips (由同函数 refs.map 逐项拼装: r.id 是"
         " memories.id = INTEGER PRIMARY KEY AUTOINCREMENT, 只作 data-ref 整数值,"
-        " 同 _SAFE_INTERP 的 m.id; who 由 r.project_name 与静态外壳拼成, 最终**只经一次**"
+        " 同 _SAFE_INTERP 的 m.id; who 的层级由 r.project_id 判定、项目名取 r.project_name"
+        " (JOIN 落空时退化为空串), 与静态外壳拼成后最终**只经一次**"
         " esc(who) 包裹 (fix round 2 修掉了 who 内再 esc 的双重转义);"
         " 其余为静态字面量)。外壳刻意用 + 拼接而不用 ${} 模板插值: 含 ${} 的 sink 会按"
         " unwrapped 归入 _unwrapped 白名单 (该表本 change 无权扩), 拼接形态才能在这里按"
@@ -2627,12 +2628,23 @@ try:
     _tc_ref.post("/api/evolution/publish", json={"name": "ref-smoke.txt", "content": "v1"})
     _tc_ref.post("/api/evolution/publish", json={"name": "ref-orphan.txt", "content": "v1"})
     _ref_items = {x["name"]: x for x in _tc_ref.get("/api/evolution/index").json()["items"]}
-    _ref_hit, _ref_orphan = _ref_items["ref-smoke.txt"], _ref_items["ref-orphan.txt"]
+    # M5: 不存在的名字只允许 FAIL, 不允许 KeyError —— KeyError 冒不出 `except ImportError`,
+    # 会在整个脚本里抛 traceback 并**掩盖后面所有用例** (含 338); 显式断言存在性优先。
+    check("335 前置: index 同时列出 ref-smoke.txt 与 ref-orphan.txt",
+          "ref-smoke.txt" in _ref_items and "ref-orphan.txt" in _ref_items,
+          f"names={sorted(_ref_items)}")
+    _ref_hit = _ref_items.get("ref-smoke.txt") or {}
+    _ref_orphan = _ref_items.get("ref-orphan.txt") or {}
+    _ref_refs = _ref_hit.get("refs") if isinstance(_ref_hit.get("refs"), list) else []
+    _ref_first = _ref_refs[0] if _ref_refs else {}
+    # Minor 6: 逐键断言 —— spec 的措辞是元素**含** id/project_id/project_name,
+    # 整体字典相等会把键集合锁死成"恰好三个", 将来追加字段立刻红灯。
     check("335 index 下发 ref_count/refs 且 refs 带 project_name",
-          _ref_hit["ref_count"] == 1 and len(_ref_hit["refs"]) == 1
-          and _ref_hit["refs"][0] == {"id": _ref_mid, "project_id": _ref_pid,
-                                      "project_name": "clref"},
-          str(_ref_hit.get("refs")))
+          _ref_hit.get("ref_count") == 1 and len(_ref_refs) == 1
+          and _ref_first.get("id") == _ref_mid
+          and _ref_first.get("project_id") == _ref_pid
+          and _ref_first.get("project_name") == "clref",
+          f"ref_count={_ref_hit.get('ref_count')!r} refs={_ref_hit.get('refs')!r}")
     check("336 零引用资产是 0/[] (不是 null 也不是字段缺失)",
           _ref_orphan.get("ref_count") == 0 and _ref_orphan.get("refs") == [],
           f"ref_count={_ref_orphan.get('ref_count')!r} refs={_ref_orphan.get('refs')!r}")
@@ -2669,6 +2681,45 @@ check("338 seed dry_run 不调用 embedder (无 embedder 也能出报告)",
       and len(_stub_rep.get("insights_added", [])) == 4,
       f"err={_stub_err!r} calls={len(_stub_calls)} added={len(_stub_rep.get('insights_added', []))}")
 _stub_conn.close()
+
+# ---- 339-340: 跨层判重必须**按层各取窗口** (I1 回归) ----
+# 缺陷: cross_layer 只把 WHERE 从"该项目"扩成"(该项目 OR 全局层)", 但 ORDER BY id DESC LIMIT 300
+# 仍作用在**并集**上 —— 全局层 id 小, 项目层一活跃就被挤出窗口, 跨层比对静默返回 False
+# (看起来像"没重复")。本用例先写 1 条全局锚点卡, 再压 305 条互不相同的项目卡 (差异落在前 80 字内,
+# 否则会被文本去重键看成同一条), 让并集窗口 (>300) 必然把全局锚点挤出 top-300。
+_win_conn = db_mod.init(os.path.join(tmp, "crosslayer_window.db"))
+_win_pid = proj_mod.add_project(_win_conn, "clwin", str(demo_root), "")
+_win_doc = ("要点：窗口锚点卡独有指纹WQ7。\n背景/为什么：跨层去重的窗口不该被项目层挤掉。\n"
+            "影响/以后注意：项目层再活跃也要能看见全局层。\n归属：无")
+_win_mid = mem_mod.remember(_win_conn, _win_doc, level="insight",
+                            project_id=None, confirmed=True)
+for _i in range(305):
+    mem_mod.remember(
+        _win_conn,
+        f"要点：噪声卡{_i:03d}。\n背景/为什么：压测判重窗口。\n"
+        f"影响/以后注意：差异落在前80字内。\n归属：无",
+        level="insight", project_id=_win_pid, confirmed=True)
+_win_n = _win_conn.execute(
+    "SELECT COUNT(*) c FROM memories WHERE project_id=? AND status IN ('active','pending')",
+    (_win_pid,)).fetchone()["c"]
+_win_emb = mem_mod.llm.embed_one(_win_doc)
+check("339 跨层判重按层各取窗口 (全局锚点不被 >300 条项目卡挤出)",
+      _win_n > 300
+      and mem_mod._is_duplicate(_win_conn, _win_emb, _win_pid, cross_layer=True) is True
+      and mem_mod._is_text_duplicate(_win_conn, _win_doc, _win_pid, cross_layer=True) is True
+      and mem_mod._is_duplicate(_win_conn, _win_emb, _win_pid) is False,
+      f"proj_rows={_win_n} mid={_win_mid} "
+      f"vec={mem_mod._is_duplicate(_win_conn, _win_emb, _win_pid, cross_layer=True)} "
+      f"txt={mem_mod._is_text_duplicate(_win_conn, _win_doc, _win_pid, cross_layer=True)}")
+# 反向对照: 新文本在同样扫描下必须仍为 False —— 防止"恒真"把 339 变成永远绿的空检查
+_win_probe = ("要点：从未写入的探针卡独有指纹ZP9。\n背景/为什么：反向对照。\n"
+              "影响/以后注意：跨层扫描不得误判。\n归属：无")
+check("340 全新文本跨层扫描仍判不重复 (反向对照, 防 339 恒真)",
+      mem_mod._is_duplicate(_win_conn, mem_mod.llm.embed_one(_win_probe), _win_pid,
+                            cross_layer=True) is False
+      and mem_mod._is_text_duplicate(_win_conn, _win_probe, _win_pid, cross_layer=True) is False,
+      "probe 被判成重复 -> 339 的 True 无意义")
+_win_conn.close()
 
 print()
 if fails:
