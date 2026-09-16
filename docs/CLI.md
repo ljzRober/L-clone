@@ -54,7 +54,7 @@ lclone auth create <name> | list | revoke <name|--id N> | test <url> --token <to
 
 lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS.md](CONCEPTS.md) 第 3 节):
 
-- 每条洞察是原子化、自包含的富知识卡,按**四段卡**(要点 / 背景-为什么 / 影响-以后注意 / 归属)书写;
+- 每条洞察是原子化、自包含的富知识卡,按**三段卡**(要点 / 背景-为什么 / 影响-以后注意)书写;指向进化资产/契约/文件的引用(`[[evo:]]`/`[[spec:]]`/`[[src:]]`)就地写在正文里;
 - **一律需要你盖章才生效**:无论来自自动捕获 (`capture`) 还是主动记忆 (`remember`),统一进 `pending` 草稿,`review` 确认后生效;
   - `remember` 加 **`--confirmed`** 表示当场已确认、直接生效;
   - 若忘加 `--confirmed`,后续 `review` 再确认同样生效。

@@ -48,7 +48,7 @@ description: |
 4. **项目 vs spec 判定（代码强制）**：**凡是"代码必须满足的契约"**（能改写成带 `WHEN…THEN…` 的 requirement，如某参数必须转义、某超时阈值必须为 X）**一概归 sp-spec，不提炼为记忆**；只有"为什么这么选 / 观察到什么"这类**无法写成契约**的理由/事实才进记忆。半契约半理由要**拆开**：理由归记忆、契约归 spec。一条记忆**升格为契约**（被锁定为"必须满足 X"且能写成 WHEN/THEN）时才进 sp-spec，此时在记忆里写 `[[spec:id]]` 引用或删除，避免双份漂移。
 5. **回答"上次定了什么 / 上次做到哪"**：`recall` 后用结果如实总结，记忆不足就明说，不编造。
 6. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
-7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），把内容提炼为**洞察(insight)**（原子化、自包含、四段卡），统一进待确认、经 `review` 生效；`BRAIN_LLM=dummy` 无法真正提炼富洞察，会退化为记录原文草稿（仍待确认）。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
+7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），把内容提炼为**洞察(insight)**（原子化、自包含、三段卡：要点 / 背景·为什么 / 影响·以后注意；引用就地写在正文里），统一进待确认、经 `review` 生效；`BRAIN_LLM=dummy` 无法真正提炼富洞察，会退化为记录原文草稿（仍待确认）。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
 8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留**洞察**（选了什么方案/定了什么规则/学到什么经验教训，原子化富知识卡）与**进化资产**（可复用脚本/工具/模板，**服务器版本化库为权威**、本地 `~/.lclone/evolution/` 只是可复现缓存，`[[evo:name.ext]]` 指向；用 `evolution_add` 发布新版本，改写用 `evolution_update`，回滚用 `evolution_rollback`）。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
 9. **自动调度 sp-spec（无需手动 /sp-spec）**：检测 sp-spec 是否已安装（`~/.agents/skills/sp-spec` 存在）。**有** → 会话中一旦进入构建性任务（改功能/修 bug/重构），默认**自动加载 sp-spec 并运行 quick 模式**（是否升级 full/debug 由 sp-spec 自决），不需要用户手动 `/sp-spec`。**无** → 仅在**首次**会话提醒一次用户安装 sp-spec：`https://github.com/ljzRober/sp-spec`，之后不再重复提醒（可在 lclone 写入一条"已提示安装 sp-spec"的全局记忆避免重复）。
 
