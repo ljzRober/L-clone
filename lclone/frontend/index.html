@@ -174,6 +174,14 @@ a.navbtn:hover { color:var(--fg); border-color:var(--acc); }
 .evo-editor:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
 .evo-note { font-size:12px; color:var(--dim); min-height:17px; line-height:1.5; }
 .evo-note.err { color:var(--warn); }
+/* 反向引用条 (签名元素): 用既有 token 上色, 方向箭头 + 可点芯片一眼看出"被谁指向" */
+.evo-refs { margin:8px 0; font-size:12px; color:var(--dim); display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.evo-refs-sum { font-family:var(--mono); }
+.evo-refs-empty { font-family:var(--mono); color:var(--dim); }
+.evo-ref { font-size:12px; font-family:var(--mono); color:var(--acc); background:var(--card2);
+           border:1px solid var(--line); border-radius:6px; padding:2px 8px; cursor:pointer; }
+.evo-ref:hover { border-color:var(--acc); }
+.evo-ref:focus-visible { outline:2px solid var(--acc2); outline-offset:1px; }
 /* 工具条: 新建/重命名的名字输入框 (同面板其余输入框的深色风格) */
 .evo-nameinput { background:#0d1424; color:var(--fg); border:1px solid var(--line);
                  border-radius:8px; padding:4px 8px; font-family:var(--mono); font-size:12px;
@@ -815,7 +823,8 @@ function openMem(mid, above) {
   });
   $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
   $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
-  $('modal').classList.toggle('on-top', !!above);   // 从引用条进入才置顶
+  const wasTop = $('modal').classList.contains('on-top');   // 弹窗内部互跳不该把它降层
+  $('modal').classList.toggle('on-top', !!above || wasTop);
   $('modal').classList.add('on');
 }
 // 进化资产的唯一编辑面 = 进化面板 (避免"看板卡片"与"面板"两处编辑入口分叉)
@@ -1406,7 +1415,7 @@ async function openEvoExplorer(name) {
 }
 function closeEvoExp() { $('evo-exp').classList.remove('on'); }
 
-function closeModal() { $('modal').classList.remove('on'); CUR_MID = null; }
+function closeModal() { $('modal').classList.remove('on'); $('modal').classList.remove('on-top'); CUR_MID = null; }
 async function saveEdit() {
   if (CUR_MID == null) return saveAdd();
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');

@@ -2077,7 +2077,7 @@ _DYN_SINKS = {
     # --- 本 change (insight-evolution-backlinks) 新增的一处 sink ---
     ("#evo-refs",
      "'<span class=\"evo-refs-sum\">← ' + refs.length + ' 条洞察引用它：</span>' + chips"):
-        "#evo-refs 反向引用条外壳 (index.html:863, 本 change 新增): 动态量只有两个 ——"
+        "#evo-refs 反向引用条外壳 (index.html:872, 本 change 新增): 动态量只有两个 ——"
         " refs.length (数组长度, 恒为整数) 与 chips (由同函数 refs.map 逐项拼装: r.id 是"
         " memories.id = INTEGER PRIMARY KEY AUTOINCREMENT, 只作 data-ref 整数值,"
         " 同 _SAFE_INTERP 的 m.id; r.project_name 先经 esc() 包裹、拼出的 who 再经 esc() 包裹;"
