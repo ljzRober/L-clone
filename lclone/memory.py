@@ -521,10 +521,11 @@ def update_evolution(conn: sqlite3.Connection, evolution_id: str,
 
 def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
                               evolution_id: str) -> None:
-    """建立 insight → evolution 链接: 在 insight 内容末尾补一句 `[[evo:文件名]]`。
+    """建立 insight → evolution 链接: 把引用**就地**追加到「影响/以后注意」段末尾。
 
     链接的载体就是这段引用文本(没有额外 SQL 表): 召回命中该 insight 时会顺这条边把
-    进化资产一起带出。已有引用则不动; insight 不存在则报错。
+    进化资产一起带出。引用就地写进正文 (不再单独起一行), 避免末尾堆一串引用列表。
+    没有「影响」段时退回最后一行; 已有引用则不动; insight 不存在则报错。
     """
     row = conn.execute("SELECT content FROM memories WHERE id=?",
                        (insight_id,)).fetchone()
@@ -534,7 +535,15 @@ def link_insight_to_evolution(conn: sqlite3.Connection, insight_id: int,
     ref = f"[[evo:{evolution_id}]]"
     if ref in content:
         return
-    new_content = content.rstrip() + "\n" + ref
+    lines = content.rstrip().splitlines()
+    idx = next((i for i, ln in enumerate(lines) if ln.strip().startswith("影响")), None)
+    if idx is None:
+        idx = len(lines) - 1 if lines else 0
+    if lines:
+        lines[idx] = lines[idx].rstrip() + f"（关联资产：{ref}）"
+        new_content = "\n".join(lines)
+    else:
+        new_content = ref
     emb = llm.embed_one(new_content)
     conn.execute("UPDATE memories SET content=?, embedding=? WHERE id=?",
                  (new_content, pack_vec(emb), insight_id))
@@ -619,13 +628,17 @@ def list_evolutions(conn: sqlite3.Connection, project_id: Optional[int] = None,
 
 
 def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[dict]:
-    """取某 insight 经 [[evo:...]] 指向的进化文件 (读当前版本内容)。"""
+    """取某 insight 经 [[evo:...]] 指向的进化文件 (读当前版本内容)。同一资产名只返回一次。"""
     row = conn.execute("SELECT content FROM memories WHERE id=?",
                        (insight_id,)).fetchone()
     if not row:
         return []
     out = []
+    seen: set = set()
     for name in evo_refs(row["content"]):
+        if name in seen:
+            continue
+        seen.add(name)
         c = read_evolution_file(name, conn)
         if c is not None:
             out.append({"name": name, "ext": name.rsplit(".", 1)[-1].lower() if "." in name else "",
@@ -795,14 +808,16 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
                     "via_link": True, "via_evolution": False,
                 })
 
-    # 进化资产 follow: 命中 insight 后, 把它指向的 evolution 一起带出 (实践沉淀的工具/脚本)
+    # 进化资产 follow: 命中 insight 后, 把它指向的 evolution 一起带出 (实践沉淀的工具/脚本)。
+    # 同一资产名只带出一次: 一张卡重复提及同一资产 (或两张卡指向同一资产) 不该出现重复行。
     if base:
-        evo_by_insight: dict = {}
+        seen_evo: set = set()
         base_snapshot = list(base)  # 快照: 只对当前 base 查 evo, 避免循环追加被重新迭代
         for x in base_snapshot:
-            evo_by_insight[x["id"]] = evolutions_for_insight(conn, x["id"])
-        for x in base_snapshot:
-            for evo in evo_by_insight.get(x["id"], []):
+            for evo in evolutions_for_insight(conn, x["id"]):
+                if evo["name"] in seen_evo:
+                    continue
+                seen_evo.add(evo["name"])
                 base.append({
                     "kind": "evolution",
                     "name": evo["name"], "project_id": evo["project_id"],
@@ -830,7 +845,7 @@ def recall(conn: sqlite3.Connection, query: str, k: int = 5,
 # ---------------------------------------------------------------- 会话启动引导
 def bootstrap(conn: sqlite3.Connection, query: str = "",
               project_id: Optional[int] = None, k: int = 5,
-              global_limit: int = 20, project_limit: int = 20) -> str:
+              global_limit: int = 100, project_limit: int = 20) -> str:
     """会话启动引导: charter + 全局层记忆(无条件注入) + 项目记忆(若落进已知项目) + 按 query 召回的相关记忆。
 
     按环境决定加载范围: 传了 project_id (会话落进已知项目) → 额外加载该项目的近 project_limit 条洞察;

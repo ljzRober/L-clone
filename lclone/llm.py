@@ -149,17 +149,13 @@ NO_CONTENT_MARKERS = (
     "无值得提炼", "没有值得记", "无值得记", "无可提炼", "无需提炼",
     "没有可提炼", "无内容", "无相关", "暂无", "未提炼", "没有值得记忆", "无需记忆",
 )
-# 卡片形状: 提示词强制四段分行 (要点/背景·为什么/影响·以后注意/归属), 一段标题都没有
+# 卡片形状: 提示词强制三段分行 (要点/背景·为什么/影响·以后注意), 一段标题都没有
 # 就不是卡 —— 多半是模型的元报告或对输入的回声, 不能当知识收下
-CARD_SECTIONS = ("要点", "背景", "影响", "归属")
+CARD_SECTIONS = ("要点", "背景", "影响")
 # 自包含性 (Letta: "Store self-contained facts or summaries, not conversational fragments"):
 # 只有一句"要点"的卡离开原始对话就读不懂, 必须同时还带背景或影响中的至少一段。
 CARD_REQUIRED = "要点"
 CARD_SUPPORTING = ("背景", "影响")
-# 归属字段 (MemInsight 的字段级规则: "If an attribute has a none or unspecified value skip
-# this attribute"): 归属填不出来说明连"这条属于谁/哪一层"都说不清, 应结构性拒绝,
-# 而不是推给人判断。值可以是 无 / 全局 / src:path / m:NN / [[spec:id]]。
-CARD_SCOPE_RE = re.compile(r"^\s*归属\s*[:：]\s*(\S.*)$", re.M)
 
 
 def _meta_key(text: str) -> str:
@@ -195,8 +191,9 @@ def extract_memories(text: str) -> List[dict]:
     (归 sp-spec 和 git); 能改写成带 WHEN/THEN requirement 的「系统必须满足的契约」也归 spec。
     只提炼无法写成契约的「为什么这么选 / 观察到什么 / 个人经验与推理」。
 
-    归属: 若某 insight 明确对应仓库内某具体 spec/文件, 项目级记忆可标注 [[spec:id]]/[[src:path]];
-    全局级记忆无仓库上下文, 一律不标注此类链接 (只有 [[m:N]] 跨记忆链接)。
+    引用: 若某 insight 明确对应仓库内某具体 spec/文件/进化资产, **就地**在正文里写
+    `[[spec:id]]`/`[[src:path]]`/`[[evo:名字]]`（link, not copy）; 全局级记忆无仓库上下文时
+    不标此类链接（只有 `[[m:N]]` 跨记忆链接）。
 
     dummy 后端: 整段视为一条 insight, 保证离线流程可跑通。
     """
@@ -208,11 +205,12 @@ def extract_memories(text: str) -> List[dict]:
         "你是一个记忆提炼器。把输入里的「洞察/知识」提炼成一条条 insight 卡片, 而不是流水账。\n"
         "insight = 一条原子化、自包含、内容丰富的知识/见解/教训: 每一个条目是一件事\n"
         "(一个决定 / 一条经验 / 一个观察 / 一条复盘)。\n"
-        "每条 insight SHALL 按「四段分行」写, 自带背景与后果, 让人独立读懂 (共 2-4 句):\n"
+        "每条 insight SHALL 按「三段分行」写, 自带背景与后果, 让人独立读懂 (共 2-4 句):\n"
         "  要点：<一句话结论>\n"
         "  背景/为什么：<为什么这么定/背景/推理>\n"
         "  影响/以后注意：<带来什么/以后注意什么>\n"
-        "  归属：<项目级写 src:xx 或 m:NN；全局写 无>\n"
+        "若这条洞察指向某个进化资产 / 契约 / 源文件, 就在**提到它的那句话里**写 [[evo:名字]] / "
+        "[[spec:标识]] / [[src:路径]]; 不要单独起一行做引用列表。\n"
         "多条之间用一行 `====` 分隔。只输出这些块, 不要其它解释。\n"
         "不要逐字转录对话/代码 (那是 git/spec 的事), 也不要压成一行的干巴巴结论。\n"
         "准入只收四类: 决策 / 约定 / 规则 / 教训。一般事实、过程描述、进度汇报一律不提炼。\n"
@@ -229,7 +227,7 @@ def extract_memories(text: str) -> List[dict]:
     )
     raw = chat([{"role": "user", "content": prompt}])
     out = []
-    # 按 `====` 分隔成块, 每块 = 一条 insight (内容为多行四段卡)
+    # 按 `====` 分隔成块, 每块 = 一条 insight (内容为多行三段卡)
     blocks = re.split(r"^\s*={2,}\s*$", (raw or "").strip(), flags=re.M)
     for block in blocks:
         block = block.strip().strip("-•*").strip()
@@ -245,14 +243,11 @@ def extract_memories(text: str) -> List[dict]:
         # 自报没提炼出东西 (「无值得提炼…」「未提炼…」)
         if is_empty_response(body) or any(mk in body for mk in NO_CONTENT_MARKERS):
             continue
-        # 形状校验: 连一段标题都没有的多半是元报告/回声, 不是四段卡, 不收
+        # 形状校验: 连一段标题都没有的多半是元报告/回声, 不是三段卡, 不收
         if not any(sec in body for sec in CARD_SECTIONS):
             continue
         # 自包含性: 必须有点要 + (背景 或 影响); 只有一句结论的残卡不收
         if CARD_REQUIRED not in body or not any(s in body for s in CARD_SUPPORTING):
-            continue
-        # 归属: 必须有归属段且值非空 (填不出来 = 连归属都说不清, 结构性拒绝)
-        if not CARD_SCOPE_RE.search(body):
             continue
         out.append({"level": "insight", "content": body, "confidence": 0.9})
     return out

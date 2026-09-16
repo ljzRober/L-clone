@@ -823,8 +823,11 @@ function openMem(mid, above) {
   outs.forEach(t => { const tm = MEMS.find(x => x.id === t); build.push(`<span>→ <a onclick="openMem(${t})">#${t}${tm ? ' · ' + esc(tm.content.slice(0, 14)) : ''}</a></span>`); });
   ins.forEach(s => { const sm = MEMS.find(x => x.id === s); build.push(`<span>← <a onclick="openMem(${s})">#${s}${sm ? ' · ' + esc(sm.content.slice(0, 14)) : ''}</a></span>`); });
   // 进化资产引用: 洞察正文里的 [[evo:名字]] → 芯片, 点击跳到进化面板并选中该资产
+  const evoSeen = new Set();
   (m.content.match(/\[\[evo:([^\]\n]+)\]\]/g) || []).forEach(tag => {
     const name = tag.slice(6, -2);
+    if (evoSeen.has(name)) return;      // 同一张卡重复提及同一资产只出一个芯片
+    evoSeen.add(name);
     build.push(`<span>→ <button class="m-evo" data-evo="${esc(name)}">${esc(name)}</button>（进化资产）</span>`);
   });
   $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
