@@ -2077,10 +2077,11 @@ _DYN_SINKS = {
     # --- 本 change (insight-evolution-backlinks) 新增的一处 sink ---
     ("#evo-refs",
      "'<span class=\"evo-refs-sum\">← ' + refs.length + ' 条洞察引用它：</span>' + chips"):
-        "#evo-refs 反向引用条外壳 (index.html:872, 本 change 新增): 动态量只有两个 ——"
+        "#evo-refs 反向引用条外壳 (index.html:877, 本 change 新增): 动态量只有两个 ——"
         " refs.length (数组长度, 恒为整数) 与 chips (由同函数 refs.map 逐项拼装: r.id 是"
         " memories.id = INTEGER PRIMARY KEY AUTOINCREMENT, 只作 data-ref 整数值,"
-        " 同 _SAFE_INTERP 的 m.id; r.project_name 先经 esc() 包裹、拼出的 who 再经 esc() 包裹;"
+        " 同 _SAFE_INTERP 的 m.id; who 由 r.project_name 与静态外壳拼成, 最终**只经一次**"
+        " esc(who) 包裹 (fix round 2 修掉了 who 内再 esc 的双重转义);"
         " 其余为静态字面量)。外壳刻意用 + 拼接而不用 ${} 模板插值: 含 ${} 的 sink 会按"
         " unwrapped 归入 _unwrapped 白名单 (该表本 change 无权扩), 拼接形态才能在这里按"
         " (选择器, RHS) 显式冻结成有理由的例外; 该 sink 自带 `$('evo-refs')` 前缀, 故选择器为 #evo-refs",

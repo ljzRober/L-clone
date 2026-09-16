@@ -270,6 +270,11 @@ pre.out { white-space:pre-wrap; background:#0d1424; border:1px solid var(--line)
 .modal-lg .meta { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:10px; }
 .modal-lg .links { font-size:12px; color:var(--dim); margin:10px 0; }
 .modal-lg .links a { color:var(--acc); cursor:pointer; margin-right:10px; }
+/* 洞察正文的 [[evo:名字]] 芯片: 行内 onclick 会被引号逃逸(实体先解码再交给 JS), 改用按钮 + data-evo
+   + 事件委托; 按钮天然进 Tab 序(键盘可达), 这里让它长得和相邻链接一致 (全部沿用既有 token) */
+.modal-lg .links .m-evo { color:var(--acc); background:none; border:0; padding:0; margin-right:10px;
+                          font:inherit; cursor:pointer; }
+.modal-lg .links .m-evo:focus-visible { outline:2px solid var(--acc2); outline-offset:1px; }
 .modal-lg .row { margin-top:8px; }
 
 @media (max-width:760px) {
@@ -819,7 +824,7 @@ function openMem(mid, above) {
   // 进化资产引用: 洞察正文里的 [[evo:名字]] → 芯片, 点击跳到进化面板并选中该资产
   (m.content.match(/\[\[evo:([^\]\n]+)\]\]/g) || []).forEach(tag => {
     const name = tag.slice(6, -2);
-    build.push(`<span>→ <a onclick="openEvo('${esc(name)}')">${esc(name)}</a>（进化资产）</span>`);
+    build.push(`<span>→ <button class="m-evo" data-evo="${esc(name)}">${esc(name)}</button>（进化资产）</span>`);
   });
   $('m-links').innerHTML = build.length ? '链接：' + build.join('') : '链接：无';
   $('btn-del').style.display = ''; $('btn-move').style.display = ''; $('btn-save').style.display = ''; $('btn-save').textContent = '保存修改';
@@ -864,7 +869,7 @@ function evoRenderRefs(name) {
     return;
   }
   const chips = refs.map(r => {
-    const who = r.project_name ? '项目「' + esc(r.project_name) + '」' : '全局层';
+    const who = r.project_name ? '项目「' + r.project_name + '」' : '全局层';
     return `<button class="evo-ref" data-ref="${r.id}">← #${r.id} · ${esc(who)}</button>`;
   }).join('');
   // 外壳与芯片用 + 拼接而非模板插值: 含 ${} 的 sink 会落进 303 的 _unwrapped 白名单(本 change
@@ -1515,6 +1520,10 @@ $('evo-list').addEventListener('click', ev => {
 // 反向引用芯片: 只带整数 data-ref, 点击打开记忆弹窗并**置于进化面板之上** (above=true),
 // 关闭后仍回到面板 (面板本身没被关掉)。
 document.addEventListener('click', e => {
+  // 记忆弹窗里的 [[evo:名字]] 芯片: 资产名只走 data-evo (dataset 自动解码实体), 不再拼进 JS 串;
+  // 分支必须排在下面 `if (!chip) return` 之前, 否则永远到不了 (两处选择器互斥)
+  const evoBtn = e.target.closest && e.target.closest('#m-links .m-evo');
+  if (evoBtn) { openEvo(evoBtn.dataset.evo); return; }
   const chip = e.target.closest && e.target.closest('#evo-refs .evo-ref');
   if (!chip) return;
   const id = Number(chip.dataset.ref);
