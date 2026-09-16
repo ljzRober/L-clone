@@ -127,17 +127,26 @@ def remember(conn: sqlite3.Connection, content: str, level: str = "insight",
 # ---------------------------------------------------------------- B 自动捕获 + 确认
 def _is_duplicate(conn: sqlite3.Connection, emb: List[float],
                   project_id: Optional[int] = None,
-                  threshold: float = 0.92, limit: int = 300) -> bool:
+                  threshold: float = 0.92, limit: int = 300,
+                  cross_layer: bool = False) -> bool:
     """写入去重: 与同一归属内已有的记忆向量相似度 >= threshold 视为重复。
 
     对 active + pending 都去重 (避免 post-commit 等反复触发时堆积重复草稿);
     project_id=None 时只对全局层去重; 指定项目时只对该项目去重。
+
+    cross_layer=True 时扩大**扫描范围**（阈值与规则不变）:
+      - project_id 非空 → 该项目 + 全局层 (全局层在任何会话都加载, 已覆盖即重复);
+      - project_id 为 None → 全部层级 (种子等通用内容不该与任何层的既有卡重复)。
     """
     q = ("SELECT embedding FROM memories"
          " WHERE status IN ('active','pending') AND embedding IS NOT NULL")
     params: list = []
     if project_id is None:
-        q += " AND project_id IS NULL"
+        if not cross_layer:
+            q += " AND project_id IS NULL"
+    elif cross_layer:
+        q += " AND (project_id=? OR project_id IS NULL)"
+        params.append(project_id)
     else:
         q += " AND project_id=?"
         params.append(project_id)
@@ -200,15 +209,23 @@ def _norm_for_dup(content: str) -> str:
 
 def _is_text_duplicate(conn: sqlite3.Connection, content: str,
                        project_id: Optional[int] = None,
+                       cross_layer: bool = False,
                        limit: int = 300) -> bool:
-    """同一归属内, 归一化文本相同的记忆视为重复 (active + pending 都查)。"""
+    """同一归属内, 归一化文本相同的记忆视为重复 (active + pending 都查)。
+
+    cross_layer 语义与 `_is_duplicate` 完全一致 (只扩扫描范围, 不改判重规则)。
+    """
     key = _norm_for_dup(content)
     if not key:
         return False
     q = ("SELECT content FROM memories WHERE status IN ('active','pending')")
     params: list = []
     if project_id is None:
-        q += " AND project_id IS NULL"
+        if not cross_layer:
+            q += " AND project_id IS NULL"
+    elif cross_layer:
+        q += " AND (project_id=? OR project_id IS NULL)"
+        params.append(project_id)
     else:
         q += " AND project_id=?"
         params.append(project_id)
@@ -290,11 +307,11 @@ def _capture_impl(conn: sqlite3.Connection, text: str,
         # 用户轮证据: 助手自己排查出来的环境近况/通用常识不成卡 (见 gate.has_user_evidence)
         if not explicit and not gate.has_user_evidence(content, user_text):
             continue
-        if _is_text_duplicate(conn, content, project_id):
+        if _is_text_duplicate(conn, content, project_id, cross_layer=project_id is not None):
             continue
         emb = llm.embed_one(content)
         # 洞察进草稿待确认 (B 类); 写入前去重
-        if _is_duplicate(conn, emb, project_id=project_id):
+        if _is_duplicate(conn, emb, project_id=project_id, cross_layer=project_id is not None):
             continue
         cur = conn.execute(
             "INSERT INTO memories(project_id, level, content, reason,"
@@ -614,12 +631,14 @@ def evolutions_for_insight(conn: sqlite3.Connection, insight_id: int) -> List[di
 
 
 def insights_for_evolution(conn: sqlite3.Connection, evolution_id: str) -> List[dict]:
-    """找指向某进化文件的 insight。"""
+    """找指向某进化文件的 insight (只含 active; 带项目名, 供看板与工具直接展示)。"""
     rows = conn.execute(
-        "SELECT id, project_id, content, reason FROM memories WHERE level='insight'"
+        "SELECT m.id, m.project_id, m.content, m.reason, p.name AS project_name"
+        " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
+        " WHERE m.level='insight' AND m.status='active'"
     ).fetchall()
     return [{"id": r["id"], "project_id": r["project_id"], "content": r["content"],
-             "reason": r["reason"], "project_name": None}
+             "reason": r["reason"], "project_name": r["project_name"]}
             for r in rows if evolution_id in evo_refs(r["content"])]
 
 

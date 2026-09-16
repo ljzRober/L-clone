@@ -339,6 +339,11 @@ def create_app(db_path: Optional[str] = None):
             row["editable"] = ok
             row["editable_reason"] = reason
             row["base_version"] = row.get("version")
+            # 反向引用: 谁在用这个资产 (纯追加字段, /api/evolutions 形状不受影响)
+            _refs = mem_mod.insights_for_evolution(conn, row["name"])
+            row["ref_count"] = len(_refs)
+            row["refs"] = [{"id": r["id"], "project_id": r["project_id"],
+                            "project_name": r["project_name"]} for r in _refs]
             row["deleted_at"] = row.get("deleted_at") or ""
             row["renamed_to"] = row.get("renamed_to") or ""
             items.append(row)

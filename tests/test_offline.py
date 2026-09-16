@@ -2052,6 +2052,28 @@ _DYN_SINKS = {
         "#m-links 的链接串: 由同函数 build.push 逐段拼装 (index.html:736-737:"
         " onclick 里的 #{id} 是整数, 正文已 esc(content.slice(0,14))); 既有代码, 本 change 未触碰"
         " —— 显式冻结为例外",
+    # --- 下面三条是**基线 52366a0 遗留**的未登记 sink (该 commit 只改 index.html, 没同步本登记表),
+    #     与 insight-evolution-backlinks 无关; 三条都无新增转义面, 按本检查的规则显式冻结 ---
+    ("#evo-list",
+     'auth ? \'<div class="evo-empty">未授权：需要 API Key<br>'
+     '<span style="color:var(--dim)">在顶部 API Key 框粘贴 LCLONE_API_KEY 后回车，页面会自动刷新。</span></div>\' : '
+     '\'<div class="evo-empty">资产清单加载失败<br><span style="color:var(--dim)">'
+     '检查后端服务，或点工具栏「刷新」重试。</span></div>\''):
+        "#evo-list 的鉴权/失败态三元 (index.html:1299, 52366a0 引入): 两个分支都是"
+        "**纯静态字面量**, 零插值、零用户输入 -> 无转义面; 显式冻结为例外",
+    ("box.innerHTML = '<div class=\"empty\">读取失败：' + esc",
+     "'<div class=\"empty\">读取失败：' + esc((e && e.message) || String(e)) + '</div>'"):
+        "待确认队列读取失败提示 (index.html:1402): 唯一动态量是 esc((e && e.message) ||"
+        " String(e)), 已由 esc 包裹; 其余为静态字面量; 显式冻结为例外",
+    ("g.innerHTML = auth",
+     'auth ? \'<div style="text-align:center;margin:90px 24px;color:var(--dim);line-height:1.9">\''
+     ' + \'后端返回 <b>401 未授权</b>（后台已启用 LCLONE_API_KEY 鉴权，或当前 Key 已失效）。<br>\''
+     ' + \'请在顶部 <b>API Key</b> 框粘贴 <code>LCLONE_API_KEY</code> 后回车，\''
+     ' + \'页面会自动刷新并加载记忆工作台。\' + \'</div>\' : '
+     '\'<div style="text-align:center;margin:90px 24px;color:var(--dim);line-height:1.9">\''
+     ' + \'记忆数据加载失败。<br>\' + \'请确认后端服务在运行，然后点工具栏「刷新」重试。\' + \'</div>\''):
+        "记忆工作台鉴权/失败态 (index.html:530, 52366a0 引入): 两个分支全是静态字面量,"
+        " 无插值、无用户输入 -> 无转义面; 显式冻结为例外",
 }
 
 
@@ -2538,6 +2560,43 @@ try:
           "/api/stats" in {r.path for r in app.routes})
 except NameError:
     print("SKIP 328 (fastapi 未安装)")
+
+# ---- 跨层去重 (全局层 ↔ 项目层) + 进化资产反向引用 (仅 active) ----
+_cl_conn = db_mod.init(os.path.join(tmp, "crosslayer.db"))
+_cl_pid = proj_mod.add_project(_cl_conn, "cl", str(demo_root), "")
+_doc = ("要点：跨层去重测试卡。\n背景/为什么：验证全局层与项目层互查。\n"
+        "影响/以后注意：同义内容跨层不再重复写入。\n归属：无")
+mem_mod.remember(_cl_conn, _doc, level="insight", project_id=None, confirmed=True)
+_gemb = mem_mod.llm.embed_one(_doc)   # 同文本 -> 与已落库那条余弦必为 1.0 (与 embedder 实现无关)
+check("329 项目卡跨层扫描命中全局层同义卡",
+      mem_mod._is_duplicate(_cl_conn, _gemb, _cl_pid, cross_layer=True) is True, "")
+check("330 不给 cross_layer 时仍是同域语义 (现有行为不变)",
+      mem_mod._is_duplicate(_cl_conn, _gemb, _cl_pid) is False, "")
+check("331 全局卡仍只比全局层",
+      mem_mod._is_duplicate(_cl_conn, _gemb, None) is True, "")
+check("332 文本级跨层同规则",
+      mem_mod._is_text_duplicate(_cl_conn, _doc, _cl_pid, cross_layer=True) is True
+      and mem_mod._is_text_duplicate(_cl_conn, _doc, _cl_pid) is False, "")
+# 覆盖面规则的反向: 全局侧跨层扫描要能看见"只存在于项目层"的等价卡
+_pdoc = _doc + "\n项目侧补充：只存在于项目层。"
+mem_mod.remember(_cl_conn, _pdoc, level="insight", project_id=_cl_pid, confirmed=True)
+_pemb = mem_mod.llm.embed_one(_pdoc)
+check("333 全局侧跨层扫描看得见项目层独有卡",
+      mem_mod._is_duplicate(_cl_conn, _pemb, None, cross_layer=True) is True
+      and mem_mod._is_duplicate(_cl_conn, _pemb, None) is False, "")
+# 反向引用只取 active (pending 不进看板引用条)
+_pend = mem_mod.remember(_cl_conn,
+                         "要点：待确认引用卡 [[evo:rev-test.py]]。\n背景/为什么：验证状态过滤。\n"
+                         "影响/以后注意：pending 不该出现在反向引用里。\n归属：无",
+                         level="insight", project_id=None, confirmed=False)
+_act = mem_mod.remember(_cl_conn,
+                        "要点：已确认引用卡 [[evo:rev-test.py]]。\n背景/为什么：验证状态过滤。\n"
+                        "影响/以后注意：active 应出现在反向引用里。\n归属：无",
+                        level="insight", project_id=None, confirmed=True)
+check("334 反向引用只取 active",
+      [r["id"] for r in mem_mod.insights_for_evolution(_cl_conn, "rev-test.py")] == [_act],
+      f"pend={_pend} act={_act}")
+_cl_conn.close()
 
 print()
 if fails:

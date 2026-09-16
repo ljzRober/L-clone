@@ -114,8 +114,10 @@ def apply(conn: sqlite3.Connection, force: bool = False,
         if exists or (_seeded(conn, state_key) and not force):
             report["insights_skipped"].append(key)
             continue
-        # 库里已有语义/文本近乎相同的记忆 → 不种, 免得制造重复
-        if mem_mod._is_text_duplicate(conn, content, None):
+        emb = llm.embed_one(content)
+        # 库里已有语义/文本近乎相同的记忆 → 不种, 免得制造重复 (跨层: 任意项目里已有等价卡也算)
+        if mem_mod._is_text_duplicate(conn, content, None, cross_layer=True) \
+                or mem_mod._is_duplicate(conn, emb, None, cross_layer=True):
             report["insights_skipped"].append(key)
             if not dry_run:
                 _mark(conn, state_key)
@@ -123,7 +125,6 @@ def apply(conn: sqlite3.Connection, force: bool = False,
         report["insights_added"].append(key)
         if dry_run:
             continue
-        emb = llm.embed_one(content)
         conn.execute(
             "INSERT INTO memories(project_id, level, content, reason, status,"
             " source_type, source_ref, embedding, confirmed_at)"
