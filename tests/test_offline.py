@@ -3180,6 +3180,54 @@ if shutil.which("node"):
           _js == _py, f"js={_js}\npy={_py}")
 else:
     check("414 JS/Python 归一化对拍 (无 node, 跳过)", True)
+
+# ---- 415+: 版本保留窗口 (每资产最近 N 版; 当前指针版永不剪) ----
+from lclone import evolutions as _evom
+_ev = db_mod.init(os.path.join(tmp, "prune.db"))
+for _i in range(1, 8):                      # 连发 7 版
+    mem_mod.create_evolution(_ev, name="keepme.md", kind="model",
+                             content=f"内容 v{_i}", reason=f"v{_i}")
+_vers = [r["version"] for r in _ev.execute(
+    "SELECT version FROM evo_versions WHERE name='keepme.md' ORDER BY version").fetchall()]
+check("415 发布时自动按窗口剪枝 (默认只留最近 5 版)",
+      _vers == [3, 4, 5, 6, 7], str(_vers))
+check("416 当前版本内容仍可读 (被剪版本不影响读取)",
+      mem_mod.read_evolution_file("keepme.md", _ev) == "内容 v7")
+_evom.rollback(_ev, "keepme.md", 3)         # 回滚到窗口内最早一版
+_pr = _evom.prune_versions(_ev, name="keepme.md", keep=1, dry_run=False)
+check("417 回滚到的当前版本不被剪掉 (keep=1 也保留它)",
+      _pr["assets"][0]["kept"] == [3, 7] and _pr["assets"][0]["pruned"] == [4, 5, 6],
+      str(_pr))
+check("418 剪枝后库中只剩保留的版本",
+      [r["version"] for r in _ev.execute(
+          "SELECT version FROM evo_versions WHERE name='keepme.md' ORDER BY version")]
+      == [3, 7])
+# 同一份内容被两个资产共享时, blob 不能被误回收
+_ev2 = db_mod.init(os.path.join(tmp, "prune2.db"))
+mem_mod.create_evolution(_ev2, name="share-a.md", kind="model", content="共享正文")
+mem_mod.create_evolution(_ev2, name="share-b.md", kind="model", content="共享正文")
+for _i in range(2, 8):
+    mem_mod.create_evolution(_ev2, name="share-a.md", kind="model", content=f"a v{_i}")
+check("419 共享 blob 不被误回收 (另一资产仍可读全文)",
+      mem_mod.read_evolution_file("share-b.md", _ev2) == "共享正文"
+      and _ev2.execute("SELECT COUNT(*) c FROM evo_versions WHERE name='share-a.md'")
+      .fetchone()["c"] == 5,
+      str(_ev2.execute("SELECT COUNT(*) c FROM evo_versions WHERE name='share-a.md'")
+          .fetchone()["c"]))
+_os_keep = os.environ.get("LCLONE_EVO_KEEP_VERSIONS")
+os.environ["LCLONE_EVO_KEEP_VERSIONS"] = "0"
+for _i in range(8, 11):
+    mem_mod.create_evolution(_ev2, name="keepall.md", kind="model", content=f"k{_i}")
+check("420 keep=0 表示不限制版本数",
+      _ev2.execute("SELECT COUNT(*) c FROM evo_versions WHERE name='keepall.md'")
+      .fetchone()["c"] == 3)
+if _os_keep is None:
+    os.environ.pop("LCLONE_EVO_KEEP_VERSIONS", None)
+else:
+    os.environ["LCLONE_EVO_KEEP_VERSIONS"] = _os_keep
+check("421 keep_versions 默认 5", _evom.keep_versions() == 5, str(_evom.keep_versions()))
+_ev.close()
+_ev2.close()
 _aux.close()
 
 print()

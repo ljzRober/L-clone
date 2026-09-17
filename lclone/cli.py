@@ -396,6 +396,33 @@ def cmd_evolution_migrate(args) -> None:
     print(f"共 {len(out)} 个; 现共有 {len(backend.index())} 个进化资产")
 
 
+def cmd_evolution_prune(args) -> None:
+    """版本保留窗口: 每个资产只保留最近 N 个版本 (默认 5) 并回收无引用的内容对象。
+
+    这是**服务端**操作 (与 `evolution migrate` 同约定): 远端大脑下要在容器/服务器上跑
+    `docker exec lclone python -m lclone evolution prune --apply --db /data/lclone.db`;
+    默认 dry-run, `--apply` 才真删。
+    """
+    url = (config.get("LCLONE_WEB_URL") or "").strip()
+    if url and not getattr(args, "local", False):
+        raise SystemExit(
+            f"prune 要在**大脑所在机器**上执行 (当前大脑是远端 {url})。\n"
+            f"  Docker 部署: docker exec lclone python -m lclone evolution prune --apply"
+            f" --db /data/lclone.db\n"
+            f"  (publish 时也会自动按窗口剪枝; 这里只用于存量或手工巡检)")
+    conn = _conn(args)
+    res = evolutions.prune_versions(conn, name=args.name or None, keep=args.keep,
+                                    dry_run=not args.apply)
+    for a in res["assets"]:
+        print(f"  {a['name']}: 保留 {a['kept']}, 剪掉 {a['pruned']}")
+    if not res["assets"]:
+        print("(没有超出窗口的版本)")
+    print(f"无引用内容对象: {res['blobs_removed']} 个"
+          + (" (dry-run, 未删)" if res["dry_run"] else " (已回收)"))
+    if res["dry_run"]:
+        print("加 --apply 才真删")
+
+
 def cmd_evolution_retype(args) -> None:
     """补正类型元数据: 把 kind 仍是 other 但扩展名可推断的资产发布一版修正。"""
     backend, _ = _evo_ctx(args)
@@ -913,6 +940,15 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="把进化目录里的存量文件摄入为 v1 (服务端操作; 只处理未进索引的)")
     _evo_common(sev_mg)
     sev_mg.set_defaults(func=cmd_evolution_migrate)
+
+    sev_pn = sev_sub.add_parser("prune", parents=[parent],
+                                help="版本保留窗口: 每资产只留最近 N 版 + 回收无引用内容对象 (服务端操作)")
+    sev_pn.add_argument("--name", default="", help="只处理某个资产 (默认全部)")
+    sev_pn.add_argument("--keep", type=int, default=None,
+                        help="保留多少个版本 (默认 LCLONE_EVO_KEEP_VERSIONS 或 5)")
+    sev_pn.add_argument("--apply", action="store_true", help="真删 (默认 dry-run)")
+    _evo_common(sev_pn)
+    sev_pn.set_defaults(func=cmd_evolution_prune)
 
     sev_rt = sev_sub.add_parser("retype", parents=[parent],
                                 help="补正类型元数据 (kind=other 但扩展名可推断的 → 发布一版修正)")

@@ -353,7 +353,13 @@ def publish(conn: sqlite3.Connection, name: str, content: Optional[str] = None,
             " updated_at=excluded.updated_at, deleted_at='', renamed_to=''",
             (fname, ver, _now()),
         )
-    return {"name": fname, "version": ver, "hash": h, "changed": True}
+    res = {"name": fname, "version": ver, "hash": h, "changed": True}
+    # 版本保留窗口: 默认每资产最近 5 个 (LCLONE_EVO_KEEP_VERSIONS); 当前指针版本永不剪
+    pr = prune_versions(conn, name=fname, dry_run=False)
+    if pr["assets"]:
+        res["pruned_versions"] = pr["assets"][0]["pruned"]
+        res["pruned_blobs"] = pr["blobs_removed"]
+    return res
 
 
 def resolve(conn: sqlite3.Connection, name: str,
@@ -508,6 +514,85 @@ def manifest_index(conn: sqlite3.Connection) -> Dict[str, dict]:
         out[row["name"]] = {"version": row["version"], "hash": row["hash"],
                             "size": row["size"], "kind": row["kind"],
                             "project_id": row["project_id"]}
+    return out
+
+
+KEEP_VERSIONS_DEFAULT = 5
+
+
+def keep_versions() -> int:
+    """每个资产保留的版本数上限 (LCLONE_EVO_KEEP_VERSIONS, 默认 5; <=0 = 不限制)。"""
+    return config.get_int("LCLONE_EVO_KEEP_VERSIONS", KEEP_VERSIONS_DEFAULT)
+
+
+def _gc_blobs(conn: sqlite3.Connection, dry_run: bool = True) -> int:
+    """回收没有任何 `evo_versions` 行引用的内容对象。
+
+    内容寻址: 同一 hash 可能被多个资产/版本共享, 因此只在**全表**都不再引用时才删。
+    """
+    used = {r["hash"] for r in conn.execute(
+        "SELECT DISTINCT hash FROM evo_versions WHERE hash<>''").fetchall()}
+    root = blob_dir()
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir():
+            continue
+        for f in sorted(sub.iterdir()):
+            if f.name in used:
+                continue
+            if not dry_run:
+                try:
+                    f.unlink()
+                except OSError:
+                    continue
+            removed += 1
+        if not dry_run:
+            try:
+                if not any(sub.iterdir()):
+                    sub.rmdir()
+            except OSError:
+                pass
+    return removed
+
+
+def prune_versions(conn: sqlite3.Connection, name: Optional[str] = None,
+                   keep: Optional[int] = None, dry_run: bool = True) -> dict:
+    """版本保留窗口: 每个资产**只保留最近 N 个版本** (默认 5), 并额外保留当前指针版本。
+
+    两条硬边界:
+      - 当前版本 (`evo_current.version`) **永远保留** —— 回滚到旧版后, 若只按"最近 N 个"
+        剪, 那一版会被下一次发布剪掉, 回滚语义当场失效;
+      - 只为没有任何剩余版本引用的 hash 回收 blob (内容寻址, 可能被多版本/多资产共享)。
+
+    返回 {"assets": [{name, kept, pruned}], "blobs_removed": n, "dry_run": bool}。
+    """
+    limit = keep_versions() if keep is None else int(keep)
+    names = [name] if name else [r["name"] for r in conn.execute(
+        "SELECT DISTINCT name FROM evo_versions").fetchall()]
+    out: dict = {"assets": [], "blobs_removed": 0, "dry_run": bool(dry_run)}
+    for nm in names:
+        vers = [r["version"] for r in conn.execute(
+            "SELECT version FROM evo_versions WHERE name=? ORDER BY version DESC",
+            (nm,)).fetchall()]
+        if not vers:
+            continue
+        keep_set = set(vers[:limit]) if limit and limit > 0 else set(vers)
+        cur = conn.execute("SELECT version FROM evo_current WHERE name=?",
+                           (nm,)).fetchone()
+        if cur is not None:
+            keep_set.add(cur["version"])
+        drop = [v for v in vers if v not in keep_set]
+        if drop and not dry_run:
+            conn.execute("DELETE FROM evo_versions WHERE name=? AND version IN (%s)"
+                         % ",".join("?" * len(drop)), (nm, *drop))
+        if drop:
+            out["assets"].append({"name": nm, "kept": sorted(keep_set),
+                                  "pruned": sorted(drop)})
+    if not dry_run:
+        conn.commit()
+    out["blobs_removed"] = _gc_blobs(conn, dry_run=dry_run)
     return out
 
 

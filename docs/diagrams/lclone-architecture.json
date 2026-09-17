@@ -1,0 +1,459 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "L-clone 外置大脑 · 工程架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/ljzRober/L-clone",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "8ef7349fb20828fd8469cd09553e2ea46824afb6"
+    },
+    "views": [
+      {
+        "id": "write-path",
+        "label": "写路径 · 自动捕获",
+        "focus": [
+          "dsh",
+          "rest",
+          "core",
+          "gate",
+          "llm",
+          "db"
+        ],
+        "note": "每轮文本经 /api/capture 过准入闸门, 由 LLM 成卡后落 pending 草稿。"
+      },
+      {
+        "id": "read-path",
+        "label": "读路径 · 召回注入",
+        "focus": [
+          "dsh",
+          "rest",
+          "core",
+          "embed",
+          "db"
+        ],
+        "note": "会话首轮 bootstrap 召回相关洞察并注入上下文。"
+      },
+      {
+        "id": "entry-points",
+        "label": "四种接入方式",
+        "focus": [
+          "aitools",
+          "cli",
+          "mcp",
+          "webui",
+          "core"
+        ],
+        "note": "CLI / Web / REST / MCP 全部直接调用同一套核心纯函数。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "dsh",
+      "type": "frontend",
+      "label": "DSH 插件 · 大脑看板",
+      "sublabel": "@yueliudan/lclone-memory-dsh",
+      "pos": [
+        40,
+        130
+      ],
+      "size": [
+        215,
+        64
+      ],
+      "sources": [
+        {
+          "path": "integrations/dsh/dsh/index.js",
+          "label": "turn/end + bootstrap"
+        }
+      ]
+    },
+    {
+      "id": "webui",
+      "type": "frontend",
+      "label": "Web 面板",
+      "sublabel": "记忆工作台 / · 问答页 /ask",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        215,
+        64
+      ],
+      "sources": [
+        {
+          "path": "lclone/frontend/index.html",
+          "label": "单页前端"
+        }
+      ]
+    },
+    {
+      "id": "aitools",
+      "type": "external",
+      "label": "AI 工具客户端",
+      "sublabel": "Claude Code / Codex · MCP",
+      "pos": [
+        40,
+        370
+      ],
+      "size": [
+        215,
+        64
+      ],
+      "sources": [
+        {
+          "path": "integrations/claude-code/hooks/session-start.sh",
+          "label": "SessionStart 注入"
+        }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "CLI",
+      "sublabel": "remember · capture · recall",
+      "pos": [
+        40,
+        500
+      ],
+      "size": [
+        215,
+        64
+      ],
+      "sources": [
+        {
+          "path": "lclone/cli.py",
+          "label": "命令入口"
+        }
+      ]
+    },
+    {
+      "id": "rest",
+      "type": "backend",
+      "label": "Web / REST API",
+      "sublabel": "FastAPI :8000",
+      "pos": [
+        405,
+        130
+      ],
+      "size": [
+        190,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lclone/web.py",
+          "label": "/api/* 路由"
+        }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "MCP Server",
+      "sublabel": "stdio + HTTP /mcp · JSON-RPC 2.0",
+      "pos": [
+        405,
+        250
+      ],
+      "size": [
+        190,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lclone/mcp_server.py",
+          "label": "零依赖 JSON-RPC"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "backend",
+      "label": "准入闸门 gate.py",
+      "sublabel": "确定性三档 · skip 档零 LLM 调用",
+      "pos": [
+        745,
+        130
+      ],
+      "size": [
+        190,
+        72
+      ],
+      "sources": [
+        {
+          "path": "lclone/gate.py",
+          "label": "skip / candidate / uncertain"
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "核心逻辑",
+      "sublabel": "memory · projects · evolutions",
+      "pos": [
+        745,
+        320
+      ],
+      "size": [
+        190,
+        100
+      ],
+      "sources": [
+        {
+          "path": "lclone/memory.py",
+          "label": "洞察读写与召回"
+        },
+        {
+          "path": "lclone/projects.py",
+          "label": "项目与 spec 索引"
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "cloud",
+      "label": "LLM API",
+      "sublabel": "OpenAI 兼容 · 成卡 / 监督",
+      "pos": [
+        1085,
+        130
+      ],
+      "size": [
+        190,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lclone/llm.py",
+          "label": "chat / chat_json"
+        }
+      ]
+    },
+    {
+      "id": "embed",
+      "type": "cloud",
+      "label": "Embedding",
+      "sublabel": "向量召回 · 本地哈希可兜底",
+      "pos": [
+        1085,
+        330
+      ],
+      "size": [
+        190,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lclone/llm.py",
+          "label": "embed_texts / embed_one"
+        }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite lclone.db",
+      "sublabel": "memories · evo_versions · FTS",
+      "pos": [
+        745,
+        540
+      ],
+      "size": [
+        190,
+        76
+      ],
+      "sources": [
+        {
+          "path": "lclone/db.py",
+          "label": "建表 DDL 与 FTS"
+        }
+      ]
+    },
+    {
+      "id": "blob",
+      "type": "database",
+      "label": "进化资产内容库",
+      "sublabel": "data/evolution/blobs · sha256 寻址",
+      "pos": [
+        1085,
+        540
+      ],
+      "size": [
+        190,
+        68
+      ],
+      "sources": [
+        {
+          "path": "lclone/evolutions.py",
+          "label": "put_blob / publish"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "接入层 · 客户端与 AI 工具",
+      "wraps": [
+        "dsh",
+        "webui",
+        "aitools",
+        "cli"
+      ],
+      "pad": 8
+    },
+    {
+      "kind": "region",
+      "label": "L-clone 后端服务 · Docker (:8000)",
+      "wraps": [
+        "rest",
+        "mcp",
+        "gate",
+        "core"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "鉴权 · Bearer / X-API-Key (只存 sha256)",
+      "wraps": [
+        "rest",
+        "mcp"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "持久化 data/ · Docker volume",
+      "wraps": [
+        "db",
+        "blob"
+      ],
+      "pad": 8
+    }
+  ],
+  "connections": [
+    {
+      "id": "dsh-rest",
+      "from": "dsh",
+      "to": "rest",
+      "label": "capture / bootstrap",
+      "variant": "emphasis"
+    },
+    {
+      "id": "rest-core",
+      "from": "rest",
+      "to": "core",
+      "label": "调用记忆与项目核心",
+      "variant": "emphasis"
+    },
+    {
+      "id": "core-db",
+      "from": "core",
+      "to": "db",
+      "label": "读写洞察与索引",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 30
+    },
+    {
+      "id": "aitools-mcp",
+      "from": "aitools",
+      "to": "mcp",
+      "label": "MCP stdio 客户端"
+    },
+    {
+      "id": "aitools-cli",
+      "from": "aitools",
+      "to": "cli",
+      "label": "钩子调用 CLI",
+      "labelDy": 60
+    },
+    {
+      "id": "webui-rest",
+      "from": "webui",
+      "to": "rest",
+      "label": "同源 /api/*"
+    },
+    {
+      "id": "cli-core",
+      "from": "cli",
+      "to": "core",
+      "label": "进程内直连"
+    },
+    {
+      "id": "mcp-core",
+      "from": "mcp",
+      "to": "core",
+      "label": "工具调用",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "core-gate",
+      "from": "core",
+      "to": "gate",
+      "label": "capture 先过闸门",
+      "labelDy": -30
+    },
+    {
+      "id": "gate-llm",
+      "from": "gate",
+      "to": "llm",
+      "label": "命中才调 LLM 成卡"
+    },
+    {
+      "id": "core-llm",
+      "from": "core",
+      "to": "llm",
+      "label": "问答 / 边界监督",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "core-embed",
+      "from": "core",
+      "to": "embed",
+      "label": "向量化 + 语义召回"
+    },
+    {
+      "id": "core-blob",
+      "from": "core",
+      "to": "blob",
+      "label": "内容寻址存取",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "分层与解耦",
+      "items": [
+        "四种入口 (CLI / Web / REST / MCP) 共用同一套核心纯函数",
+        "存储与模型层可替换: SQLite + OpenAI 兼容 API, 或 BRAIN_LLM=dummy 离线"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "写路径 · 自动捕获",
+      "items": [
+        "客户端每轮文本 → /api/capture → gate.py 确定性准入 (skip 档零调用)",
+        "洞察先进 pending 草稿, review 盖章后才生效"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "读路径与权威",
+      "items": [
+        "会话首轮 bootstrap 召回相关洞察并注入上下文",
+        "spec 与代码留仓库只做索引; 进化资产 sha256 内容寻址, 回滚只改指针"
+      ]
+    }
+  ]
+}
