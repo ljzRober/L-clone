@@ -99,6 +99,60 @@ def is_project_name(conn, pointer: str) -> bool:
     return True
 
 
+_LABEL_RE = re.compile(r"\*{1,2}\s*(要点|背景/为什么|影响/以后注意)\s*\*{1,2}\s*[:：]?")
+_TAG_RE = re.compile(r"\[\[(?:evo|spec|src|m):[^\]\n]+\]\]")
+
+
+def normalize_card(content: str) -> str:
+    """把 LLM 改写时带进来的装饰去掉, 回到纯三段卡:
+
+    - 删掉 `## 卡片 1 ·` 这类标题行/前缀; `**要点**` → `要点：`;
+    - 段标题与正文之间的空行并回同一行;
+    - 同一张卡里重复出现的同一个引用只留第一次 (spec: 引用重复无意义, 渲染与召回都要去重);
+    - 收尾空白/空行。
+    """
+    out = content or ""
+    out = re.sub(r"^\s*#{1,6}\s*卡片\s*\d+\s*[·:：\-—]?\s*", "", out, flags=re.M)
+    out = _LABEL_RE.sub(lambda m: m.group(1) + "：", out)
+    # 标题单独占一行 (LLM 改写常见: "要点\nA。") → 并回同一行
+    out = re.sub(r"(?m)^(要点|背景/为什么|影响/以后注意)\s*[:：]?\s*\n+", r"\1：", out)
+    out = re.sub(r"(要点|背景/为什么|影响/以后注意)：\n+", r"\1：", out)
+    seen: set = set()
+
+    def _dedup_tag(m):
+        t = m.group(0)
+        if t in seen:
+            return ""
+        seen.add(t)
+        return t
+
+    out = _TAG_RE.sub(_dedup_tag, out)
+    # 段与段之间不留空行 (三段卡是"每段一行")
+    out = re.sub(r"\n{2,}(?=(?:要点|背景/为什么|影响/以后注意)：)", "\n", out)
+    out = re.sub(r"[ \t]+([。；，、）])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    return out.strip()
+
+
+def normalize_all(conn, apply: bool = False) -> dict:
+    """对全部 insight 做一次卡片归一化 (只改内容真变了的行)。"""
+    rows = conn.execute("SELECT id, content FROM memories WHERE level='insight'").fetchall()
+    rep = {"scanned": len(rows), "changed": 0}
+    for r in rows:
+        new = normalize_card(r["content"])
+        if not new or new == r["content"]:
+            continue
+        rep["changed"] += 1
+        print(f"  ~ #{r['id']} {r['content'][:34]} → {new[:34]}")
+        if apply:
+            conn.execute("UPDATE memories SET content=?, embedding=? WHERE id=?",
+                         (new, pack_vec(llm.embed_one(new)), r["id"]))
+            conn.commit()
+    return rep
+
+
 def migrate(conn, apply: bool = False, rewrite_refs: bool = False) -> dict:
     """扫 level=insight 且含「归属」的卡; 返回报告 (不改库除非 apply=True)。"""
     rows = conn.execute(
@@ -141,6 +195,8 @@ def main() -> None:
     ap.add_argument("--rewrite-refs", action="store_true",
                     help="用 LLM 把旧式 src:/m: 指针就地折进正文 (需 BRAIN_LLM=api; 仅 --apply 时生效)")
     ap.add_argument("--backup", default="", help="显式指定备份文件路径 (默认走 WAL 安全在线备份)")
+    ap.add_argument("--normalize", action="store_true",
+                    help="对全部洞察做卡片归一化 (去 markdown 装饰/段标题换行/重复引用)")
     args = ap.parse_args()
     dbp = args.db or db_mod.config.db_path()
     if args.apply:
@@ -150,6 +206,9 @@ def main() -> None:
         else:
             print(f"已备份(WAL 安全): {db_mod.backup(dbp, str(Path(dbp).resolve().parent / 'backups'))}")
     conn = db_mod.init(dbp)
+    if args.normalize:
+        nrep = normalize_all(conn, apply=args.apply)
+        print(f"归一化: 扫描 {nrep['scanned']} 张, 改动 {nrep['changed']} 张")
     rep = migrate(conn, apply=args.apply, rewrite_refs=args.rewrite_refs)
     print(f"\n扫描 {rep['scanned']} 张, 改写 {rep['rewritten']} 张, "
           f"保留指针 {rep['kept_pointer']} 张, "

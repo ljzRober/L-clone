@@ -3101,6 +3101,14 @@ try:
 finally:
     mem_mod.recall = _orig_recall
 check("403 ask 召回并入全局层", _seen_kw.get("include_global") is True, str(_seen_kw))
+check("404 normalize_card 去掉 markdown 装饰/合并段标题/引用去重",
+      _sa.normalize_card(
+          "**要点**\n\nA。\n\n**背景/为什么**\n\nB [[src:x]] [[m:1]]。\n\n**影响/以后注意**\n\nC [[src:x]]。")
+      == "要点：A。\n背景/为什么：B [[src:x]] [[m:1]]。\n影响/以后注意：C。"
+      and _sa.normalize_card("## 卡片 1 · 要点\nA。\n背景/为什么：B。\n影响/以后注意：C。")
+      == "要点：A。\n背景/为什么：B。\n影响/以后注意：C。"
+      and _sa.normalize_card("要点：A。\n背景/为什么：B。\n影响/以后注意：C。")
+      == "要点：A。\n背景/为什么：B。\n影响/以后注意：C。")
 _aux.close()
 
 print()
