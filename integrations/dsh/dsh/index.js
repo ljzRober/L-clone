@@ -1,5 +1,11 @@
 // L-clone 记忆钩子 (DSH 静态插件 bundle): 每轮结束自动 capture 沉淀 + 决策确认改由客户端 UI 呈现 (不劫持主 agent)。
 //
+// 本变更 (project-identity-remote):
+//   - 项目身份改为**归一化 git remote** (host/group/repo): 匹配 /api/projects 的 remote 优先,
+//     无 remote 才回落 path; 自动注册时把 remote 一起上报, 同一仓库换机器/换 clone 目录不再造重复项目。
+//   - 读侧 bootstrap 改为**客户端先解析归属再上报 project_id** —— 服务端在服务器上跑
+//     git 检测必然失败, 旧实现导致项目记忆在会话首轮一张都不注入。
+//
 // 本变更 (remote-attribution):
 //   - 归属改在客户端解析: 后端部署在服务器时, 服务端的 resolve_project(cwd) 看不到本机路径
 //     → 永远 no_git → 自动捕获被静默降级成全局层, 项目节点收不到新记忆、弹窗也没有
@@ -119,6 +125,48 @@ function gitToplevel(cwd, cb) {
   } catch (e) { cb(null) }
 }
 
+// 归一化 git remote 为 host/group/repo (与 Python 侧 projects.normalize_remote 同规则)
+function normalizeRemote(url) {
+  let s = String(url || '').trim()
+  if (!s) return ''
+  const hadScheme = s.includes('://')
+  if (hadScheme) s = s.split('://')[1]
+  const firstSlash = s.indexOf('/')
+  const headSeg = firstSlash === -1 ? s : s.slice(0, firstSlash)
+  const at = headSeg.indexOf('@')
+  if (at !== -1) s = s.slice(at + 1)
+  const h0 = s.indexOf('/') === -1 ? s : s.slice(0, s.indexOf('/'))
+  if (!hadScheme && h0.includes(':')) {
+    const i = s.indexOf(':')
+    s = s.slice(0, i) + '/' + s.slice(i + 1).replace(/^\/+/, '')
+  }
+  s = s.replace(/\/+$/, '')
+  if (s.toLowerCase().endsWith('.git')) s = s.slice(0, -4)
+  const i = s.indexOf('/')
+  let head = i === -1 ? s : s.slice(0, i)
+  const rest = i === -1 ? '' : s.slice(i + 1)
+  if (head.includes(':')) {
+    const parts = head.split(':')
+    head = parts[0].toLowerCase() + ':' + parts.slice(1).join(':')
+  } else {
+    head = head.toLowerCase()
+  }
+  return rest ? head + '/' + rest : head
+}
+
+function gitRemote(cwd, cb) {
+  if (!cwd) { cb(''); return }
+  execFile('git', ['-C', cwd, 'remote', 'get-url', 'origin'], { timeout: 5000 },
+    (err, stdout) => {
+      if (!err && String(stdout || '').trim()) { cb(String(stdout).trim()); return }
+      execFile('git', ['-C', cwd, 'remote', '-v'], { timeout: 5000 }, (e2, out2) => {
+        const line = String(out2 || '').split('\n').map((x) => x.trim())
+          .find((x) => /\s\(fetch\)$/.test(x))
+        cb(line ? (line.split(/\s+/)[1] || '') : '')
+      })
+    })
+}
+
 function fetchProjects(cb) {
   if (projectCache.items.length && Date.now() - projectCache.at < PROJECT_CACHE_MS) {
     cb(projectCache.items)
@@ -144,24 +192,29 @@ function matchProject(items, repo) {
   }) || null
 }
 
-// 解析 cwd 的项目归属; cb(projectId|undefined, projectName|undefined, why)
+// 解析 cwd 的项目归属; cb(projectId|undefined, projectName|undefined, why, remote)
 function resolveProject(cwd, cb) {
   gitToplevel(cwd, (repo) => {
     if (!repo) { cb(undefined, undefined, 'no_git'); return }
-    fetchProjects((items) => {
-      const hit = matchProject(items, repo)
-      if (hit) { cb(hit.id, hit.name, 'matched'); return }
-      const name = repo.split('/').filter(Boolean).pop() || 'project'
-      lcloneRequester('POST', '/api/projects', { name, path: repo }, (ok, json) => {
-        projectCache.at = 0 // 失效缓存, 下次重新拉
-        if (ok && json && json.id) { cb(json.id, name, 'created'); return }
-        // 名字被别的机器/路径占用了 → 退一步按 name 复用同名项目, 不重复造项目
-        fetchProjects((fresh) => {
-          const byName = fresh.find((p) => p.name === name)
-          if (byName) cb(byName.id, byName.name, 'matched_by_name')
-          else cb(undefined, undefined, 'register_failed')
-        })
-      }, 8000)
+    gitRemote(cwd, (remote) => {
+      const nr = normalizeRemote(remote)
+      fetchProjects((items) => {
+        let hit = null
+        if (nr) hit = items.find((p) => p.remote && normalizeRemote(p.remote) === nr) || null
+        if (!hit) hit = matchProject(items, repo)
+        if (hit) { cb(hit.id, hit.name, 'matched', remote); return }
+        const name = repo.split('/').filter(Boolean).pop() || 'project'
+        lcloneRequester('POST', '/api/projects', { name, path: repo, remote: remote || '' }, (ok, json) => {
+          projectCache.at = 0 // 失效缓存, 下次重新拉
+          if (ok && json && json.id) { cb(json.id, name, 'created', remote); return }
+          // 名字被别的机器/路径占用了 → 退一步按 name 复用同名项目, 不重复造项目
+          fetchProjects((fresh) => {
+            const byName = fresh.find((p) => p.name === name)
+            if (byName) cb(byName.id, byName.name, 'matched_by_name', remote)
+            else cb(undefined, undefined, 'register_failed', remote)
+          })
+        }, 8000)
+      })
     })
   })
 }
@@ -173,8 +226,9 @@ function runCapture(text, sessionKey, cwd, onDone) {
   const body = { text: t, session_key: sessionKey || '', global_fallback: true }
   if (cwd) body.cwd = cwd
   log(`capture ${t.length} chars cwd=${cwd || '(无)'}`)
-  resolveProject(cwd, (pid, pname, why) => {
+  resolveProject(cwd, (pid, pname, why, remote) => {
     if (pid) body.project_id = pid // 客户端解析出的归属, 后端直接采用
+    body.repo_remote = remote || '' // 远端大脑下服务端按归一化 remote 兜底匹配
     log(`capture attribution: project=${pid || '(全局)'}${pname ? ' ' + pname : ''} (${why})`)
     lcloneRequester('POST', '/api/capture', body, (ok, json) => {
       // 闸门诊断: 后端脚本先判 skip/candidate/uncertain, skip 不会调 LLM。
@@ -188,9 +242,12 @@ function runCapture(text, sessionKey, cwd, onDone) {
 }
 
 // 读侧: 走后端 HTTP GET /api/bootstrap (返回会话引导文本)。
-function runBootstrap(cwd, onDone) {
-  let path = '/api/bootstrap'
-  if (cwd) path += '?cwd=' + encodeURIComponent(cwd)
+function runBootstrap(cwd, projectId, onDone) {
+  const qs = []
+  if (cwd) qs.push('cwd=' + encodeURIComponent(cwd))
+  // 读侧归属由客户端解析后上报: 服务端跑不了客户端路径的 git 检测
+  if (projectId) qs.push('project_id=' + encodeURIComponent(projectId))
+  let path = '/api/bootstrap' + (qs.length ? '?' + qs.join('&') : '')
   lcloneRequester('GET', path, null, (ok, json) => {
     const text = ok && json ? (json.text || '') : ''
     log('bootstrap via http ' + (ok ? '' + text.length : 'fail'))
@@ -210,7 +267,8 @@ function buildBootText(skillBody, bootOut) {
 async function injectSessionStart(ctx, sessionId, cwd) {
   const agent = ctx.agents.get(sessionId)
   if (!agent) { log(`bootstrap: agent not found for ${sessionId}`); return }
-  runBootstrap(cwd, (bootOut) => {
+  resolveProject(cwd, (pid) => {
+    runBootstrap(cwd, pid, (bootOut) => {
     readFile(SKILL_FILE, { encoding: 'utf8' })
       .then((skillBody) => {
         probeLcloneHealth((ok) => {
@@ -233,6 +291,7 @@ async function injectSessionStart(ctx, sessionId, cwd) {
         })
       })
       .catch(() => {})
+    })
   })
 }
 

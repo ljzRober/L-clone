@@ -947,11 +947,13 @@ class HttpBackend:
         return self._req("POST", "/api/evolution/rollback",
                          {"name": name, "version": to_version}).get("result", {})
 
-    def find_project(self, ref: Optional[str] = None, repo_path: str = "") -> Optional[int]:
-        """把项目名/id 或**本机仓库路径**解析成服务器的 project_id。
+    def find_project(self, ref: Optional[str] = None, repo_path: str = "",
+                     repo_remote: str = "") -> Optional[int]:
+        """把项目名/id、**本机 git remote** 或**本机仓库路径**解析成服务器的 project_id。
 
         远端大脑下服务端看不到客户端路径, 归属必须在客户端解析后随请求上报
-        (与 DSH 插件的 resolveProject 同规则): 先按名字/id 命中, 再按 path 最长前缀匹配。
+        (与 DSH 插件的 resolveProject 同规则): 先按名字/id 命中, 再按归一化 remote,
+        最后按 path 最长前缀 (无 remote 的仓库才用得上)。
         """
         items = self._req("GET", "/api/projects").get("items", [])
         if ref:
@@ -962,6 +964,13 @@ class HttpBackend:
                 if str(p.get("id")) == r or p.get("name") == r:
                     return p.get("id")
             return None
+        if repo_remote:
+            from .projects import normalize_remote
+            want = normalize_remote(repo_remote)
+            if want:
+                for p in items:
+                    if p.get("remote") and normalize_remote(p["remote"]) == want:
+                        return p.get("id")
         if repo_path:
             best: Optional[tuple] = None
             for p in items:

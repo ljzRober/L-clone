@@ -50,6 +50,7 @@ class CaptureIn(BaseModel):
     title: str = ""
     project_id: Optional[int] = None
     cwd: str = ""
+    repo_remote: str = ""
     session_key: str = ""
     global_fallback: bool = False
 
@@ -68,6 +69,7 @@ class RecallIn(BaseModel):
     query: str
     project_id: Optional[int] = None
     k: int = 5
+    include_global: bool = True   # 会话面召回默认覆盖全局层 (函数级默认仍为 False)
 
 
 class SuperviseIn(BaseModel):
@@ -79,6 +81,17 @@ class ProjectIn(BaseModel):
     name: str
     path: str = ""
     charter: str = ""
+    remote: str = ""
+
+
+class ProjectMergeIn(BaseModel):
+    src_id: int
+    dst_id: int
+    backup: str = ""
+
+
+class ProjectRollbackIn(BaseModel):
+    backup: str
 
 
 class EvoPublishIn(BaseModel):
@@ -215,10 +228,35 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/projects")
     def add_project(body: ProjectIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
-            pid = proj_mod.add_project(conn, body.name, body.path, body.charter)
+            pid = proj_mod.add_project(conn, body.name, body.path, body.charter,
+                                       getattr(body, "remote", "") or "")
         except sqlite3.IntegrityError:
             raise HTTPException(400, "项目名已存在")
         return {"id": pid}
+
+    @app.get("/api/projects/duplicates")
+    def project_duplicates(conn: sqlite3.Connection = Depends(get_db)):
+        """只读: 同一归一化 remote 下的多个项目 (身份重复信号)。"""
+        return {"items": proj_mod.duplicate_groups(conn)}
+
+    @app.post("/api/projects/merge")
+    def merge_projects(body: ProjectMergeIn, conn: sqlite3.Connection = Depends(get_db)):
+        """显式合并源项目到目标项目 (改挂记忆/spec 索引 + 源项目墓碑 + 可回滚备份)。"""
+        import tempfile
+        from pathlib import Path as _P
+        backup = body.backup or str(_P(tempfile.gettempdir()) /
+                                    f"lclone-merge-{body.src_id}-{body.dst_id}.json")
+        try:
+            return proj_mod.merge_projects(conn, body.src_id, body.dst_id, backup)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/api/projects/rollback-merge")
+    def rollback_merge(body: ProjectRollbackIn, conn: sqlite3.Connection = Depends(get_db)):
+        try:
+            return proj_mod.rollback_merge(conn, body.backup)
+        except (OSError, ValueError, KeyError) as e:
+            raise HTTPException(400, str(e))
 
     @app.post("/api/projects/{pid}/sync")
     def sync_project(pid: int, conn: sqlite3.Connection = Depends(get_db)):
@@ -257,8 +295,10 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/capture")
     def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_db)):
         pid = body.project_id
+        if pid is None and body.repo_remote:
+            pid = proj_mod.match_by_remote(conn, body.repo_remote)
         if pid is None and body.cwd:
-            status, pid = proj_mod.resolve_project(conn, cwd=body.cwd)
+            status, pid = proj_mod.resolve_project(conn, cwd=body.cwd, remote=body.repo_remote)
             if status == "no_git":
                 if not body.global_fallback:
                     raise HTTPException(422, "未归属: 无 git 仓库")
@@ -269,14 +309,18 @@ def create_app(db_path: Optional[str] = None):
 
     @app.get("/api/bootstrap")
     def bootstrap(cwd: str = "", query: str = "", k: int = 5,
+                  project_id: Optional[int] = None, repo_remote: str = "",
                   conn: sqlite3.Connection = Depends(get_db)):
-        pid = None
-        if cwd:
+        # 归属优先级: 客户端已解析的 project_id → 上报的 remote → cwd (向后兼容回落)
+        pid = project_id if project_id is not None else None
+        if pid is None and repo_remote:
+            pid = proj_mod.match_by_remote(conn, repo_remote)
+        if pid is None and cwd:
             status, pid = proj_mod.resolve_project(conn, cwd=cwd)
             if status == "no_git":
                 pid = None
         text = mem_mod.bootstrap(conn, query=query, project_id=pid, k=k)
-        return {"text": text}
+        return {"text": text, "project_id": pid}
 
     @app.get("/api/pending")
     def pending(conn: sqlite3.Connection = Depends(get_db)):
@@ -504,7 +548,8 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/recall")
     def recall(body: RecallIn, conn: sqlite3.Connection = Depends(get_db)):
         items = mem_mod.recall(conn, body.query, k=body.k,
-                               project_id=body.project_id)
+                               project_id=body.project_id,
+                               include_global=getattr(body, "include_global", True))
         return {"items": items}
 
     @app.post("/api/supervise")

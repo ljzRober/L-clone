@@ -2827,6 +2827,162 @@ check("356 bootstrap 默认上限 100 真的注入全部 25 张 (行为, 非仅�
       not _bl_missing, f"missing={_bl_missing}")
 _bl_conn.close()
 
+# ---- 357+: 项目身份改 git remote (归一化 / 匹配 / 回填 / 探测 / 合并回滚) ----
+from lclone.projects import normalize_remote as _normr, git_remote as _gitr
+check("357 remote 归一化 ssh scp 形式",
+      _normr("git@git.xiaojukeji.com:PH-596/expressdriver-drn.git")
+      == "git.xiaojukeji.com/PH-596/expressdriver-drn",
+      _normr("git@git.xiaojukeji.com:PH-596/expressdriver-drn.git"))
+check("358 remote 归一化 https 去凭据",
+      _normr("https://user:tok@GitHub.com/ljzRober/L-clone.git")
+      == "github.com/ljzRober/L-clone",
+      _normr("https://user:tok@GitHub.com/ljzRober/L-clone.git"))
+check("359 remote 归一化 ssh:// 带端口 (端口保留, 不当 scp)",
+      _normr("ssh://git@host:2222/a/b.git") == "host:2222/a/b",
+      _normr("ssh://git@host:2222/a/b.git"))
+check("360 remote 空/空串返回空串",
+      _normr("") == "" and _normr("   ") == "")
+check("361 同仓库两种写法归一后相等",
+      _normr("git@git.xiaojukeji.com:PH-596/x.git")
+      == _normr("https://git.xiaojukeji.com/PH-596/x"))
+_dbp2 = os.path.join(tmp, "remoteid.db")
+_rp = db_mod.init(_dbp2)
+_pcols = [r["name"] for r in _rp.execute("PRAGMA table_info(projects)")]
+check("362 projects 有 remote 列", "remote" in _pcols, str(_pcols))
+_rp.close()
+_re_conn = db_mod.init(_dbp2)   # 二次 init 必须幂等
+check("363 db.init 幂等 (重复加列不报错)",
+      "remote" in [r["name"] for r in _re_conn.execute("PRAGMA table_info(projects)")])
+_pa = proj_mod.add_project(_re_conn, "repoA", "/old/path/repoA", "",
+                           "git@host:grp/repoA.git")
+check("364 add_project 落归一化 remote",
+      _re_conn.execute("SELECT remote FROM projects WHERE id=?",
+                       (_pa,)).fetchone()["remote"] == "host/grp/repoA",
+      _re_conn.execute("SELECT remote FROM projects WHERE id=?",
+                       (_pa,)).fetchone()["remote"])
+_st, _pid = proj_mod.resolve_project(_re_conn, cwd=None, remote="ssh://git@host/grp/repoA")
+check("365 remote 优先命中 (路径不同也归同一项目)",
+      _st == "matched" and _pid == _pa, f"{_st}/{_pid}")
+_plain_rd = os.path.join(tmp, "plain_remote_dir")
+os.makedirs(_plain_rd, exist_ok=True)
+_st2, _pb = proj_mod.resolve_project(_re_conn, cwd=_plain_rd,
+                                     remote="git@host:grp/repoB.git")
+check("366 未知 remote 且不在 git 仓库 → no_git 信号",
+      _st2 == "no_git" and _pb is None, f"{_st2}/{_pb}")
+# 路径兜底要真仓库: examples/demo_project 不是独立 git 仓库 (toplevel 会落到 L-clone 根)
+_pc_repo = os.path.join(tmp, "repoC")
+os.makedirs(_pc_repo, exist_ok=True)
+subprocess.run(["git", "init", "-q", _pc_repo], check=True)
+subprocess.run(["git", "-C", _pc_repo, "remote", "add", "origin",
+                "git@host:grp/repoC.git"], check=True)
+_pc = proj_mod.add_project(_re_conn, "repoC", _pc_repo, "", "")
+_st3, _pid3 = proj_mod.resolve_project(_re_conn, cwd=_pc_repo)
+check("367 空 remote 命中 path 后惰性回填",
+      _st3 == "matched" and _pid3 == _pc
+      and _re_conn.execute("SELECT remote FROM projects WHERE id=?",
+                           (_pc,)).fetchone()["remote"] == "host/grp/repoC",
+      f"{_st3}/{_pid3}")
+_re_conn.close()
+
+_mg = db_mod.init(os.path.join(tmp, "merge.db"))
+_d1 = proj_mod.add_project(_mg, "drn", "/a/drn", "", "git@host:g/drn.git")
+_d2 = proj_mod.add_project(_mg, "drn-2", "/b/drn", "", "git@host:g/drn.git")
+mem_mod.remember(_mg, "要点：合并前卡。\n背景/为什么：验证。\n影响/以后注意：迁移。",
+                 level="insight", project_id=_d2, confirmed=True)
+_groups = proj_mod.duplicate_groups(_mg)
+check("368 重复项目可探测",
+      any(sorted(i["id"] for i in g["items"]) == sorted([_d1, _d2]) for g in _groups),
+      str(_groups))
+check("369 探测只读 (不改 remote)",
+      _mg.execute("SELECT COUNT(*) c FROM projects WHERE remote=''").fetchone()["c"] == 0)
+_bk = os.path.join(tmp, "merge-backup.json")
+_rep = proj_mod.merge_projects(_mg, _d2, _d1, _bk)
+check("370 合并改挂记忆并打墓碑",
+      _mg.execute("SELECT project_id FROM memories WHERE content LIKE '要点：合并前卡%'")
+      .fetchone()["project_id"] == _d1
+      and proj_mod.is_removed(_mg, _d2) and _rep["moved_memories"] == 1, str(_rep))
+check("371 合并产出备份", os.path.exists(_bk))
+_rb = proj_mod.rollback_merge(_mg, _bk)
+check("372 回滚还原归属并撤墓碑",
+      _mg.execute("SELECT project_id FROM memories WHERE content LIKE '要点：合并前卡%'")
+      .fetchone()["project_id"] == _d2
+      and not proj_mod.is_removed(_mg, _d2), str(_rb))
+_mg.close()
+
+_bp2 = db_mod.init(os.path.join(tmp, "bootpid.db"))
+_bpid = proj_mod.add_project(_bp2, "bootproj", "", "方向X", "git@host:g/boot.git")
+mem_mod.remember(_bp2, "要点：项目专属卡。\n背景/为什么：验证读侧。\n影响/以后注意：注入。",
+                 level="insight", project_id=_bpid, confirmed=True)
+_btext = mem_mod.bootstrap(_bp2, project_id=proj_mod.match_by_remote(_bp2, "git@host/g/boot"))
+check("373 remote 可解析出项目并按项目注入 (含项目方向)",
+      "项目专属卡" in _btext and "方向X" in _btext, _btext[:80])
+_bp2.close()
+
+_buf2 = io.StringIO()
+with contextlib.redirect_stdout(_buf2):
+    cli.main(["proj", "--db", _dbp2, "dupes"])
+check("374 proj dupes 可跑",
+      ("无重复项目" in _buf2.getvalue()) or ("host/grp" in _buf2.getvalue()),
+      _buf2.getvalue()[:80])
+
+# ---- 375+: 会话面召回覆盖全局层 (evo 指路卡在项目会话里也能带出正文) ----
+_ig = db_mod.init(os.path.join(tmp, "incglobal.db"))
+_ig_pid = proj_mod.add_project(_ig, "igproj", str(demo_root), "")
+mem_mod.remember(_ig, "要点：全局指路卡，写代码前先读 [[evo:ig-tool.md]]。\n"
+                      "背景/为什么：验证全局层参与召回。\n影响/以后注意：顺边带正文。",
+                 level="insight", project_id=None, confirmed=True)
+mem_mod.remember(_ig, "要点：项目卡，讲别的。\n背景/为什么：占位。\n影响/以后注意：无。",
+                 level="insight", project_id=_ig_pid, confirmed=True)
+mem_mod.create_evolution(_ig, name="ig-tool.md", kind="model",
+                         content="IG 工具正文内容", reason="测试")
+_ig_def = mem_mod.recall(_ig, "全局指路卡 写代码前先读", project_id=_ig_pid,
+                         follow_links=False)
+check("375 函数默认仍只召回本项目",
+      all(i["project_id"] == _ig_pid for i in _ig_def), str([i["id"] for i in _ig_def]))
+_ig_all = mem_mod.recall(_ig, "全局指路卡 写代码前先读", project_id=_ig_pid,
+                         follow_links=False, include_global=True)
+check("376 include_global 后全局卡参与召回",
+      any(i["project_id"] is None for i in _ig_all),
+      str([i.get("id") for i in _ig_all]))
+check("377 顺边带出 evo 正文",
+      any(i.get("via_evolution") and i.get("name") == "ig-tool.md"
+          and "IG 工具正文内容" in i["content"] for i in _ig_all),
+      str([(i.get("name"), i.get("via_evolution")) for i in _ig_all]))
+_bg_out = mem_mod.bootstrap(_ig, query="全局指路卡 写代码前先读", project_id=_ig_pid)
+check("378 bootstrap 相关记忆带出全局卡与资产正文",
+      "IG 工具正文内容" in _bg_out, _bg_out[-120:])
+_ig.close()
+
+# ---- 379+: 归属段残留清理脚本 ----
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "strip_attr", os.path.join(os.path.dirname(__file__), "..", "scripts",
+                               "strip_legacy_attribution.py"))
+_sa = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_sa)
+check("379 剥掉归属行且保留三段",
+      _sa.strip_line("要点：A。\n背景/为什么：B。\n影响/以后注意：C。\n归属：无")
+      == "要点：A。\n背景/为什么：B。\n影响/以后注意：C。")
+check("380 只删行首「归属」行 (正文里的归属不算)",
+      "归属感是主观的" in _sa.strip_line("要点：归属感是主观的。\n影响/以后注意：C。"))
+check("381 识别真实指针 (无/无。 不算)",
+      _sa.real_pointer("要点：A。\n归属：无") == ""
+      and _sa.real_pointer("要点：A。\n归属：src:dsh") == "src:dsh")
+_sa_conn = db_mod.init(os.path.join(tmp, "strip.db"))
+_sa_mid = mem_mod.remember(
+    _sa_conn, "要点：噪声卡。\n背景/为什么：B。\n影响/以后注意：C。\n归属：无",
+    level="insight", project_id=None, confirmed=True)
+_sa_rep = _sa.migrate(_sa_conn, apply=True)
+check("382 migrate 剥段 (只动带归属的卡)",
+      _sa_conn.execute("SELECT content FROM memories WHERE id=?",
+                       (_sa_mid,)).fetchone()["content"]
+      == "要点：噪声卡。\n背景/为什么：B。\n影响/以后注意：C。"
+      and _sa_rep["changed"] >= 1, str(_sa_rep))
+_sa_rep2 = _sa.migrate(_sa_conn, apply=False)
+check("383 dry-run 幂等 (已清理的卡不再计入 changed)",
+      _sa_rep2["changed"] == 0 and _sa_rep2["kept_pointer"] == 0, str(_sa_rep2))
+_sa_conn.close()
+
 print()
 if fails:
     print("FAILED:", fails)

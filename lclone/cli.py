@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import chat as chat_mod
@@ -50,7 +51,8 @@ def cmd_proj(args) -> None:
     conn = _conn(args)
     ref = args.project or args.name  # sync/rm/show 可用位置参数或 --project
     if args.action == "add":
-        pid = proj_mod.add_project(conn, args.name, args.path, args.charter)
+        pid = proj_mod.add_project(conn, args.name, args.path, args.charter,
+                                   getattr(args, "remote", "") or "")
         print(f"项目已注册: id={pid} name={args.name}")
     elif args.action == "list":
         rows = proj_mod.list_projects(conn)
@@ -59,7 +61,8 @@ def cmd_proj(args) -> None:
         for r in rows:
             pend = f" 待确认={r['pending_count']}" if r["pending_count"] else ""
             print(f"#{r['id']} {r['name']}  charter={r['charter'] or '-'}  "
-                  f"记忆={r['mem_count']}{pend} spec索引={r['spec_count']}  path={r['path']}")
+                  f"记忆={r['mem_count']}{pend} spec索引={r['spec_count']}  "
+                  f"path={r['path']}  remote={r['remote'] or '-'}")
     elif args.action == "sync":
         pid = _resolve_project(conn, ref)
         res = proj_mod.sync_project(conn, pid)
@@ -76,6 +79,36 @@ def cmd_proj(args) -> None:
     elif args.action == "show":
         pid = _resolve_project(conn, ref)
         print(proj_mod.project_context(conn, pid) or "(空)")
+    elif args.action == "dupes":
+        groups = proj_mod.duplicate_groups(conn)
+        if not groups:
+            print("无重复项目")
+        for g in groups:
+            items = ", ".join(f"#{i['id']} {i['name']} (记忆={i['mem_count']})"
+                              for i in g["items"])
+            print(f"{g['remote']} → {items}")
+    elif args.action == "merge":
+        if not getattr(args, "src", None) or not getattr(args, "dst", None):
+            raise SystemExit("用法: lclone proj merge --src <源id> --dst <目标id> "
+                             "[--backup <备份路径>]")
+        import tempfile
+        backup = args.backup or os.path.join(
+            tempfile.gettempdir(), f"lclone-merge-{args.src}-{args.dst}.json")
+        try:
+            rep = proj_mod.merge_projects(conn, int(args.src), int(args.dst), backup)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"已合并 #{args.src} → #{args.dst}: 记忆 {rep['moved_memories']} 条, "
+              f"spec 索引 {rep['moved_specs']} 条 (丢弃重复 {rep['dropped_specs']})")
+        print(f"备份: {rep['backup']}  (回滚: lclone proj rollback --backup {rep['backup']})")
+    elif args.action == "rollback":
+        if not getattr(args, "backup", ""):
+            raise SystemExit("用法: lclone proj rollback --backup <合并备份文件>")
+        try:
+            rep = proj_mod.rollback_merge(conn, args.backup)
+        except (OSError, ValueError, KeyError) as e:
+            raise SystemExit(str(e))
+        print(f"已回滚: 记忆 {rep['restored_memories']} 条, spec 索引 {rep['restored_specs']} 条")
 
 
 def cmd_log(args) -> None:
@@ -169,6 +202,11 @@ def _git_toplevel(cwd=None) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def _git_remote(cwd=None) -> str:
+    """本机仓库 origin 的远端地址 (项目身份键, 随请求上报给远端大脑)。"""
+    return proj_mod.git_remote(cwd)
+
+
 def cmd_evolution_add(args) -> None:
     backend, conn = _evo_ctx(args)
     if not args.content and not args.ref:
@@ -180,7 +218,8 @@ def cmd_evolution_add(args) -> None:
             status, pid = proj_mod.resolve_project(conn, cwd=args.cwd)
     elif isinstance(backend, evolutions.HttpBackend):
         # 远端: 归属在客户端解析后随请求上报 —— 否则会静默落全局层
-        pid = backend.find_project(ref=args.project, repo_path=_git_toplevel(args.cwd))
+        pid = backend.find_project(ref=args.project, repo_path=_git_toplevel(args.cwd),
+                                   repo_remote=_git_remote(args.cwd))
     try:
         out = backend.publish(name=args.name, content=args.content, kind=args.kind,
                               ref=args.ref, message=args.reason, project_id=pid)
@@ -415,7 +454,8 @@ def cmd_recall(args) -> None:
     conn = _conn(args)
     pid = _resolve_project(conn, args.project)
     items = mem_mod.recall(conn, args.query, k=args.k, project_id=pid,
-                           follow_links=not args.no_follow)
+                           follow_links=not args.no_follow,
+                           include_global=args.include_global)
     if not items:
         print("(没有相关记忆)")
         return
@@ -742,10 +782,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     sp = sub.add_parser("proj", parents=[parent], help="项目管理")
-    sp.add_argument("action", choices=["add", "list", "sync", "rm", "restore", "show"])
+    sp.add_argument("action", choices=["add", "list", "sync", "rm", "restore", "show",
+                                       "dupes", "merge", "rollback"])
     sp.add_argument("name", nargs="?", help="项目名 (add/sync/rm/show 用)")
     sp.add_argument("path", nargs="?", default="", help="项目仓库路径 (add 用)")
     sp.add_argument("--charter", default="", help="项目大方向一句话 (add 用)")
+    sp.add_argument("--remote", default="", help="git remote 地址 (add 用; 自动归一化)")
+    sp.add_argument("--src", default=None, help="merge: 源项目 id (并入后打墓碑)")
+    sp.add_argument("--dst", default=None, help="merge: 目标项目 id")
+    sp.add_argument("--backup", default="", help="merge/rollback: 备份文件路径")
     sp.add_argument("--project", default=None, help="项目 id 或名称 (sync/rm/show 用)")
     sp.set_defaults(func=cmd_proj)
 
@@ -887,6 +932,9 @@ def build_parser() -> argparse.ArgumentParser:
     sr2.add_argument("--k", type=int, default=5)
     sr2.add_argument("--no-follow", action="store_true",
                      help="不跟随 [[m:N]] 链接 (默认自动带出被链接记忆)")
+    sr2.add_argument("--no-global", dest="include_global", action="store_false",
+                     default=True,
+                     help="限定项目时不并入全局层 (默认并入: 全局层在任何会话都加载)")
     sr2.set_defaults(func=cmd_recall)
 
     sb = sub.add_parser("bootstrap", parents=[parent],

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL UNIQUE,
   path       TEXT NOT NULL DEFAULT '',
+  remote     TEXT NOT NULL DEFAULT '',
   charter    TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -215,6 +216,10 @@ def init(db_path: Optional[str] = None) -> sqlite3.Connection:
         conn.execute("ALTER TABLE evo_current ADD COLUMN deleted_at TEXT NOT NULL DEFAULT ''")
     if "renamed_to" not in ecols:
         conn.execute("ALTER TABLE evo_current ADD COLUMN renamed_to TEXT NOT NULL DEFAULT ''")
+    # 迁移: projects 增 remote 列 (归一化 git remote = 项目身份; 空 = 尚未回填, 回落 path)
+    pcols = [r["name"] for r in conn.execute("PRAGMA table_info(projects)")]
+    if "remote" not in pcols:
+        conn.execute("ALTER TABLE projects ADD COLUMN remote TEXT NOT NULL DEFAULT ''")
     # 迁移: 进化资产曾改为文件式 (~/.lclone/evolution/), 不再用这两张旧表
     # (旧 evolutions 内容已迁到文件; 幂等地清理残留表)
     # 注意: 版本化存储用的是**新表名** evo_versions / evo_current (见 SCHEMA),

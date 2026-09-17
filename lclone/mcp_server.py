@@ -62,6 +62,29 @@ def _resolve_project(conn, ref):
     raise ValueError(f"项目不存在: {ref} (用 projects 工具查看)")
 
 
+def _resolve_attribution(conn, args) -> tuple:
+    """统一归属解析: 显式 project → 上报的 repo_remote (归一化 remote 精确匹配)
+    → 客户端 cwd (git 自动匹配/注册)。返回 (status, pid, where)；no_git 时 pid 为 None。
+
+    远端大脑下 cwd 落在服务器上必然 no_git，故客户端应优先传 `project` 或 `repo_remote`。
+    """
+    pid = _resolve_project(conn, args.get("project"))
+    if pid is not None:
+        return ("explicit", pid, f"项目 #{pid}")
+    if args.get("project"):
+        return ("global", None, "全局层(个人区)")   # 显式 project=global
+    remote = (args.get("repo_remote") or "").strip()
+    if remote:
+        pid = proj_mod.match_by_remote(conn, remote)
+        if pid is not None:
+            return ("remote", pid, f"项目 #{pid} (remote 匹配)")
+    status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"), remote=remote)
+    if status == "no_git":
+        return ("no_git", None, "")
+    return (status, pid,
+            f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})")
+
+
 def _unattributed_msg() -> str:
     """未归属 (无 git) 时的 fail-closed 信号: 客户端据此向用户确认, 不静默落全局。"""
     return ("⚠️未归属|无 git 仓库, 未写入任何记忆。请向用户确认归属后重试:\n"
@@ -82,6 +105,8 @@ TOOLS = [
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                "repo_remote": {"type": "string",
+                                "description": "客户端解析出的 git remote 地址 (远端大脑下推荐传; 服务端按归一化 remote 匹配项目)"},
                 "level": {"type": "string", "enum": ["insight"],
                           "description": "恒为 insight"},
                 "confirmed": {"type": "boolean",
@@ -101,6 +126,8 @@ TOOLS = [
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
                         "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                "repo_remote": {"type": "string",
+                                "description": "客户端解析出的 git remote 地址 (远端大脑下推荐传; 服务端按归一化 remote 匹配项目)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
                 "session_key": {"type": "string", "description": "外部会话 id (记录聚合会话流水用)"},
             },
@@ -115,6 +142,8 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "检索词/话题"},
                 "project": {"type": "string", "description": "限定项目名或 id; 不传 = 全局层+所有活跃项目"},
+                "repo_remote": {"type": "string",
+                                "description": "客户端 git remote (远端大脑下用它匹配项目)"},
                 "k": {"type": "integer", "description": "返回条数, 默认 5"},
             },
             "required": ["query"],
@@ -128,6 +157,8 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "本次会话话题/首条消息, 用于召回相关记忆 (可为空)"},
                 "project": {"type": "string", "description": "限定项目名或 id; 不传 = 全局层"},
+                "repo_remote": {"type": "string",
+                                "description": "客户端 git remote (远端大脑下用它匹配项目)"},
                 "k": {"type": "integer", "description": "召回条数, 默认 5"},
             },
             "required": [],
@@ -287,17 +318,9 @@ def call_tool(name: str, args: dict) -> str:
     conn = db_mod.init(_db_path())
     try:
         if name == "remember":
-            pid = _resolve_project(conn, args.get("project"))
-            where = ""
-            if pid is None and not args.get("project"):
-                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
-                if status == "no_git":
-                    return _unattributed_msg()
-                where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
-            elif pid is None:
-                where = "全局层(个人区)"
-            else:
-                where = f"项目 #{pid}"
+            status, pid, where = _resolve_attribution(conn, args)
+            if status == "no_git":
+                return _unattributed_msg()
             confirmed = bool(args.get("confirmed", False))
             mid = mem_mod.remember(conn, args["content"],
                                    level=args.get("level", "insight"),
@@ -308,17 +331,9 @@ def call_tool(name: str, args: dict) -> str:
                 tail = " (洞察进待确认: 请向用户逐条确认保留/删除)"
             return f"已主动记忆 #{mid} [{where}]{tail}"
         if name == "capture":
-            pid = _resolve_project(conn, args.get("project"))
-            where = ""
-            if pid is None and not args.get("project"):
-                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
-                if status == "no_git":
-                    return _unattributed_msg()
-                where = f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})"
-            elif pid is None:
-                where = "全局层(个人区)"
-            else:
-                where = f"项目 #{pid}"
+            status, pid, where = _resolve_attribution(conn, args)
+            if status == "no_git":
+                return _unattributed_msg()
             rep = mem_mod.capture_report(conn, args["text"], project_id=pid,
                                          title=args.get("title", ""),
                                          session_key=args.get("session_key", ""))
@@ -341,13 +356,17 @@ def call_tool(name: str, args: dict) -> str:
             return "\n".join(lines)
         if name == "recall":
             pid = _resolve_project(conn, args.get("project"))
+            if pid is None and args.get("repo_remote"):
+                pid = proj_mod.match_by_remote(conn, args["repo_remote"])
             items = mem_mod.recall(conn, args["query"], k=int(args.get("k", 5)),
-                                   project_id=pid)
+                                   project_id=pid, include_global=True)
             if not items:
                 return "(没有相关记忆)"
             return mem_mod._format_grouped(items, show_id=True)
         if name == "bootstrap":
             pid = _resolve_project(conn, args.get("project"))
+            if pid is None and args.get("repo_remote"):
+                pid = proj_mod.match_by_remote(conn, args["repo_remote"])
             out = mem_mod.bootstrap(conn, query=args.get("query", ""),
                                     project_id=pid, k=int(args.get("k", 5)))
             return out or "(暂无记忆)"
@@ -458,6 +477,7 @@ def call_tool(name: str, args: dict) -> str:
                 f"  记忆={r['mem_count']}"
                 + (f" 待确认={r['pending_count']}" if r["pending_count"] else "")
                 + f" spec索引={r['spec_count']} path={r['path']}"
+                + f" remote={r['remote'] or '-'}"
                 for r in rows
             )
         if name == "review":

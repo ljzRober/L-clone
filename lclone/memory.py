@@ -728,23 +728,32 @@ def _keyword_scores(conn: sqlite3.Connection, query: str,
 def recall(conn: sqlite3.Connection, query: str, k: int = 5,
            project_id: Optional[int] = None, alpha: float = 0.7,
            status: str = "active", follow_links: bool = True,
-           link_extra: int = 3) -> List[dict]:
+           link_extra: int = 3, include_global: bool = False) -> List[dict]:
     """混合检索: 向量余弦 + FTS 关键词加权, 返回记忆及其项目归属。
 
     生命周期规则 (读取时决定, 不落状态):
       - 已移除项目 (墓碑) 的记忆不加载
       - follow_links=True 时, 顺 [[m:N]] 链接把被链接记忆一起带出 (一层, 限量)
+      - include_global=True 且指定了 project_id 时, 候选集 = 该项目 + 全局层
+        (全局层在任何会话都加载, 故会话面召回理应覆盖它; 函数默认 False 保持既有语义)
     每次召回都会写入 recall_log, 供"长期未用"删除提示使用。
     """
     qv = llm.embed_one(query)
+    where = ("m.status=? AND m.level='insight' AND m.embedding IS NOT NULL"
+             + _alive_filter())
+    params: List = [status]
+    if project_id is not None:
+        if include_global:
+            where += " AND (m.project_id=? OR m.project_id IS NULL)"
+        else:
+            where += " AND m.project_id=?"
+        params.append(project_id)
     rows = conn.execute(
         "SELECT m.id, m.project_id, m.level, m.content, m.reason, m.source_ref,"
         " m.created_at, m.embedding, p.name AS project_name"
         " FROM memories m LEFT JOIN projects p ON p.id = m.project_id"
-        " WHERE m.status=? AND m.level='insight' AND m.embedding IS NOT NULL"
-        + _alive_filter()
-        + (" AND m.project_id=?" if project_id is not None else ""),
-        (status, project_id) if project_id is not None else (status,),
+        f" WHERE {where}",
+        tuple(params),
     ).fetchall()
 
     scored = []
@@ -885,7 +894,7 @@ def bootstrap(conn: sqlite3.Connection, query: str = "",
             parts.append("【项目记忆】\n" + "\n".join(f"- {r['content']}" for r in pj))
     q = (query or "").strip()
     if q:
-        items = recall(conn, q, k=k, project_id=project_id)
+        items = recall(conn, q, k=k, project_id=project_id, include_global=True)
         if items:
             # 相关记忆按 项目 分组 (全局层按等级) —— 分类加载
             parts.append("【相关记忆】\n" + _format_grouped(items))

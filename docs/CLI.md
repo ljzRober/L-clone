@@ -8,7 +8,10 @@
 
 ```
 lclone init                           初始化数据库
-lclone proj add <name> [仓库路径] [--charter "大方向"] / list / sync / rm / restore / show
+lclone proj add <name> [仓库路径] [--charter "大方向"] [--remote <origin>] / list / sync / rm / restore / show
+lclone proj dupes                                  # 只读: 同一 remote 下的重复项目
+lclone proj merge --src <旧id> --dst <保留id> [--backup 路径]   # 显式合并(改挂记忆/spec + 源项目墓碑)
+lclone proj rollback --backup <备份文件>            # 按合并备份还原
 lclone log "一句话摘要" [--title 标题] [--project id]        # L0 流水
 lclone remember "内容" [--level insight] [--project id] [--reason 缘由] [--confirmed]
 lclone capture "本次内容" [--project id] [--title 标题] [--session-key id] [--global-fallback]
@@ -26,7 +29,8 @@ lclone evolution migrate                             # 存量文件摄入为 v1 
 lclone evolution retype                              # 补正类型元数据 (kind 推断)
 # 以上 evolution 子命令均支持 --local; 默认: 设了 LCLONE_WEB_URL 就走远端 HTTP, 否则用本地 DB
 lclone review [--id N --action keep|edit|delete|promote --edit-new "…"] [--all keep|delete]
-lclone recall "查询" [--project id] [--k 5] [--no-follow]
+lclone recall "查询" [--project id] [--k 5] [--no-follow] [--no-global]
+  # 指定项目时默认并入全局层(全局层在任何会话都加载); --no-global 关掉
 lclone bootstrap ["话题"] [--project id] [--k 5]   # 会话启动引导: charter+全局记忆+按话题召回+待确认洞察
 lclone conflicts [--project id]                    # 矛盾检测: 找疑似互相矛盾的洞察对 (需真实 LLM)
 lclone promote <id>                                # 洞察上升: 项目 -> 全局层 (生命周期无限)
@@ -49,6 +53,7 @@ lclone auth create <name> | list | revoke <name|--id N> | test <url> --token <to
 ```
 
 所有子命令可用 `--db <路径>` 指定数据库、`--cwd <目录>` 指定工作目录(git 归属判定用),前后均可。
+归属身份 = 归一化 git remote(`host/group/repo`): 取 `origin` 匹配已注册项目, 无 remote 才回落仓库路径。
 
 ## 记忆模型: 只有洞察 (insight)
 
@@ -205,9 +210,12 @@ python -m lclone web
 | POST | `/api/projects/{pid}/remove` | 墓碑式移除项目(可 restore) |
 | POST | `/api/projects/{pid}/restore` | 复活已移除项目 |
 | POST | `/api/remember` | 主动记忆 `{content, level, project_id?, reason?}`(洞察直接生效) |
-| POST | `/api/capture` | 自动捕获 `{text, project_id?, title?}` |
+| POST | `/api/capture` | 自动捕获 `{text, project_id?, cwd?, repo_remote?, title?}` |
 | GET | `/api/pending` | 待确认洞察列表 `{items}` |
 | GET | `/api/memories` | 列出洞察 `?project_id&level&status&limit&layer` |
+| GET | `/api/projects/duplicates` | 只读: 同一归一化 remote 下的重复项目 |
+| POST | `/api/projects/merge` | 合并项目 `{src_id, dst_id, backup?}`(改挂记忆/spec + 源项目墓碑) |
+| POST | `/api/projects/rollback-merge` | 按合并备份回滚 `{backup}` |
 | GET | `/api/evolutions` | 进化资产目录树(含 content/size/mtime; 形状不变, 底层读版本索引) |
 | GET | `/api/evolution/index` | 进化资产当前版本清单 `{items}` |
 | GET | `/api/evolution/manifest` | 客户端同步清单 `name → {version, hash, size, kind, project_id}` |
@@ -221,7 +229,7 @@ python -m lclone web
 | POST | `/api/memories/{mid}/demote` | 下降: 挂到项目 `{project_id}` |
 | GET | `/api/suggest` | 删除提示(仅提示, 不删除) |
 | POST | `/api/organize` | 整理: LLM 语义合并相近洞察 |
-| POST | `/api/recall` | 回顾检索 `{query, project_id?, k?}` |
+| POST | `/api/recall` | 回顾检索 `{query, project_id?, k?, include_global?}`(默认并入全局层) |
 | POST | `/api/supervise` | 边界监督 `{proposal, project_id}` |
 | POST | `/api/ask` | 带记忆问答 `{question, project_id?, thread_id?, k?, with_specs?}` |
 | GET | `/api/threads/{tid}/messages` | 线程历史 |

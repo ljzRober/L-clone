@@ -44,13 +44,14 @@ description: |
    - 若返回以 `⚠️未归属` 开头，**必须先弹窗问用户归属**（新建项目并取名，还是 `project=global`），得到答复后重试，**不得静默默认全局**。
    - 用户明确说"记一下/直接记/记住"时用 `remember`：只有 `level=insight`（洞察一级）；若用户**当场已确认**该洞察则传 `confirmed=true` 直接生效，否则让它进待确认（后续 `review` 再盖章）。
    - 若用户做出了一个**可复用脚本/工具**（反复实践、稳定不再改），可用 `evolution_add`（项目内用 `ref`，项目无关用 `content`）。
-3. **归属判定**：capture/remember 不传 `project` 时，**本机后端**下会按 `cwd` 的 git 自动判定——命中已注册项目则归它；检测到仓库但未注册则**自动注册**（名=仓库 basename）；**只有无 git 才返回「⚠️未归属」信号**，此时才需要你弹窗问用户。**但后端部署在服务器（记忆在服务器）时，服务端跑 `git -C <客户端路径>` 必然失败 → 自动判定失效、内容一律掉进全局层**（表现：项目节点下看不到新记忆、待确认弹窗也没有「提升至全局记忆」勾选框）。远程后端下**必须显式传 `project`**：先 `projects` 拿路径表，用当前工作目录匹配项目 `path`（最长前缀），命中就传该项目名/id；确实不在任何项目内才用 `project=global`。
+3. **归属判定（身份 = git remote）**：capture/remember 不传 `project` 时，**本机后端**下按 `cwd` 的 git 仓库判定——取 `origin` remote 归一化为 `host/group/repo`（去协议/凭据/`.git`，host 小写），命中已注册项目即归它；未命中再看路径（仓库根最长前缀），检测到仓库但都未注册则**自动注册**（名=仓库 basename、remote 一并落库）。**只有无 git 才返回「⚠️未归属」信号**，此时才需要你弹窗问用户。**但后端部署在服务器（记忆在服务器）时，服务端跑 `git -C <客户端路径>` 必然失败 → 自动判定失效、内容一律掉进全局层**（表现：项目节点下看不到新记忆、待确认弹窗也没有「提升至全局记忆」勾选框）。远程后端下**必须显式传归属**：优先传 `project`（先 `projects` 看 `remote`/`path` 认项目名/id），或传 `repo_remote=<origin 地址>` 让服务端归一化匹配（命中 remote 为空的历史项目会惰性回填）；确实不在任何项目内才用 `project=global`。
 4. **项目 vs spec 判定（代码强制）**：**凡是"代码必须满足的契约"**（能改写成带 `WHEN…THEN…` 的 requirement，如某参数必须转义、某超时阈值必须为 X）**一概归 sp-spec，不提炼为记忆**；只有"为什么这么选 / 观察到什么"这类**无法写成契约**的理由/事实才进记忆。半契约半理由要**拆开**：理由归记忆、契约归 spec。一条记忆**升格为契约**（被锁定为"必须满足 X"且能写成 WHEN/THEN）时才进 sp-spec，此时在记忆里写 `[[spec:id]]` 引用或删除，避免双份漂移。
 5. **回答"上次定了什么 / 上次做到哪"**：`recall` 后用结果如实总结，记忆不足就明说，不编造。
 6. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
 7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），把内容提炼为**洞察(insight)**（原子化、自包含、三段卡：要点 / 背景·为什么 / 影响·以后注意；引用就地写在正文里），统一进待确认、经 `review` 生效；`BRAIN_LLM=dummy` 无法真正提炼富洞察，会退化为记录原文草稿（仍待确认）。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
 8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留**洞察**（选了什么方案/定了什么规则/学到什么经验教训，原子化富知识卡）与**进化资产**（可复用脚本/工具/模板，**服务器版本化库为权威**、本地 `~/.lclone/evolution/` 只是可复现缓存，`[[evo:name.ext]]` 指向；用 `evolution_add` 发布新版本，改写用 `evolution_update`，回滚用 `evolution_rollback`）。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
 9. **自动调度 sp-spec（无需手动 /sp-spec）**：检测 sp-spec 是否已安装（`~/.agents/skills/sp-spec` 存在）。**有** → 会话中一旦进入构建性任务（改功能/修 bug/重构），默认**自动加载 sp-spec 并运行 quick 模式**（是否升级 full/debug 由 sp-spec 自决），不需要用户手动 `/sp-spec`。**无** → 仅在**首次**会话提醒一次用户安装 sp-spec：`https://github.com/ljzRober/sp-spec`，之后不再重复提醒（可在 lclone 写入一条"已提示安装 sp-spec"的全局记忆避免重复）。
+10. **进化资产必须取正文**：注入的卡片里出现 `[[evo:名字]]` 时，动手前必须先用 `mcporter call lclone.evolution_content name=<名字>`（或 `lclone evolution content <名字>`）取到资产正文；不得凭卡片里的一行摘要猜资产内容。取不到（名字写错 / 资产已删）时如实说明，不要编造资产内容。`recall` 命中指路卡会自动顺边带出正文，没带出就显式取；本地缓存 `~/.lclone/evolution/` 可能落后（`lclone evolution pull --all` 同步），优先走服务器版本库。
 
 ## 大脑位置
 

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -60,10 +61,11 @@ def _summary(text: str, n: int = 300) -> str:
 
 
 def add_project(conn: sqlite3.Connection, name: str, path: str = "",
-                charter: str = "") -> int:
+                charter: str = "", remote: str = "") -> int:
     cur = conn.execute(
-        "INSERT INTO projects(name, path, charter) VALUES (?,?,?)",
-        (name.strip(), path.strip(), charter.strip()),
+        "INSERT INTO projects(name, path, charter, remote) VALUES (?,?,?,?)",
+        (name.strip(), path.strip(), charter.strip(),
+         normalize_remote(remote) if remote else ""),
     )
     conn.commit()
     return cur.lastrowid
@@ -142,6 +144,60 @@ def _git_toplevel(cwd: Optional[str] = None) -> Optional[Path]:
     return Path(out) if out else None
 
 
+_REMOTE_SCHEMES = ("ssh://", "git://", "https://", "http://")
+
+
+def normalize_remote(url: str) -> str:
+    """把 git remote 地址归一化为 `host/group/repo`, 作为项目身份键。
+
+    规则: 去协议前缀与凭据; **无协议**的 scp 形式 `[user@]host:path` 拆开 (带协议的
+    `host:port/path` 不拆, 端口保留为 `host:port`); 去尾 `/` 与 `.git`; host 小写;
+    **path 保留大小写** (自建 GitLab 可能大小写敏感, 宁可少合并也不误合并)。
+    无 remote / 空串返回空串, 由调用方回落 path。
+    """
+    s = (url or "").strip()
+    if not s:
+        return ""
+    had_scheme = "://" in s
+    if had_scheme:
+        s = s.split("://", 1)[1]
+    if "@" in s.split("/", 1)[0]:            # 去凭据 (user@ 或 user:token@)
+        s = s.split("@", 1)[1]
+    if not had_scheme and ":" in s.split("/", 1)[0]:   # scp 形式 host:path
+        host, _, path = s.partition(":")
+        s = host + "/" + path.lstrip("/")
+    s = s.rstrip("/")
+    if s.lower().endswith(".git"):
+        s = s[:-4]
+    head, _, rest = s.partition("/")
+    if ":" in head:                          # host:port → host 小写, 端口保留
+        h, _, port = head.partition(":")
+        head = h.lower() + ":" + port
+    else:
+        head = head.lower()
+    return f"{head}/{rest}" if rest else head
+
+
+def git_remote(cwd: Optional[str] = None) -> str:
+    """取仓库 origin 的 remote 地址; 无 origin 取第一条 remote; 无仓库/无 remote 返回空串。"""
+    import subprocess
+    base = cwd or os.getcwd()
+    try:
+        proc = subprocess.run(["git", "-C", base, "remote", "get-url", "origin"],
+                              capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+        proc = subprocess.run(["git", "-C", base, "remote", "-v"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == "(fetch)":
+            return parts[1]
+    return ""
+
+
 def _match_registered(conn: sqlite3.Connection, repo: Path) -> Optional[int]:
     """在已注册项目中匹配给定 git 仓库根, 返回项目 id 或 None。"""
     for p in list_projects(conn):
@@ -168,6 +224,32 @@ def detect_project_by_git(conn: sqlite3.Connection,
     return _match_registered(conn, repo)
 
 
+def match_by_remote(conn: sqlite3.Connection, remote: str) -> Optional[int]:
+    """按归一化 git remote 精确匹配已注册项目 (先归一化再比, 兼容历史脏值)。"""
+    r = normalize_remote(remote)
+    if not r:
+        return None
+    for p in list_projects(conn):
+        if p["remote"] and normalize_remote(p["remote"]) == r:
+            return p["id"]
+    return None
+
+
+def backfill_remote(conn: sqlite3.Connection, project_id: int, remote: str) -> bool:
+    """把一个 remote 为空的既有项目补上归一化 remote; 已非空则不覆盖。返回是否写入。"""
+    r = normalize_remote(remote)
+    if not r:
+        return False
+    row = conn.execute("SELECT remote FROM projects WHERE id=?",
+                       (project_id,)).fetchone()
+    if row is None or (row["remote"] or "").strip():
+        return False
+    conn.execute("UPDATE projects SET remote=?, updated_at=datetime('now') WHERE id=?",
+                 (r, project_id))
+    conn.commit()
+    return True
+
+
 def _unique_project_name(conn: sqlite3.Connection, base: str) -> str:
     """自动注册时保证项目名唯一: 与已有项目名冲突则追加 -2/-3... 后缀。"""
     name = (base or "project").strip()
@@ -179,25 +261,107 @@ def _unique_project_name(conn: sqlite3.Connection, base: str) -> str:
     return name
 
 
-def resolve_project(conn: sqlite3.Connection,
-                    cwd: Optional[str] = None) -> tuple:
+def resolve_project(conn: sqlite3.Connection, cwd: Optional[str] = None,
+                    remote: Optional[str] = None) -> tuple:
     """确定性项目归属 (代码强制): 返回 (status, project_id)。
 
+    匹配顺序: 归一化 git remote 精确 → 仓库根路径 → 自动注册。
     status:
-      - "matched": git 仓库匹配到已注册项目, 记忆归该项目
+      - "matched": remote 或路径匹配到已注册项目, 记忆归该项目 (路径命中时顺手回填 remote/path)
       - "created": git 检测到仓库但未注册 → 自动注册 (name=仓库 basename,
-                   path=仓库根, charter 留空), 记忆归新项目
-      - "no_git":  不在任何 git 仓库内 → 需向用户确认 (新建项目 or 全局层),
-                   调用方不得静默落全局
+                   path=仓库根, remote=归一化值), 记忆归新项目
+      - "no_git":  既无 remote 命中、又不在任何 git 仓库内 → 需向用户确认
+                   (新建项目 或 全局层), 调用方不得静默落全局
     """
+    r = normalize_remote(remote) if remote else normalize_remote(git_remote(cwd))
+    if r:
+        pid = match_by_remote(conn, r)
+        if pid is not None:
+            return ("matched", pid)
     repo = _git_toplevel(cwd)
     if repo is None:
         return ("no_git", None)
     pid = _match_registered(conn, repo)
     if pid is not None:
+        # 路径命中: path 降级为「最近一次看到的位置」(后写覆盖), remote 惰性回填
+        backfill_remote(conn, pid, r)
+        conn.execute("UPDATE projects SET path=?, updated_at=datetime('now') WHERE id=?",
+                     (str(repo), pid))
+        conn.commit()
         return ("matched", pid)
-    pid = add_project(conn, _unique_project_name(conn, repo.name), str(repo), "")
+    pid = add_project(conn, _unique_project_name(conn, repo.name), str(repo), "", r)
     return ("created", pid)
+
+
+def duplicate_groups(conn: sqlite3.Connection) -> List[dict]:
+    """只读: 按归一化 remote 分组, 列出同一 remote 下的多个项目 (身份重复的信号)。"""
+    buckets: dict = {}
+    for p in list_projects(conn):
+        r = normalize_remote(p["remote"])
+        if not r:
+            continue
+        buckets.setdefault(r, []).append(p)
+    return [{"remote": r,
+             "items": [{"id": p["id"], "name": p["name"], "path": p["path"],
+                        "mem_count": p["mem_count"]} for p in ps]}
+            for r, ps in sorted(buckets.items()) if len(ps) > 1]
+
+
+def merge_projects(conn: sqlite3.Connection, src_id: int, dst_id: int,
+                   backup_path: str) -> dict:
+    """显式合并: 记忆与 spec 索引改挂 dst, src 打墓碑; 合并前写可回滚备份。
+
+    单事务内完成; specs_index 的 UNIQUE(project_id, rel_path) 冲突保留 dst 既有行、
+    删除 src 重复行并计入报告。不物理删除任何项目/记忆。
+    """
+    if src_id == dst_id:
+        raise ValueError("源与目标不能相同")
+    for pid in (src_id, dst_id):
+        if conn.execute("SELECT 1 FROM projects WHERE id=?", (pid,)).fetchone() is None:
+            raise ValueError(f"项目不存在: {pid}")
+    mems = [dict(r) for r in conn.execute(
+        "SELECT id, project_id FROM memories WHERE project_id=?", (src_id,)).fetchall()]
+    specs = [dict(r) for r in conn.execute(
+        "SELECT id, project_id, rel_path FROM specs_index WHERE project_id=?",
+        (src_id,)).fetchall()]
+    src = dict(conn.execute("SELECT * FROM projects WHERE id=?", (src_id,)).fetchone())
+    Path(backup_path).write_text(
+        json.dumps({"version": 1, "src_id": src_id, "dst_id": dst_id,
+                    "memories": mems, "specs_index": specs, "src_row": src},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    dropped = 0
+    with conn:  # 单事务
+        dst_paths = {r["rel_path"] for r in conn.execute(
+            "SELECT rel_path FROM specs_index WHERE project_id=?", (dst_id,)).fetchall()}
+        for s in specs:
+            if s["rel_path"] in dst_paths:
+                conn.execute("DELETE FROM specs_index WHERE id=?", (s["id"],))
+                dropped += 1
+        conn.execute("UPDATE specs_index SET project_id=? WHERE project_id=?",
+                     (dst_id, src_id))
+        conn.execute("UPDATE memories SET project_id=? WHERE project_id=?",
+                     (dst_id, src_id))
+        conn.execute("INSERT OR IGNORE INTO project_removals(project_id, name) VALUES (?,?)",
+                     (src_id, src["name"]))
+    return {"moved_memories": len(mems), "moved_specs": len(specs) - dropped,
+            "dropped_specs": dropped, "backup": backup_path}
+
+
+def rollback_merge(conn: sqlite3.Connection, backup_path: str) -> dict:
+    """按合并产出的备份还原: 记忆/spec 索引 project_id 复原, 撤销 src 墓碑。"""
+    data = json.loads(Path(backup_path).read_text(encoding="utf-8"))
+    with conn:
+        for m in data["memories"]:
+            conn.execute("UPDATE memories SET project_id=? WHERE id=?",
+                         (m["project_id"], m["id"]))
+        for s in data["specs_index"]:
+            conn.execute("UPDATE specs_index SET project_id=? WHERE id=?",
+                         (s["project_id"], s["id"]))
+        conn.execute("DELETE FROM project_removals WHERE project_id=?",
+                     (data["src_id"],))
+    return {"restored_memories": len(data["memories"]),
+            "restored_specs": len(data["specs_index"])}
 
 
 def _walk_spec_files(root: Path) -> List[Path]:
