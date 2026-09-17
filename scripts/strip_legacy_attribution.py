@@ -88,6 +88,17 @@ def fold_refs(content: str, pointer: str):
     return out
 
 
+def is_project_name(conn, pointer: str) -> bool:
+    """「归属：<项目名>」是冗余的 —— 项目归属已由 project_id 表达, 不是引用。"""
+    parts = [x.strip() for x in re.split(r"[;；,，、]", pointer or "") if x.strip()]
+    if not parts:
+        return False
+    for name in parts:
+        if conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone() is None:
+            return False
+    return True
+
+
 def migrate(conn, apply: bool = False, rewrite_refs: bool = False) -> dict:
     """扫 level=insight 且含「归属」的卡; 返回报告 (不改库除非 apply=True)。"""
     rows = conn.execute(
@@ -96,6 +107,9 @@ def migrate(conn, apply: bool = False, rewrite_refs: bool = False) -> dict:
     rep = {"scanned": len(rows), "changed": 0, "kept_pointer": 0, "rewritten": 0}
     for r in rows:
         pointer = real_pointer(r["content"])
+        if pointer and not _REF_RE.search(pointer) and is_project_name(conn, pointer):
+            rep["project_name_only"] = rep.get("project_name_only", 0) + 1
+            pointer = ""          # 纯项目名 → 当空话剥掉 (归属由 project_id 表达)
         new = strip_line(r["content"])
         if pointer:
             # dry-run 不调 LLM (省钱且无副作用); 只有真要写库时才尝试改写
@@ -138,7 +152,8 @@ def main() -> None:
     conn = db_mod.init(dbp)
     rep = migrate(conn, apply=args.apply, rewrite_refs=args.rewrite_refs)
     print(f"\n扫描 {rep['scanned']} 张, 改写 {rep['rewritten']} 张, "
-          f"保留指针 {rep['kept_pointer']} 张, 剥段 {rep['changed']} 张")
+          f"保留指针 {rep['kept_pointer']} 张, "
+          f"纯项目名 {rep.get('project_name_only', 0)} 张, 剥段 {rep['changed']} 张")
     print("(dry-run, 未写库)" if not args.apply else "已执行")
     conn.close()
 
