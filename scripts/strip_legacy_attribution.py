@@ -83,6 +83,8 @@ def fold_refs(content: str, pointer: str):
         return None
     if ATTR_RE.match(out.split("\n", 1)[0]):     # 模型把归属段又写回来了
         return None
+    if not any(t in out for t in tags):           # 指针必须真的落在正文里, 否则视为改写失败
+        return None
     return out
 
 
