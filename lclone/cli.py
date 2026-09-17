@@ -91,9 +91,9 @@ def cmd_proj(args) -> None:
         if not getattr(args, "src", None) or not getattr(args, "dst", None):
             raise SystemExit("用法: lclone proj merge --src <源id> --dst <目标id> "
                              "[--backup <备份路径>]")
-        import tempfile
-        backup = args.backup or os.path.join(
-            tempfile.gettempdir(), f"lclone-merge-{args.src}-{args.dst}.json")
+        backup = proj_mod.merge_backup_path(args.db or config.db_path(),
+                                            int(args.src), int(args.dst),
+                                            args.backup or "")
         try:
             rep = proj_mod.merge_projects(conn, int(args.src), int(args.dst), backup)
         except ValueError as e:

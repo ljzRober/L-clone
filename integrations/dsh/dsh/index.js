@@ -125,20 +125,28 @@ function gitToplevel(cwd, cb) {
   } catch (e) { cb(null) }
 }
 
-// 归一化 git remote 为 host/group/repo (与 Python 侧 projects.normalize_remote 同规则)
+// 归一化 git remote 为 host/group/repo (与 Python 侧 projects.normalize_remote 同规则,
+// 两边改动必须同步: 本地路径/file:// 返回空串; 凭据取最后一个 @; host:8080/g/r 当 host:port)
+const LOCAL_REMOTE_RE = /^(\/|~|\.[/\\]|[A-Za-z]:[/\\])/
+
 function normalizeRemote(url) {
   let s = String(url || '').trim()
   if (!s) return ''
+  if (/^file:\/\//i.test(s) || LOCAL_REMOTE_RE.test(s)) return ''
   const hadScheme = s.includes('://')
   if (hadScheme) s = s.split('://')[1]
-  const firstSlash = s.indexOf('/')
-  const headSeg = firstSlash === -1 ? s : s.slice(0, firstSlash)
-  const at = headSeg.indexOf('@')
+  const fs = s.indexOf('/')
+  const headSeg = fs === -1 ? s : s.slice(0, fs)
+  const at = headSeg.lastIndexOf('@')
   if (at !== -1) s = s.slice(at + 1)
-  const h0 = s.indexOf('/') === -1 ? s : s.slice(0, s.indexOf('/'))
-  if (!hadScheme && h0.includes(':')) {
-    const i = s.indexOf(':')
-    s = s.slice(0, i) + '/' + s.slice(i + 1).replace(/^\/+/, '')
+  if (!hadScheme) {
+    const h = s.includes('/') ? s.slice(0, s.indexOf('/')) : s
+    if (h.includes(':')) {
+      const i = s.indexOf(':')
+      const host = s.slice(0, i)
+      const path = s.slice(i + 1)
+      s = /^\d+\//.test(path) ? host + ':' + path : host + '/' + path.replace(/^\/+/, '')
+    }
   }
   s = s.replace(/\/+$/, '')
   if (s.toLowerCase().endsWith('.git')) s = s.slice(0, -4)
@@ -152,6 +160,13 @@ function normalizeRemote(url) {
     head = head.toLowerCase()
   }
   return rest ? head + '/' + rest : head
+}
+
+// 把本机解析出的 remote 回填到服务端项目 (服务端 remote 为空时才有意义)
+function backfillRemote(projectId, remote) {
+  if (!projectId || !normalizeRemote(remote)) return
+  lcloneRequester('POST', '/api/projects/' + projectId + '/remote',
+    { remote: remote }, () => { projectCache.at = 0 }, 8000)
 }
 
 function gitRemote(cwd, cb) {
@@ -202,16 +217,34 @@ function resolveProject(cwd, cb) {
         let hit = null
         if (nr) hit = items.find((p) => p.remote && normalizeRemote(p.remote) === nr) || null
         if (!hit) hit = matchProject(items, repo)
-        if (hit) { cb(hit.id, hit.name, 'matched', remote); return }
+        if (hit) {
+          if (nr && !(hit.remote || '').trim()) backfillRemote(hit.id, remote)
+          cb(hit.id, hit.name, 'matched', remote); return
+        }
         const name = repo.split('/').filter(Boolean).pop() || 'project'
         lcloneRequester('POST', '/api/projects', { name, path: repo, remote: remote || '' }, (ok, json) => {
           projectCache.at = 0 // 失效缓存, 下次重新拉
           if (ok && json && json.id) { cb(json.id, name, 'created', remote); return }
-          // 名字被别的机器/路径占用了 → 退一步按 name 复用同名项目, 不重复造项目
+          // 名字被占用了: 只有「同名且 remote 相同/未知」才复用 —— 不同 remote 的同名仓库
+          // 是另一个项目, 换个后缀另建 (不能按名字把两个仓库并成一个)
           fetchProjects((fresh) => {
             const byName = fresh.find((p) => p.name === name)
-            if (byName) cb(byName.id, byName.name, 'matched_by_name', remote)
-            else cb(undefined, undefined, 'register_failed', remote)
+            if (byName && (!nr || !(byName.remote || '').trim()
+                || normalizeRemote(byName.remote) === nr)) {
+              if (nr && !(byName.remote || '').trim()) backfillRemote(byName.id, remote)
+              cb(byName.id, byName.name, 'matched_by_name', remote); return
+            }
+            let n = 2
+            let alt = name + '-' + n
+            while (fresh.some((p) => p.name === alt) && n < 20) {
+              n += 1; alt = name + '-' + n
+            }
+            lcloneRequester('POST', '/api/projects',
+              { name: alt, path: repo, remote: remote || '' }, (ok2, json2) => {
+                projectCache.at = 0
+                if (ok2 && json2 && json2.id) { cb(json2.id, alt, 'created_alt', remote); return }
+                cb(undefined, undefined, 'register_failed', remote)
+              }, 8000)
           })
         }, 8000)
       })
@@ -242,11 +275,13 @@ function runCapture(text, sessionKey, cwd, onDone) {
 }
 
 // 读侧: 走后端 HTTP GET /api/bootstrap (返回会话引导文本)。
-function runBootstrap(cwd, projectId, onDone) {
+function runBootstrap(cwd, projectId, remote, onDone) {
   const qs = []
   if (cwd) qs.push('cwd=' + encodeURIComponent(cwd))
-  // 读侧归属由客户端解析后上报: 服务端跑不了客户端路径的 git 检测
+  // 读侧归属由客户端解析后上报: 服务端跑不了客户端路径的 git 检测。
+  // project_id 可能拿不到 (register_failed / 缓存过期), 故 remote 也要带上做兜底 —— 读写对称。
   if (projectId) qs.push('project_id=' + encodeURIComponent(projectId))
+  if (remote) qs.push('repo_remote=' + encodeURIComponent(remote))
   let path = '/api/bootstrap' + (qs.length ? '?' + qs.join('&') : '')
   lcloneRequester('GET', path, null, (ok, json) => {
     const text = ok && json ? (json.text || '') : ''
@@ -267,8 +302,8 @@ function buildBootText(skillBody, bootOut) {
 async function injectSessionStart(ctx, sessionId, cwd) {
   const agent = ctx.agents.get(sessionId)
   if (!agent) { log(`bootstrap: agent not found for ${sessionId}`); return }
-  resolveProject(cwd, (pid) => {
-    runBootstrap(cwd, pid, (bootOut) => {
+  resolveProject(cwd, (pid, _pname, _why, remote) => {
+    runBootstrap(cwd, pid, remote, (bootOut) => {
     readFile(SKILL_FILE, { encoding: 'utf8' })
       .then((skillBody) => {
         probeLcloneHealth((ok) => {

@@ -50,7 +50,9 @@ def ask(conn: sqlite3.Connection, question: str,
         k: int = 5, with_specs: bool = True) -> dict:
     tid = _ensure_thread(conn, thread_id, project_id)
 
-    recalls = mem_mod.recall(conn, question, k=k, project_id=project_id)
+    # 会话面召回: 指定项目时并入全局层 (全局层在任何会话都加载), 与 recall 入口一致
+    recalls = mem_mod.recall(conn, question, k=k, project_id=project_id,
+                             include_global=True)
     context_parts = []
     if recalls:
         lines = [

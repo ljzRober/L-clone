@@ -74,11 +74,21 @@ def _resolve_attribution(conn, args) -> tuple:
     if args.get("project"):
         return ("global", None, "全局层(个人区)")   # 显式 project=global
     remote = (args.get("repo_remote") or "").strip()
+    cwd = (args.get("cwd") or "").strip()
     if remote:
         pid = proj_mod.match_by_remote(conn, remote)
         if pid is not None:
+            proj_mod.backfill_remote(conn, pid, remote)
             return ("remote", pid, f"项目 #{pid} (remote 匹配)")
-    status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"), remote=remote)
+    if not remote and not cwd:
+        # 三样都没有 → 不得拿服务端进程目录(可能是大脑自己的仓库)顶替客户端归属
+        return ("no_git", None, "")
+    if pid is None and cwd:
+        pid = proj_mod.match_by_path_str(conn, cwd)
+        if pid is not None:
+            proj_mod.backfill_remote(conn, pid, remote)
+            return ("path", pid, f"项目 #{pid} (上报路径匹配)")
+    status, pid = proj_mod.resolve_project(conn, cwd=cwd or None, remote=remote or None)
     if status == "no_git":
         return ("no_git", None, "")
     return (status, pid,
@@ -104,7 +114,7 @@ TOOLS = [
                 "project": {"type": "string",
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
-                        "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                        "description": "客户端工作目录 (远端大脑下必传, 否则归属判定拿不到路径)"},
                 "repo_remote": {"type": "string",
                                 "description": "客户端解析出的 git remote 地址 (远端大脑下推荐传; 服务端按归一化 remote 匹配项目)"},
                 "level": {"type": "string", "enum": ["insight"],
@@ -125,7 +135,7 @@ TOOLS = [
                 "project": {"type": "string",
                             "description": "项目名/id/global; 不传则按 cwd 的 git 仓库自动判定(匹配或自动注册), 无 git 返回未归属信号"},
                 "cwd": {"type": "string",
-                        "description": "工作目录 (git 归属判定用); 不传则用服务器当前目录"},
+                        "description": "客户端工作目录 (远端大脑下必传, 否则归属判定拿不到路径)"},
                 "repo_remote": {"type": "string",
                                 "description": "客户端解析出的 git remote 地址 (远端大脑下推荐传; 服务端按归一化 remote 匹配项目)"},
                 "title": {"type": "string", "description": "会话标题 (可选)"},
@@ -238,8 +248,10 @@ TOOLS = [
                 "reason": {"type": "string", "description": "为什么沉淀 (作为版本说明)"},
                 "insight": {"type": "array", "items": {"type": "integer"},
                             "description": "支撑此资产的 insight id 列表 (可多个)"},
-                "project": {"type": "string", "description": "项目名/id/global; 不传按 cwd git 自动判定"},
-                "cwd": {"type": "string", "description": "工作目录 (git 归属判定用)"},
+                "project": {"type": "string", "description": "项目名/id/global; 不传按上报的 repo_remote 或 cwd 判定"},
+                "cwd": {"type": "string", "description": "客户端工作目录 (远端大脑下必传)"},
+                "repo_remote": {"type": "string",
+                                "description": "客户端解析出的 git remote 地址 (远端大脑下推荐传)"},
             },
             "required": ["name"],
         },
@@ -375,11 +387,9 @@ def call_tool(name: str, args: dict) -> str:
             return (f"整理完成: 合并 {res['merged']} 组, "
                     f"删除 {res['removed']} 条冗余记忆")
         if name == "evolution_add":
-            pid = _resolve_project(conn, args.get("project"))
-            if pid is None and not args.get("project"):
-                status, pid = proj_mod.resolve_project(conn, cwd=args.get("cwd"))
-                if status == "no_git":
-                    return _unattributed_msg()
+            astatus, pid, _where = _resolve_attribution(conn, args)
+            if astatus == "no_git":
+                return _unattributed_msg()
             if not args.get("content") and not args.get("ref"):
                 return ("错误: evolution 需要 content (内容) 或 ref (项目内脚本路径); "
                         "只记引用时传 ref")

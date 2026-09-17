@@ -2983,6 +2983,126 @@ check("383 dry-run 幂等 (已清理的卡不再计入 changed)",
       _sa_rep2["changed"] == 0 and _sa_rep2["kept_pointer"] == 0, str(_sa_rep2))
 _sa_conn.close()
 
+# ---- 384+: 代码审查修复回归 (P0: 静默错归属 / 回填不可达 / 回滚丢行 / 回滚复活) ----
+from lclone import mcp_server as _mcp
+_aux = db_mod.init(os.path.join(tmp, "auditfix.db"))
+_sta, _pida = proj_mod.resolve_project(_aux, cwd=None,
+                                       remote="git@unknown.example:other/repo.git")
+check("384 显式 remote 未命中 → no_git (不拿服务端进程目录顶替)",
+      _sta == "no_git" and _pida is None, f"{_sta}/{_pida}")
+check("385 file:// 与本地路径不进身份键",
+      _normr("file:///srv/git/repo.git") == "" and _normr("/Users/x/repo.git") == ""
+      and _normr("C:/customFile/github/L-clone") == "")
+check("386 凭据含 @ 取最后一个 @",
+      _normr("https://user:p@ss@host/a/b.git") == "host/a/b",
+      _normr("https://user:p@ss@host/a/b.git"))
+check("387 host:8080/g/r 与 https 写法收敛到同一键",
+      _normr("host:8080/group/repo") == _normr("https://host:8080/group/repo.git")
+      == "host:8080/group/repo")
+_ax = proj_mod.add_project(_aux, "ax", "/srv/ax", "", "")
+check("388 上报路径最长前缀命中 (服务端跑不了 git 也能用)",
+      proj_mod.match_by_path_str(_aux, "/srv/ax/sub/dir") == _ax
+      and proj_mod.match_by_path_str(_aux, "/srv/other") is None)
+check("389 set_remote 默认不覆盖已有值 (force 才覆盖)",
+      proj_mod.set_remote(_aux, _ax, "git@host:g/ax.git") is True
+      and proj_mod.set_remote(_aux, _ax, "git@host:g/other.git") is False
+      and _aux.execute("SELECT remote FROM projects WHERE id=?", (_ax,)).fetchone()["remote"]
+      == "host/g/ax"
+      and proj_mod.set_remote(_aux, _ax, "git@host:g/other.git", force=True) is True)
+_c9_repo = os.path.join(tmp, "c9repo")
+os.makedirs(_c9_repo, exist_ok=True)
+subprocess.run(["git", "init", "-q", _c9_repo], check=True)
+subprocess.run(["git", "-C", _c9_repo, "remote", "add", "origin", "git@host:g/c9.git"],
+               check=True)
+_c9 = proj_mod.add_project(_aux, "c9", "/old/c9", "", "git@host:g/c9.git")
+_st9, _pid9 = proj_mod.resolve_project(_aux, cwd=_c9_repo)
+check("390 remote 命中时 path 刷成「最近一次看到的位置」",
+      _st9 == "matched" and _pid9 == _c9
+      and pathlib.Path(_aux.execute("SELECT path FROM projects WHERE id=?",
+                                    (_c9,)).fetchone()["path"]).resolve()
+      == pathlib.Path(_c9_repo).resolve(),
+      _aux.execute("SELECT path FROM projects WHERE id=?", (_c9,)).fetchone()["path"])
+
+_mc = db_mod.init(os.path.join(tmp, "mergespec.db"))
+_s1 = proj_mod.add_project(_mc, "s1", "/x/s1", "", "git@host:g/s.git")
+_s2 = proj_mod.add_project(_mc, "s2", "/x/s2", "", "git@host:g/s.git")
+for _pid_s, _title in ((_s1, "dst 版"), (_s2, "src 版")):
+    _mc.execute("INSERT INTO specs_index(project_id, rel_path, format, title)"
+                " VALUES (?,?,?,?)", (_pid_s, "docs/x.md", "markdown", _title))
+_mc.execute("INSERT INTO specs_index(project_id, rel_path, format, title) VALUES (?,?,?,?)",
+            (_s2, "docs/only-src.md", "markdown", "src 独有"))
+_mc.commit()
+_bk2 = os.path.join(tmp, "merge-spec-backup.json")
+_mrep = proj_mod.merge_projects(_mc, _s2, _s1, _bk2)
+check("391 合并丢弃冲突 spec 行并计数",
+      _mrep["dropped_specs"] == 1 and _mrep["moved_specs"] == 1, str(_mrep))
+check("392 冲突行被删、src 独有行改挂 dst",
+      _mc.execute("SELECT COUNT(*) c FROM specs_index WHERE project_id=?"
+                  " AND rel_path='docs/x.md'", (_s1,)).fetchone()["c"] == 1
+      and _mc.execute("SELECT project_id FROM specs_index WHERE rel_path='docs/only-src.md'")
+      .fetchone()["project_id"] == _s1)
+_mrb = proj_mod.rollback_merge(_mc, _bk2)
+check("393 回滚重建被删的冲突行 (不丢数据)",
+      _mc.execute("SELECT COUNT(*) c FROM specs_index WHERE project_id=?",
+                  (_s2,)).fetchone()["c"] == 2
+      and _mrb["restored_specs"] == 2, str(_mrb))
+proj_mod.remove_project(_mc, _s2)          # 合并前先墓碑
+_bk3 = os.path.join(tmp, "merge-spec-backup2.json")
+proj_mod.merge_projects(_mc, _s2, _s1, _bk3)
+_mrb2 = proj_mod.rollback_merge(_mc, _bk3)
+check("394 回滚保持合并前的墓碑状态 (不复活已删项目)",
+      proj_mod.is_removed(_mc, _s2), str(_mrb2))
+_mc.close()
+
+check("395 多归属行: 非首行的真指针不被误删",
+      _sa.real_pointer("要点：A。\n归属：无\n归属：src:dsh/x.py") == "src:dsh/x.py")
+check("396 PLACEHOLDER 变体识别",
+      _sa.is_placeholder("N/A") and _sa.is_placeholder("暂无")
+      and _sa.is_placeholder("（无）") and not _sa.is_placeholder("src:dsh"))
+check("397 strip_line 保留 U+2028 与其余字节",
+      _sa.strip_line("要点：A\u2028B。\n归属：无") == "要点：A\u2028B。")
+_sa_conn2 = db_mod.init(os.path.join(tmp, "strip2.db"))
+mem_mod.remember(_sa_conn2, "要点：带指针的卡。\n背景/为什么：B。\n影响/以后注意：见 src:dsh/x.py。\n归属：src:dsh/x.py",
+                 level="insight", project_id=None, confirmed=True)
+_sa_calls = []
+_orig_chat = llm_mod.chat
+llm_mod.chat = lambda *a, **k: (_sa_calls.append(1), "x")[1]
+_sa.migrate(_sa_conn2, apply=False, rewrite_refs=True)
+llm_mod.chat = _orig_chat
+check("398 dry-run 不调 LLM (省钱且无副作用)", not _sa_calls, str(len(_sa_calls)))
+_sa_conn2.close()
+
+_mconn = db_mod.init(os.path.join(tmp, "mcpattr.db"))
+_mproj = proj_mod.add_project(_mconn, "mproj", "/srv/mproj", "", "git@host:g/m.git")
+_sta2 = _mcp._resolve_attribution(_mconn, {})
+check("399 MCP 三样都没有 → no_git (不拿服务端 cwd 顶替)",
+      _sta2[0] == "no_git" and _sta2[1] is None, str(_sta2))
+_sta3 = _mcp._resolve_attribution(_mconn, {"repo_remote": "git@host:g/m.git"})
+check("400 MCP repo_remote 命中", _sta3[0] == "remote" and _sta3[1] == _mproj, str(_sta3))
+_sta4 = _mcp._resolve_attribution(_mconn, {"cwd": "/srv/mproj/sub"})
+check("401 MCP 上报路径命中", _sta4[0] == "path" and _sta4[1] == _mproj, str(_sta4))
+check("402 MCP evolution_add 也能按 remote 归属",
+      "repo_remote" in [t for t in _mcp.TOOLS if t["name"] == "evolution_add"][0]
+      ["inputSchema"]["properties"])
+_mconn.close()
+
+_seen_kw = {}
+_orig_recall = mem_mod.recall
+
+
+def _spy_recall(conn, query, **kw):
+    _seen_kw.update(kw)
+    return []
+
+
+mem_mod.recall = _spy_recall
+try:
+    chat_mod.ask(_aux, "问题", project_id=_ax, with_specs=False)
+finally:
+    mem_mod.recall = _orig_recall
+check("403 ask 召回并入全局层", _seen_kw.get("include_global") is True, str(_seen_kw))
+_aux.close()
+
 print()
 if fails:
     print("FAILED:", fails)

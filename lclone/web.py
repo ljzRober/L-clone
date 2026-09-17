@@ -94,6 +94,11 @@ class ProjectRollbackIn(BaseModel):
     backup: str
 
 
+class ProjectRemoteIn(BaseModel):
+    remote: str
+    force: bool = False
+
+
 class EvoPublishIn(BaseModel):
     name: str
     content: Optional[str] = None
@@ -241,15 +246,25 @@ def create_app(db_path: Optional[str] = None):
 
     @app.post("/api/projects/merge")
     def merge_projects(body: ProjectMergeIn, conn: sqlite3.Connection = Depends(get_db)):
-        """显式合并源项目到目标项目 (改挂记忆/spec 索引 + 源项目墓碑 + 可回滚备份)。"""
-        import tempfile
-        from pathlib import Path as _P
-        backup = body.backup or str(_P(tempfile.gettempdir()) /
-                                    f"lclone-merge-{body.src_id}-{body.dst_id}.json")
+        """显式合并源项目到目标项目 (改挂 project_id 数据 + 源项目墓碑 + 可回滚备份)。
+
+        备份路径只接受 basename, 固定落在 DB 同级的 `merges/` 下 —— 不接受任意路径写入。
+        """
+        backup = proj_mod.merge_backup_path(resolved_db, body.src_id, body.dst_id, body.backup)
         try:
             return proj_mod.merge_projects(conn, body.src_id, body.dst_id, backup)
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    @app.post("/api/projects/{pid}/remote")
+    def set_project_remote(pid: int, body: ProjectRemoteIn,
+                           conn: sqlite3.Connection = Depends(get_db)):
+        """把客户端解析出的 git remote 回填到项目 (默认不覆盖已有值)。"""
+        try:
+            changed = proj_mod.set_remote(conn, pid, body.remote, force=body.force)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "changed": changed}
 
     @app.post("/api/projects/rollback-merge")
     def rollback_merge(body: ProjectRollbackIn, conn: sqlite3.Connection = Depends(get_db)):
@@ -298,11 +313,18 @@ def create_app(db_path: Optional[str] = None):
         if pid is None and body.repo_remote:
             pid = proj_mod.match_by_remote(conn, body.repo_remote)
         if pid is None and body.cwd:
-            status, pid = proj_mod.resolve_project(conn, cwd=body.cwd, remote=body.repo_remote)
+            pid = proj_mod.match_by_path_str(conn, body.cwd)
+        if pid is None:
+            status, pid = proj_mod.resolve_project(conn, cwd=body.cwd,
+                                                   remote=body.repo_remote)
             if status == "no_git":
-                if not body.global_fallback:
-                    raise HTTPException(422, "未归属: 无 git 仓库")
                 pid = None
+        if pid is None and (body.repo_remote or body.cwd):
+            if not body.global_fallback:
+                raise HTTPException(422, "未归属: remote/路径未匹配到已注册项目"
+                                         " (先 lclone proj add, 或传 project_id)")
+        if pid is not None and body.repo_remote:
+            proj_mod.backfill_remote(conn, pid, body.repo_remote)   # 命中即惰性回填
         rep = mem_mod.capture_report(conn, body.text, project_id=pid, title=body.title,
                                      session_key=body.session_key or "")
         return rep
@@ -311,12 +333,18 @@ def create_app(db_path: Optional[str] = None):
     def bootstrap(cwd: str = "", query: str = "", k: int = 5,
                   project_id: Optional[int] = None, repo_remote: str = "",
                   conn: sqlite3.Connection = Depends(get_db)):
-        # 归属优先级: 客户端已解析的 project_id → 上报的 remote → cwd (向后兼容回落)
+        # 归属优先级: 客户端已解析的 project_id → 上报的 remote → 上报路径 → cwd 回落
         pid = project_id if project_id is not None else None
+        if pid is not None:
+            row = proj_mod.get_project(conn, pid)
+            if row is None or proj_mod.is_removed(conn, pid):
+                pid = None          # 不存在的/已墓碑的项目不得注入
         if pid is None and repo_remote:
             pid = proj_mod.match_by_remote(conn, repo_remote)
         if pid is None and cwd:
-            status, pid = proj_mod.resolve_project(conn, cwd=cwd)
+            pid = proj_mod.match_by_path_str(conn, cwd)
+        if pid is None and cwd:
+            status, pid = proj_mod.resolve_project(conn, cwd=cwd, remote=repo_remote)
             if status == "no_git":
                 pid = None
         text = mem_mod.bootstrap(conn, query=query, project_id=pid, k=k)

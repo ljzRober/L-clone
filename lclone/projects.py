@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -144,33 +145,47 @@ def _git_toplevel(cwd: Optional[str] = None) -> Optional[Path]:
     return Path(out) if out else None
 
 
-_REMOTE_SCHEMES = ("ssh://", "git://", "https://", "http://")
+_REMOTE_SCHEMES = ("ssh://", "git://", "https://", "http://", "file://")
+_LOCAL_REMOTE_RE = re.compile(r"^(/|~|\.[/\\]|[A-Za-z]:[/\\])")
 
 
 def normalize_remote(url: str) -> str:
     """把 git remote 地址归一化为 `host/group/repo`, 作为项目身份键。
 
-    规则: 去协议前缀与凭据; **无协议**的 scp 形式 `[user@]host:path` 拆开 (带协议的
-    `host:port/path` 不拆, 端口保留为 `host:port`); 去尾 `/` 与 `.git`; host 小写;
-    **path 保留大小写** (自建 GitLab 可能大小写敏感, 宁可少合并也不误合并)。
-    无 remote / 空串返回空串, 由调用方回落 path。
+    规则:
+      - 去协议与**凭据**(取首个 `/` 之前最后一个 `@`, 兼容密码里带 `@`);
+      - **无协议**的 scp 形式 `[user@]host:path` 拆开; `host:8080/g/r` 视为 host:port
+        (与 `https://host:8080/g/r` 收敛到同一个键);
+      - 去尾 `/` 与 `.git`; host 小写, 端口保留;
+      - **path 保留大小写** (自建 GitLab 可能大小写敏感, 宁可少合并也不误合并);
+      - 本地路径 / `file://` 返回空串 (跨机器同路径不同仓库会误合并, 不如回落 path 身份)。
     """
     s = (url or "").strip()
     if not s:
         return ""
+    if s.lower().startswith("file://") or _LOCAL_REMOTE_RE.match(s):
+        return ""
     had_scheme = "://" in s
     if had_scheme:
         s = s.split("://", 1)[1]
-    if "@" in s.split("/", 1)[0]:            # 去凭据 (user@ 或 user:token@)
-        s = s.split("@", 1)[1]
-    if not had_scheme and ":" in s.split("/", 1)[0]:   # scp 形式 host:path
-        host, _, path = s.partition(":")
-        s = host + "/" + path.lstrip("/")
+    first_slash = s.find("/")
+    head_seg = s if first_slash == -1 else s[:first_slash]
+    at = head_seg.rfind("@")                 # 凭据里可能还有 @ → 取最后一个
+    if at != -1:
+        s = s[at + 1:]
+    if not had_scheme:
+        head = s if "/" not in s else s.split("/", 1)[0]
+        if ":" in head:
+            host, _, path = s.partition(":")
+            if re.match(r"^\d+/", path):      # host:8080/group/repo → 当 host:port
+                s = host + ":" + path
+            else:                             # scp 形式 host:group/repo
+                s = host + "/" + path.lstrip("/")
     s = s.rstrip("/")
     if s.lower().endswith(".git"):
         s = s[:-4]
     head, _, rest = s.partition("/")
-    if ":" in head:                          # host:port → host 小写, 端口保留
+    if ":" in head:
         h, _, port = head.partition(":")
         head = h.lower() + ":" + port
     else:
@@ -181,7 +196,9 @@ def normalize_remote(url: str) -> str:
 def git_remote(cwd: Optional[str] = None) -> str:
     """取仓库 origin 的 remote 地址; 无 origin 取第一条 remote; 无仓库/无 remote 返回空串。"""
     import subprocess
-    base = cwd or os.getcwd()
+    if not cwd:
+        return ""
+    base = cwd
     try:
         proc = subprocess.run(["git", "-C", base, "remote", "get-url", "origin"],
                               capture_output=True, text=True, timeout=10)
@@ -261,30 +278,98 @@ def _unique_project_name(conn: sqlite3.Connection, base: str) -> str:
     return name
 
 
+def match_by_path_str(conn: sqlite3.Connection, path: str) -> Optional[int]:
+    """按**上报路径字符串**做最长前缀匹配 (不跑 git)。
+
+    远端大脑下服务端跑不了客户端路径的 git, 这是唯一可用的路径兜底;
+    父子目录也算命中 (兼容历史上把子目录/父目录注册成项目的脏数据)。
+    """
+    p = (path or "").strip().rstrip("/")
+    if not p:
+        return None
+    best: Optional[tuple] = None
+    for row in list_projects(conn):
+        q = (row["path"] or "").strip().rstrip("/")
+        if not q:
+            continue
+        if p == q or p.startswith(q + "/") or q.startswith(p + "/"):
+            if best is None or len(q) > best[1]:
+                best = (row["id"], len(q))
+    return best[0] if best else None
+
+
+def set_remote(conn: sqlite3.Connection, project_id: int, remote: str,
+               force: bool = False) -> bool:
+    """把客户端解析出的 remote 回填到项目; 默认不覆盖已有值 (force=True 才覆盖)。"""
+    r = normalize_remote(remote)
+    if not r:
+        raise ValueError("remote 为空或不可归一化 (本地路径/file:// 不进身份键)")
+    row = conn.execute("SELECT remote FROM projects WHERE id=?", (project_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"项目不存在: {project_id}")
+    cur = (row["remote"] or "").strip()
+    if cur == r or (cur and not force):
+        return False
+    conn.execute("UPDATE projects SET remote=?, updated_at=datetime('now') WHERE id=?",
+                 (r, project_id))
+    conn.commit()
+    return True
+
+
+def _refresh_path(conn: sqlite3.Connection, project_id: int,
+                  cwd: Optional[str]) -> None:
+    """remote 命中时顺手把 path 刷成「最近一次看到的位置」(拿不到仓库根就跳过)。"""
+    if not cwd:
+        return
+    repo = _git_toplevel(cwd)
+    if repo is None:
+        return
+    conn.execute("UPDATE projects SET path=?, updated_at=datetime('now')"
+                 " WHERE id=? AND path<>?", (str(repo), project_id, str(repo)))
+    conn.commit()
+
+
 def resolve_project(conn: sqlite3.Connection, cwd: Optional[str] = None,
                     remote: Optional[str] = None) -> tuple:
     """确定性项目归属 (代码强制): 返回 (status, project_id)。
 
-    匹配顺序: 归一化 git remote 精确 → 仓库根路径 → 自动注册。
+    匹配顺序: 归一化 git remote 精确 → 仓库根路径(或上报路径字符串最长前缀) → 自动注册。
     status:
-      - "matched": remote 或路径匹配到已注册项目, 记忆归该项目 (路径命中时顺手回填 remote/path)
+      - "matched": 命中已注册项目 (顺带回填 remote / 刷新 path)
       - "created": git 检测到仓库但未注册 → 自动注册 (name=仓库 basename,
                    path=仓库根, remote=归一化值), 记忆归新项目
-      - "no_git":  既无 remote 命中、又不在任何 git 仓库内 → 需向用户确认
-                   (新建项目 或 全局层), 调用方不得静默落全局
+      - "no_git":  既未命中、又拿不到仓库 → 需向用户确认 (新建项目 或 全局层),
+                   调用方不得静默落全局
+
+    **绝不用服务端进程目录顶替客户端路径**: 一旦显式给了 cwd 或 remote (远端大脑的场景),
+    就只按它们判定; 只有两者都没给时, 才回落到进程目录 (本地后端兼容)。
     """
-    r = normalize_remote(remote) if remote else normalize_remote(git_remote(cwd))
+    reported = bool((remote or "").strip())
+    r = normalize_remote(remote) if reported else (
+        normalize_remote(git_remote(cwd)) if cwd else "")
     if r:
         pid = match_by_remote(conn, r)
         if pid is not None:
+            _refresh_path(conn, pid, cwd)
             return ("matched", pid)
-    repo = _git_toplevel(cwd)
+    repo = _git_toplevel(cwd) if cwd else None
     if repo is None:
-        return ("no_git", None)
+        if cwd:
+            pid = match_by_path_str(conn, cwd)      # 字符串兜底 (服务端跑不了 git 也能用)
+            if pid is not None:
+                backfill_remote(conn, pid, r or remote)
+                conn.execute("UPDATE projects SET path=?, updated_at=datetime('now')"
+                             " WHERE id=?", (cwd.strip(), pid))
+                conn.commit()
+                return ("matched", pid)
+        if reported or cwd:
+            return ("no_git", None)
+        repo = _git_toplevel(None)                  # 本地后端: 未显式给参数时按进程目录
+        if repo is None:
+            return ("no_git", None)
     pid = _match_registered(conn, repo)
     if pid is not None:
-        # 路径命中: path 降级为「最近一次看到的位置」(后写覆盖), remote 惰性回填
-        backfill_remote(conn, pid, r)
+        backfill_remote(conn, pid, r or remote)
         conn.execute("UPDATE projects SET path=?, updated_at=datetime('now') WHERE id=?",
                      (str(repo), pid))
         conn.commit()
@@ -307,61 +392,141 @@ def duplicate_groups(conn: sqlite3.Connection) -> List[dict]:
             for r, ps in sorted(buckets.items()) if len(ps) > 1]
 
 
-def merge_projects(conn: sqlite3.Connection, src_id: int, dst_id: int,
-                   backup_path: str) -> dict:
-    """显式合并: 记忆与 spec 索引改挂 dst, src 打墓碑; 合并前写可回滚备份。
+_MERGE_SKIP_TABLES = {"projects", "project_removals", "review_log", "sqlite_sequence"}
 
-    单事务内完成; specs_index 的 UNIQUE(project_id, rel_path) 冲突保留 dst 既有行、
-    删除 src 重复行并计入报告。不物理删除任何项目/记忆。
+
+def _project_tables(conn: sqlite3.Connection) -> List[str]:
+    """所有带 project_id 列的业务表 (合并时一起改挂)。"""
+    out = []
+    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+        t = row["name"]
+        if t in _MERGE_SKIP_TABLES or t.startswith("sqlite_") or "_fts" in t:
+            continue
+        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({t})")]
+        if "project_id" in cols:
+            out.append(t)
+    return out
+
+
+def _pk_col(conn: sqlite3.Connection, table: str) -> str:
+    for r in conn.execute(f"PRAGMA table_info({table})"):
+        if r["pk"]:
+            return r["name"]
+    return "rowid"
+
+
+def merge_backup_path(db_path: str, src_id: int, dst_id: int, name: str = "") -> Path:
+    """合并备份固定落在 DB 同级的 `merges/` 下, 只接受 basename (防任意路径写入)。"""
+    import datetime
+    base = Path(name).name if name else (
+        f"merge-{src_id}-{dst_id}-{datetime.datetime.now():%Y%m%d-%H%M%S}.json")
+    if not base.endswith(".json"):
+        base += ".json"
+    d = Path(db_path).resolve().parent / "merges"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / base
+
+
+def _jsonable_row(row: dict) -> dict:
+    """把 BLOB 列 (memories.embedding) 编码成可 JSON 存的形式。"""
+    return {k: ({"__b64__": base64.b64encode(bytes(v)).decode()}
+                if isinstance(v, (bytes, bytearray)) else v)
+            for k, v in row.items()}
+
+
+def _decode_row(row: dict) -> dict:
+    return {k: (base64.b64decode(v["__b64__"])
+                if isinstance(v, dict) and "__b64__" in v else v)
+            for k, v in row.items()}
+
+
+def merge_projects(conn: sqlite3.Connection, src_id: int, dst_id: int,
+                   backup_path) -> dict:
+    """显式合并: 把 src 名下所有 project_id 数据改挂 dst, src 打墓碑; 先写可回滚备份。
+
+    备份记录**每张表的完整行** + src 原墓碑状态 + `specs_index` 冲突标记;
+    `specs_index` 的 UNIQUE(project_id, rel_path) 冲突保留 dst 既有行、删除 src 重复行
+    (回滚时按主键 INSERT 重建, 不会丢)。不物理删除任何项目。
     """
     if src_id == dst_id:
         raise ValueError("源与目标不能相同")
     for pid in (src_id, dst_id):
         if conn.execute("SELECT 1 FROM projects WHERE id=?", (pid,)).fetchone() is None:
             raise ValueError(f"项目不存在: {pid}")
-    mems = [dict(r) for r in conn.execute(
-        "SELECT id, project_id FROM memories WHERE project_id=?", (src_id,)).fetchall()]
-    specs = [dict(r) for r in conn.execute(
-        "SELECT id, project_id, rel_path FROM specs_index WHERE project_id=?",
-        (src_id,)).fetchall()]
     src = dict(conn.execute("SELECT * FROM projects WHERE id=?", (src_id,)).fetchone())
-    Path(backup_path).write_text(
-        json.dumps({"version": 1, "src_id": src_id, "dst_id": dst_id,
-                    "memories": mems, "specs_index": specs, "src_row": src},
-                   ensure_ascii=False, indent=2),
-        encoding="utf-8")
-    dropped = 0
-    with conn:  # 单事务
+    tables = _project_tables(conn)
+    dst_paths: set = set()
+    if "specs_index" in tables:
         dst_paths = {r["rel_path"] for r in conn.execute(
             "SELECT rel_path FROM specs_index WHERE project_id=?", (dst_id,)).fetchall()}
-        for s in specs:
-            if s["rel_path"] in dst_paths:
-                conn.execute("DELETE FROM specs_index WHERE id=?", (s["id"],))
-                dropped += 1
-        conn.execute("UPDATE specs_index SET project_id=? WHERE project_id=?",
-                     (dst_id, src_id))
-        conn.execute("UPDATE memories SET project_id=? WHERE project_id=?",
-                     (dst_id, src_id))
+    dropped_specs = 0
+    backup = {"version": 2, "src_id": src_id, "dst_id": dst_id, "src_row": src,
+              "src_removed": is_removed(conn, src_id), "tables": {}}
+    for t in tables:
+        rows = [_jsonable_row(dict(r)) for r in conn.execute(
+            f"SELECT * FROM {t} WHERE project_id=?", (src_id,)).fetchall()]
+        for row in rows:
+            if t == "specs_index" and row.get("rel_path") in dst_paths:
+                row["_conflict"] = 1
+                dropped_specs += 1
+        backup["tables"][t] = rows
+    Path(backup_path).write_text(json.dumps(backup, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+    with conn:  # 单事务
+        for t, rows in backup["tables"].items():
+            pk = _pk_col(conn, t)
+            for row in rows:
+                if row.get("_conflict"):
+                    conn.execute(f"DELETE FROM {t} WHERE {pk}=?", (row[pk],))
+            conn.execute(f"UPDATE {t} SET project_id=? WHERE project_id=?", (dst_id, src_id))
         conn.execute("INSERT OR IGNORE INTO project_removals(project_id, name) VALUES (?,?)",
                      (src_id, src["name"]))
-    return {"moved_memories": len(mems), "moved_specs": len(specs) - dropped,
-            "dropped_specs": dropped, "backup": backup_path}
+    return {"moved_rows": sum(len(v) for v in backup["tables"].values()),
+            "moved_memories": len(backup["tables"].get("memories", [])),
+            "moved_specs": len(backup["tables"].get("specs_index", [])) - dropped_specs,
+            "dropped_specs": dropped_specs, "tables": list(backup["tables"]),
+            "backup": str(backup_path)}
 
 
-def rollback_merge(conn: sqlite3.Connection, backup_path: str) -> dict:
-    """按合并产出的备份还原: 记忆/spec 索引 project_id 复原, 撤销 src 墓碑。"""
+def rollback_merge(conn: sqlite3.Connection, backup_path) -> dict:
+    """按备份还原合并: 逐表按主键改回 project_id; 行已被合并删除 (冲突) 则 INSERT 重建;
+    src 的墓碑状态恢复到**合并前**的样子 (原本已墓碑的不得被复活)。"""
     data = json.loads(Path(backup_path).read_text(encoding="utf-8"))
+    tables = data.get("tables")
+    if tables is None:   # 兼容 v1 备份
+        tables = {"memories": data.get("memories", []),
+                  "specs_index": data.get("specs_index", [])}
+    restored: dict = {}
+    rebuilt = 0
     with conn:
-        for m in data["memories"]:
-            conn.execute("UPDATE memories SET project_id=? WHERE id=?",
-                         (m["project_id"], m["id"]))
-        for s in data["specs_index"]:
-            conn.execute("UPDATE specs_index SET project_id=? WHERE id=?",
-                         (s["project_id"], s["id"]))
-        conn.execute("DELETE FROM project_removals WHERE project_id=?",
-                     (data["src_id"],))
-    return {"restored_memories": len(data["memories"]),
-            "restored_specs": len(data["specs_index"])}
+        for t, rows in tables.items():
+            pk = _pk_col(conn, t)
+            n = 0
+            for row in rows:
+                vals = _decode_row({k: v for k, v in row.items() if k != "_conflict"})
+                cur = conn.execute(f"UPDATE {t} SET project_id=? WHERE {pk}=?",
+                                   (vals.get("project_id"), vals.get(pk)))
+                n += cur.rowcount
+                if cur.rowcount == 0:
+                    cols = list(vals)
+                    try:
+                        conn.execute(
+                            f"INSERT OR IGNORE INTO {t}({','.join(cols)})"
+                            f" VALUES ({','.join('?' * len(cols))})",
+                            tuple(vals[c] for c in cols))
+                        n += 1
+                        rebuilt += 1
+                    except sqlite3.Error:
+                        pass      # v1 备份只有部分列, 无法重建 (不静默改写其它行)
+            restored[t] = n
+        if data.get("src_removed"):
+            conn.execute("INSERT OR IGNORE INTO project_removals(project_id, name) VALUES (?,?)",
+                         (data["src_id"], (data.get("src_row") or {}).get("name", "")))
+        else:
+            conn.execute("DELETE FROM project_removals WHERE project_id=?", (data["src_id"],))
+    return {"restored": restored, "rebuilt_rows": rebuilt,
+            "restored_memories": restored.get("memories", 0),
+            "restored_specs": restored.get("specs_index", 0)}
 
 
 def _walk_spec_files(root: Path) -> List[Path]:
