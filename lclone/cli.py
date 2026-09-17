@@ -105,7 +105,8 @@ def cmd_proj(args) -> None:
         if not getattr(args, "backup", ""):
             raise SystemExit("用法: lclone proj rollback --backup <合并备份文件>")
         try:
-            rep = proj_mod.rollback_merge(conn, args.backup)
+            path = proj_mod.resolve_backup_path(args.db or config.db_path(), args.backup)
+            rep = proj_mod.rollback_merge(conn, path)
         except (OSError, ValueError, KeyError) as e:
             raise SystemExit(str(e))
         print(f"已回滚: 记忆 {rep['restored_memories']} 条, spec 索引 {rep['restored_specs']} 条")

@@ -3109,6 +3109,77 @@ check("404 normalize_card 去掉 markdown 装饰/合并段标题/引用去重",
       == "要点：A。\n背景/为什么：B。\n影响/以后注意：C。"
       and _sa.normalize_card("要点：A。\n背景/为什么：B。\n影响/以后注意：C。")
       == "要点：A。\n背景/为什么：B。\n影响/以后注意：C。")
+
+# ---- 405+: 对抗验证的残留修复 (静默错归属 / 越权路径 / 无效 project_id) ----
+_av = db_mod.init(os.path.join(tmp, "advfix.db"))
+check("405 空白 cwd/remote 一律当没给 (写入入口判未归属, 不回落进程目录)",
+      proj_mod.resolve_capture_project(_av, cwd="   ", remote="")[0] == "unattributed"
+      and proj_mod.resolve_capture_project(_av, cwd=None, remote="   ")[0] == "unattributed"
+      and proj_mod.resolve_capture_project(_av, cwd="", remote="")[0] == "unattributed"
+      and _mcp._resolve_attribution(_av, {"cwd": "  ", "repo_remote": " "})[0] == "no_git",
+      str(proj_mod.resolve_capture_project(_av, cwd=None, remote="   ")))
+_avp = proj_mod.add_project(_av, "outer", "/srv/outer", "", "git@host:g/outer.git")
+_avc = proj_mod.add_project(_av, "inner", "/srv/other/inner", "", "")
+check("406 match_by_path_str 只认前向前缀 (父目录不再误命中)",
+      proj_mod.match_by_path_str(_av, "/srv/other/inner/sub") == _avc
+      and proj_mod.match_by_path_str(_av, "/srv") is None)
+check("407 remote 明确但对不上时不再用路径猜",
+      proj_mod.resolve_capture_project(_av, cwd="/srv/outer/nested",
+                                       remote="git@host:g/unknown.git")[0]
+      == "unattributed",
+      str(proj_mod.resolve_capture_project(_av, cwd="/srv/outer/nested",
+                                           remote="git@host:g/unknown.git")))
+check("408 未给 remote 时才走路径兜底",
+      proj_mod.resolve_capture_project(_av, cwd="/srv/other/inner/sub")[0] == "path")
+check("409 已移除/不存在的 project_id 判 invalid (不静默写入)",
+      proj_mod.resolve_capture_project(_av, project_id=999999)[0] == "invalid"
+      and proj_mod.resolve_capture_project(_av, project_id=_avc)[0] == "explicit")
+proj_mod.remove_project(_av, _avc)
+check("410 已墓碑的 project_id 也判 invalid",
+      proj_mod.resolve_capture_project(_av, project_id=_avc)[0] == "invalid")
+check("411 显式 project_id + remote 命中即回填",
+      proj_mod.resolve_capture_project(_av, project_id=_avp,
+                                       remote="git@host:g/outer.git")[0] == "explicit"
+      and _av.execute("SELECT remote FROM projects WHERE id=?",
+                      (_avp,)).fetchone()["remote"] == "host/g/outer")
+_merges = os.path.join(tmp, "bk", "merges")
+os.makedirs(_merges, exist_ok=True)
+_open_bk = os.path.join(_merges, "merge-1-2.json")
+pathlib.Path(_open_bk).write_text("{}", encoding="utf-8")
+check("412 备份读取侧同样限制在 merges/ 内",
+      proj_mod.resolve_backup_path(os.path.join(tmp, "bk", "lclone.db"),
+                                   "merge-1-2.json") == pathlib.Path(_open_bk).resolve()
+      and proj_mod.resolve_backup_path(os.path.join(tmp, "bk", "lclone.db"),
+                                       _open_bk) == pathlib.Path(_open_bk).resolve())
+for _bad in ("../../etc/passwd", "/etc/passwd", "a/b/c.json", "", "nope.json"):
+    try:
+        proj_mod.resolve_backup_path(os.path.join(tmp, "bk", "lclone.db"), _bad)
+        check(f"413 备份路径逃逸被拒 ({_bad!r})", False, "没有报错")
+    except ValueError:
+        pass
+check("413 备份路径逃逸全部被拒", True)
+_av.close()
+
+# JS/Python 归一化规则对拍 (两边必须同规则; 无 node 则跳过)
+if shutil.which("node"):
+    _js_src = pathlib.Path("integrations/dsh/dsh/index.js").read_text(encoding="utf-8")
+    _fn = _js_src[_js_src.index("const LOCAL_REMOTE_RE"):_js_src.index("function gitRemote")]
+    _cases = ["git@git.xiaojukeji.com:PH-596/expressdriver-drn.git",
+              "https://user:tok@GitHub.com/ljzRober/L-clone.git",
+              "ssh://git@host:2222/a/b.git", "git@host:grp/r.git/", "https://host/grp/r",
+              "https://user:p@ss@host/a/b.git", "host:8080/group/repo",
+              "https://host:8080/group/repo.git", "/Users/x/repo.git",
+              "file:///srv/git/repo.git", "C:/customFile/github/L-clone", "~/repo", "",
+              "   ", "git@host:2222/a/b"]
+    _js_out = subprocess.run(
+        ["node", "-e", _fn + "\nconsole.log(JSON.stringify(" + json.dumps(_cases)
+         + ".map(normalizeRemote)))"], capture_output=True, text=True, timeout=30)
+    _js = json.loads(_js_out.stdout or "[]")
+    _py = [_normr(c) for c in _cases]
+    check("414 JS 与 Python 的 normalize_remote 规则一致",
+          _js == _py, f"js={_js}\npy={_py}")
+else:
+    check("414 JS/Python 归一化对拍 (无 node, 跳过)", True)
 _aux.close()
 
 print()

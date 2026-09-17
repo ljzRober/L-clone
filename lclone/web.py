@@ -269,7 +269,8 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/projects/rollback-merge")
     def rollback_merge(body: ProjectRollbackIn, conn: sqlite3.Connection = Depends(get_db)):
         try:
-            return proj_mod.rollback_merge(conn, body.backup)
+            path = proj_mod.resolve_backup_path(resolved_db, body.backup)
+            return proj_mod.rollback_merge(conn, path)
         except (OSError, ValueError, KeyError) as e:
             raise HTTPException(400, str(e))
 
@@ -301,6 +302,10 @@ def create_app(db_path: Optional[str] = None):
     @app.post("/api/remember")
     def remember(body: RememberIn, conn: sqlite3.Connection = Depends(get_db)):
         pid = body.project_id
+        if pid is not None:
+            row = proj_mod.get_project(conn, pid)
+            if row is None or proj_mod.is_removed(conn, pid):
+                raise HTTPException(422, "project_id 不存在或项目已被移除")
         # Web 手动添加 = 用户当场显式确认 → decision 直接生效
         mid = mem_mod.remember(conn, body.content, level=body.level,
                                project_id=pid, reason=body.reason,
@@ -309,22 +314,13 @@ def create_app(db_path: Optional[str] = None):
 
     @app.post("/api/capture")
     def capture(body: CaptureIn, conn: sqlite3.Connection = Depends(get_db)):
-        pid = body.project_id
-        if pid is None and body.repo_remote:
-            pid = proj_mod.match_by_remote(conn, body.repo_remote)
-        if pid is None and body.cwd:
-            pid = proj_mod.match_by_path_str(conn, body.cwd)
-        if pid is None:
-            status, pid = proj_mod.resolve_project(conn, cwd=body.cwd,
-                                                   remote=body.repo_remote)
-            if status == "no_git":
-                pid = None
-        if pid is None and (body.repo_remote or body.cwd):
-            if not body.global_fallback:
-                raise HTTPException(422, "未归属: remote/路径未匹配到已注册项目"
-                                         " (先 lclone proj add, 或传 project_id)")
-        if pid is not None and body.repo_remote:
-            proj_mod.backfill_remote(conn, pid, body.repo_remote)   # 命中即惰性回填
+        status, pid = proj_mod.resolve_capture_project(
+            conn, project_id=body.project_id, cwd=body.cwd, remote=body.repo_remote)
+        if status == "invalid":
+            raise HTTPException(422, "未归属: project_id 不存在或项目已被移除")
+        if status == "unattributed" and not body.global_fallback:
+            raise HTTPException(422, "未归属: 未匹配到已注册项目"
+                                     " (先 lclone proj add, 或传 project_id)")
         rep = mem_mod.capture_report(conn, body.text, project_id=pid, title=body.title,
                                      session_key=body.session_key or "")
         return rep

@@ -134,7 +134,7 @@ function normalizeRemote(url) {
   if (!s) return ''
   if (/^file:\/\//i.test(s) || LOCAL_REMOTE_RE.test(s)) return ''
   const hadScheme = s.includes('://')
-  if (hadScheme) s = s.split('://')[1]
+  if (hadScheme) s = s.slice(s.indexOf('://') + 3)
   const fs = s.indexOf('/')
   const headSeg = fs === -1 ? s : s.slice(0, fs)
   const at = headSeg.lastIndexOf('@')
@@ -203,7 +203,7 @@ function matchProject(items, repo) {
   // 兜底: 仓库根与 cwd 互为父子目录时也算命中 (注册路径是子目录/父目录的历史数据)
   return items.find((p) => {
     const q = norm(p.path)
-    return q && (target.startsWith(q + '/') || q.startsWith(target + '/'))
+    return q && target.startsWith(q + '/')
   }) || null
 }
 

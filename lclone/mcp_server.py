@@ -63,36 +63,23 @@ def _resolve_project(conn, ref):
 
 
 def _resolve_attribution(conn, args) -> tuple:
-    """统一归属解析: 显式 project → 上报的 repo_remote (归一化 remote 精确匹配)
-    → 客户端 cwd (git 自动匹配/注册)。返回 (status, pid, where)；no_git 时 pid 为 None。
+    """统一归属解析 (与 web 写入路径同一套语义): 返回 (status, pid, where)。
 
-    远端大脑下 cwd 落在服务器上必然 no_git，故客户端应优先传 `project` 或 `repo_remote`。
+    远端大脑下服务端跑不了客户端路径的 git, 故客户端应传 `project` 或 `repo_remote`。
     """
-    pid = _resolve_project(conn, args.get("project"))
-    if pid is not None:
-        return ("explicit", pid, f"项目 #{pid}")
-    if args.get("project"):
+    ref = args.get("project")
+    if ref and str(ref).strip().lower() in _GLOBAL_REFS:
         return ("global", None, "全局层(个人区)")   # 显式 project=global
-    remote = (args.get("repo_remote") or "").strip()
-    cwd = (args.get("cwd") or "").strip()
-    if remote:
-        pid = proj_mod.match_by_remote(conn, remote)
-        if pid is not None:
-            proj_mod.backfill_remote(conn, pid, remote)
-            return ("remote", pid, f"项目 #{pid} (remote 匹配)")
-    if not remote and not cwd:
-        # 三样都没有 → 不得拿服务端进程目录(可能是大脑自己的仓库)顶替客户端归属
-        return ("no_git", None, "")
-    if pid is None and cwd:
-        pid = proj_mod.match_by_path_str(conn, cwd)
-        if pid is not None:
-            proj_mod.backfill_remote(conn, pid, remote)
-            return ("path", pid, f"项目 #{pid} (上报路径匹配)")
-    status, pid = proj_mod.resolve_project(conn, cwd=cwd or None, remote=remote or None)
-    if status == "no_git":
-        return ("no_git", None, "")
-    return (status, pid,
-            f"项目 #{pid} (git 自动{'归属' if status == 'matched' else '注册'})")
+    pid = _resolve_project(conn, ref)               # 名字/id; 不存在会 raise
+    status, pid2 = proj_mod.resolve_capture_project(
+        conn, project_id=pid, cwd=args.get("cwd"), remote=args.get("repo_remote"))
+    if status == "invalid" or status == "unattributed":
+        return ("no_git", None, "")                 # 已墓碑/没命中 → 当作未归属, 让调用方问用户
+    where = {"explicit": f"项目 #{pid2}",
+             "remote": f"项目 #{pid2} (remote 匹配)",
+             "path": f"项目 #{pid2} (上报路径匹配)"}.get(status) or (
+        f"项目 #{pid2} (git 自动{'归属' if status == 'matched' else '注册'})")
+    return (status, pid2, where)
 
 
 def _unattributed_msg() -> str:

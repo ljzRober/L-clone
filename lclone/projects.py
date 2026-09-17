@@ -292,7 +292,7 @@ def match_by_path_str(conn: sqlite3.Connection, path: str) -> Optional[int]:
         q = (row["path"] or "").strip().rstrip("/")
         if not q:
             continue
-        if p == q or p.startswith(q + "/") or q.startswith(p + "/"):
+        if p == q or p.startswith(q + "/"):
             if best is None or len(q) > best[1]:
                 best = (row["id"], len(q))
     return best[0] if best else None
@@ -344,7 +344,9 @@ def resolve_project(conn: sqlite3.Connection, cwd: Optional[str] = None,
     **绝不用服务端进程目录顶替客户端路径**: 一旦显式给了 cwd 或 remote (远端大脑的场景),
     就只按它们判定; 只有两者都没给时, 才回落到进程目录 (本地后端兼容)。
     """
-    reported = bool((remote or "").strip())
+    cwd = (cwd or "").strip() or None          # 空白等于没给, 绝不用它触发进程目录兜底
+    remote = (remote or "").strip() or None
+    reported = bool(remote)
     r = normalize_remote(remote) if reported else (
         normalize_remote(git_remote(cwd)) if cwd else "")
     if r:
@@ -354,13 +356,14 @@ def resolve_project(conn: sqlite3.Connection, cwd: Optional[str] = None,
             return ("matched", pid)
     repo = _git_toplevel(cwd) if cwd else None
     if repo is None:
-        if cwd:
-            pid = match_by_path_str(conn, cwd)      # 字符串兜底 (服务端跑不了 git 也能用)
+        if cwd and not reported:
+            # 字符串兜底只在客户端**没给 remote** 时启用; 明说了另一个 remote 还去按路径猜,
+            # 会把嵌套的别的仓库算进来
+            pid = match_by_path_str(conn, cwd)
             if pid is not None:
                 backfill_remote(conn, pid, r or remote)
-                conn.execute("UPDATE projects SET path=?, updated_at=datetime('now')"
-                             " WHERE id=?", (cwd.strip(), pid))
-                conn.commit()
+                # 注意: 这里**不**写 path —— 上报路径没经过校验 (可能是父目录或含 ../),
+                # path 只由 _refresh_path 用真实 git 仓库根刷新
                 return ("matched", pid)
         if reported or cwd:
             return ("no_git", None)
@@ -376,6 +379,53 @@ def resolve_project(conn: sqlite3.Connection, cwd: Optional[str] = None,
         return ("matched", pid)
     pid = add_project(conn, _unique_project_name(conn, repo.name), str(repo), "", r)
     return ("created", pid)
+
+
+def resolve_capture_project(conn: sqlite3.Connection, project_id: Optional[int] = None,
+                            cwd: Optional[str] = None,
+                            remote: Optional[str] = None) -> tuple:
+    """**写入路径**的归属解析 (web/MCP 共用, 可单测): 返回 (status, pid)。
+
+    status:
+      - "explicit": 显式 project_id 有效 → 用它 (顺带回填 remote)
+      - "invalid":  project_id 不存在或已被移除 (调用方应报错, 不得静默写入)
+      - "remote":   归一化 remote 命中已注册项目 (顺带回填)
+      - "path":     上报路径字符串命中 (仅在**没给 remote** 时启用 —— 客户端明说了另一个
+                    remote 就不能再拿路径去猜, 否则会把别的仓库算进来)
+      - "matched"/"created": 交给 resolve_project (本地 git 判定 / 自动注册)
+      - "unattributed": 三样都没有或都没命中 → 未归属 (调用方决定 global_fallback 或报错)
+    """
+    cwd = (cwd or "").strip() or None
+    remote = (remote or "").strip() or None
+    if project_id is not None:
+        if get_project(conn, project_id) is None or is_removed(conn, project_id):
+            return ("invalid", None)
+        if remote:
+            backfill_remote(conn, project_id, remote)
+        return ("explicit", project_id)
+    if remote:
+        pid = match_by_remote(conn, remote)
+        if pid is not None:
+            backfill_remote(conn, pid, remote)
+            return ("remote", pid)
+    if cwd:
+        pid = match_by_path_str(conn, cwd)
+        if pid is not None:
+            if not remote:
+                return ("path", pid)
+            # remote 对不上: 只有命中项目的 remote 还空着 (历史数据, 尚未回填) 才认路径;
+            # 它已经有别的 remote → 说明是另一个仓库, 不猜
+            row = get_project(conn, pid)
+            if not ((row["remote"] if row else "") or "").strip():
+                backfill_remote(conn, pid, remote)
+                return ("path", pid)
+            return ("unattributed", None)
+    if cwd or remote:
+        status, pid = resolve_project(conn, cwd=cwd, remote=remote)
+        if status == "no_git":
+            return ("unattributed", None)
+        return (status, pid)
+    return ("unattributed", None)
 
 
 def duplicate_groups(conn: sqlite3.Connection) -> List[dict]:
@@ -438,6 +488,20 @@ def _decode_row(row: dict) -> dict:
     return {k: (base64.b64decode(v["__b64__"])
                 if isinstance(v, dict) and "__b64__" in v else v)
             for k, v in row.items()}
+
+
+def resolve_backup_path(db_path: str, name: str) -> Path:
+    """把备份路径解析到 DB 同级 `merges/` 内 (读取侧同样受限), 只收 basename 或该目录下的绝对路径。"""
+    merges = (Path(db_path).resolve().parent / "merges").resolve()
+    p = Path(name or "")
+    if not str(p):
+        raise ValueError("缺少备份文件路径")
+    cand = (p if p.is_absolute() else merges / p.name).resolve()
+    if merges not in cand.parents:
+        raise ValueError("备份路径必须在 merges/ 目录内")
+    if not cand.is_file():
+        raise ValueError(f"备份文件不存在: {cand.name}")
+    return cand
 
 
 def merge_projects(conn: sqlite3.Connection, src_id: int, dst_id: int,
