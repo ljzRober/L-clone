@@ -223,7 +223,7 @@ TOOLS = [
     },
     {
         "name": "evolution_add",
-        "description": "沉淀一个进化资产 (可复用脚本/工具)。内容按 sha256 存入服务器内容寻址库并**发布一版** (内容未变则不新增版本, 幂等); ref=项目内脚本路径(内容留仓库, 只记引用不存内容)。可传 insight 列表建立 insight→evolution 链接。",
+        "description": "沉淀一个进化资产——**只用于数据与可执行文件** (脚本/工具/配置/密钥表这类独立存在说明不了内容的东西); 规范/准则/说明/模板/示例 SHALL 写成 insight (remember), 不得为省注入体积把规范塞进 evolution。内容按 sha256 存入服务器内容寻址库并**发布一版** (内容未变则不新增版本, 幂等); ref=项目内脚本路径(内容留仓库, 只记引用不存内容)。可传 insight 列表建立 insight→evolution 链接。",
         "inputSchema": {
             "type": "object",
             "properties": {

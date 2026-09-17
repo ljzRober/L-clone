@@ -24,6 +24,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -518,6 +519,48 @@ def manifest_index(conn: sqlite3.Connection) -> Dict[str, dict]:
 
 
 KEEP_VERSIONS_DEFAULT = 5
+
+# 说明性文档的扩展名 (规范/说明/模板: 这类内容的家是 insight, 不是 evolution)
+_PROSE_EXT = {"md", "markdown", "rst", "adoc"}
+# 脚本/数据类扩展名 (evolution 的正当载体)
+_CODE_EXT = {"sh", "bash", "zsh", "py", "js", "mjs", "ts", "rb", "pl", "ps1",
+             "json", "yaml", "yml", "toml", "ini", "cfg", "conf", "csv", "sql"}
+
+
+def audit_misplaced(conn: sqlite3.Connection) -> List[dict]:
+    """只读巡检: 找出**疑似放错桶**的资产 (说明性文档应做成 insight, evolution 只装数据与脚本)。
+
+    判据只看形态, 不做语义判断, 因此**只提示、绝不自动删**:
+      - `ref` 类 (内容在项目仓库) 跳过;
+      - 扩展名是代码/数据类的跳过;
+      - `.md/.rst/...` 且正文像说明文 (有 markdown 标题或成句标点够多) → 提示;
+      - `.txt` 这类: 有标题/成句特征才算说明文, 纯数据 (密钥表/清单) 不算。
+    """
+    out: List[dict] = []
+    for row in ls(conn):
+        name = row["name"]
+        if row.get("ref"):
+            continue
+        ext = _ext(name)
+        if ext in _CODE_EXT:
+            continue
+        content = (resolve(conn, name) or {}).get("content") or ""
+        head = content.lstrip()
+        del head
+        has_heading = bool(re.search(r"^#{1,6}\s", content, re.M))
+        sentences = len(re.findall(r"[。；！？]|[.;!?]\s", content))
+        prose = has_heading or sentences >= 6
+        if ext not in _PROSE_EXT and not prose:
+            continue          # 纯数据文件 (.txt/.json 之类) 不提示
+        if not prose:
+            continue
+        out.append({
+            "name": name, "kind": row.get("kind"), "size": row.get("size"),
+            "reason": ("扩展名是文档类" if ext in _PROSE_EXT else "正文像说明文")
+                      + " —— 规范/说明应写成 insight (remember); "
+                        "evolution 只承载数据与可执行文件",
+        })
+    return out
 
 
 def keep_versions() -> int:

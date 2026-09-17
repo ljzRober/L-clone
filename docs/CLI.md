@@ -101,6 +101,8 @@ lclone 的记忆只有一种正式等级——**洞察 (insight)**(见 [CONCEPTS
 - **版本保留窗口**: 每个资产只保留最近 N 个版本(`LCLONE_EVO_KEEP_VERSIONS`, 默认 5; `0` = 不限制);
   `publish` 成功后自动剪枝, **当前版本(含回滚到的版本)永不剪**; 无引用的内容对象才回收。
   服务端手工巡检: `lclone evolution prune [--name 资产] [--keep N] [--apply]`(默认 dry-run)。
+- **资产类型边界**: `evolution` **只装数据与可执行产物**(脚本/工具/配置/密钥表); 规范/准则/说明/
+  模板/示例一律写成 **insight**(规范卡正文须自足); 巡检 `lclone evolution audit` 只提示疑似错位, 不自动删。
 - **进化资产**: 用 `evolution add` 把可复用脚本/工具/模板**发布到服务器版本库**(内容寻址、可回滚);本地 `~/.lclone/evolution/` 只是可复现缓存,`pull`/`publish` 同步。洞察用 `[[evo:name.ext]]` 指向它;项目内脚本用 `--ref` 只存路径(内容留仓库)。
 - **整理合并**: `organize` 让 LLM 把"语义相近、说的是同一件事"的洞察合并成一条综合描述;硬约束为**同项目 + 同等级**才能合并, 跨区域由代码校验拒绝。
 - **矛盾检测**: `conflicts` 找疑似互相矛盾/规则改版的 active 洞察对, 由 LLM 判定;只提示, 不自动改。

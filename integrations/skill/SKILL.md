@@ -49,7 +49,11 @@ description: |
 5. **回答"上次定了什么 / 上次做到哪"**：`recall` 后用结果如实总结，记忆不足就明说，不编造。
 6. **删除纪律**：只允许 `suggest` 提示候选、`review` 执行用户明确要求的删除；绝不主动删除记忆。
 7. **提取质量**：`capture` 的提炼依赖真实 LLM 后端（`BRAIN_LLM=api`），把内容提炼为**洞察(insight)**（原子化、自包含、三段卡：要点 / 背景·为什么 / 影响·以后注意；引用就地写在正文里），统一进待确认、经 `review` 生效；`BRAIN_LLM=dummy` 无法真正提炼富洞察，会退化为记录原文草稿（仍待确认）。若用户尚未配置 API Key，仍可先用 dummy 跑通，并在合适时机提醒配置。
-8. **分工边界（sp-spec ↔ lclone）**：改变项目 spec（需求/场景/⚠️边界）走 sp-spec（openspec）；代码改动/接口变化/新增端点/重构/修 bug 走 git——**这两类都不 capture 进 lclone 记忆**。脑内记忆只留**洞察**（选了什么方案/定了什么规则/学到什么经验教训，原子化富知识卡）与**进化资产**（可复用脚本/工具/模板，**服务器版本化库为权威**、本地 `~/.lclone/evolution/` 只是可复现缓存，`[[evo:name.ext]]` 指向；用 `evolution_add` 发布新版本，改写用 `evolution_update`，回滚用 `evolution_rollback`）。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
+8. **内容三类归位（判据按「它是干什么的」，不是按篇幅）**：
+   - **spec（openspec）**：能被检查的**契约**（可改写成 WHEN/THEN 的 requirement）；改变需求/场景/⚠️边界走 sp-spec。
+   - **insight（lclone 记忆）**：一切**说明性内容**——规范、准则、理由/权衡、观察、经验、**模板与示例**。它不需要被“执行”，只需要被读到；insight 有自己的召回通道（向量+FTS），命中就进上下文。**凡是规范 AI 行为的东西都归这里**，并且**注入正文必须自足**（写到照着就能做，不能只写“去做 X 前先读 Y”）。
+   - **evolution（lclone 资产）**：只装**数据与可执行文件**——脚本、工具、配置、密钥表这类**独立存在说明不了任何内容、只能被运行/加载/解析**的东西（服务器版本化库为权威，本地 `~/.lclone/evolution/` 只是可复现缓存，`[[evo:name.ext]]` 指向；`evolution_add` 发布新版本、`evolution_update` 改写、`evolution_rollback` 回滚）。
+   ⚠️ **SHALL NOT 为了控制注入体积把规范/说明塞进 evolution**——那等于把知识放进没有检索通道的桶里，只能靠指针+显式取，必然读不到。规范太长时收进 skill 全文（注入层）或写成**一条**内容完整的长卡；**同类规范 SHALL 合并成一条，不要拆成多条卡/多个文件**（拆开会让执行逻辑发散、难维护）。代码改动/接口变化/新增端点/重构/修 bug 走 git，都不 capture 进记忆。lclone 只经 `specs_index` 索引 spec，不重复存全文；洞察升格为硬边界时才进 sp-spec。
 9. **自动调度 sp-spec（无需手动 /sp-spec）**：检测 sp-spec 是否已安装（`~/.agents/skills/sp-spec` 存在）。**有** → 会话中一旦进入构建性任务（改功能/修 bug/重构），默认**自动加载 sp-spec 并运行 quick 模式**（是否升级 full/debug 由 sp-spec 自决），不需要用户手动 `/sp-spec`。**无** → 仅在**首次**会话提醒一次用户安装 sp-spec：`https://github.com/ljzRober/sp-spec`，之后不再重复提醒（可在 lclone 写入一条"已提示安装 sp-spec"的全局记忆避免重复）。
 10. **进化资产必须取正文**：注入的卡片里出现 `[[evo:名字]]` 时，动手前必须先用 `mcporter call lclone.evolution_content name=<名字>`（或 `lclone evolution content <名字>`）取到资产正文；不得凭卡片里的一行摘要猜资产内容。取不到（名字写错 / 资产已删）时如实说明，不要编造资产内容。`recall` 命中指路卡会自动顺边带出正文，没带出就显式取；本地缓存 `~/.lclone/evolution/` 可能落后（`lclone evolution pull --all` 同步），优先走服务器版本库。
 

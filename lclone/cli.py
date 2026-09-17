@@ -396,6 +396,22 @@ def cmd_evolution_migrate(args) -> None:
     print(f"共 {len(out)} 个; 现共有 {len(backend.index())} 个进化资产")
 
 
+def cmd_evolution_audit(args) -> None:
+    """只读巡检: 疑似放错桶的资产 (说明性文档应做成 insight, evolution 只装数据与脚本)。
+
+    只提示、不自动删 —— 删除始终由用户决定 (与 suggest 同纪律)。
+    """
+    conn = _conn(args)
+    rows = evolutions.audit_misplaced(conn)
+    if not rows:
+        print("(没有疑似错位的资产)")
+        return
+    for r in rows:
+        print(f"  {r['name']:<28} [{r['kind']}] {r['size']}B  {r['reason']}")
+    print(f"共 {len(rows)} 个疑似错位; 规范/说明请改写成 insight, 之后再考虑 "
+          f"lclone evolution delete <名字>")
+
+
 def cmd_evolution_prune(args) -> None:
     """版本保留窗口: 每个资产只保留最近 N 个版本 (默认 5) 并回收无引用的内容对象。
 
@@ -940,6 +956,11 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="把进化目录里的存量文件摄入为 v1 (服务端操作; 只处理未进索引的)")
     _evo_common(sev_mg)
     sev_mg.set_defaults(func=cmd_evolution_migrate)
+
+    sev_au = sev_sub.add_parser("audit", parents=[parent],
+                                help="只读巡检: 疑似错位的资产 (说明性文档应做成 insight)")
+    _evo_common(sev_au)
+    sev_au.set_defaults(func=cmd_evolution_audit)
 
     sev_pn = sev_sub.add_parser("prune", parents=[parent],
                                 help="版本保留窗口: 每资产只留最近 N 版 + 回收无引用内容对象 (服务端操作)")

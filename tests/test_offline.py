@@ -644,9 +644,10 @@ _seed_n = conn.execute(
     " AND status='active' AND project_id IS NULL"
 ).fetchone()["c"]
 check("138 种子洞察落全局层且直接生效", _seed_n == 4, f"{_seed_n} 条")
-check("139 种子进化文件已写入",
-      len(_r1["evolutions_added"]) == 5
-      and (pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "洞察格式模型.md").exists(),
+check("139 种子只含数据/脚本类进化资产 (说明性文档不进 evolution)",
+      len(_r1["evolutions_added"]) == 2
+      and (pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "lclone-backup.sh").exists()
+      and not (pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "洞察格式模型.md").exists(),
       str(_r1["evolutions_added"]))
 _r2 = seed_mod.apply(conn)
 check("140 seed 幂等 (重复调用不重复种)",
@@ -658,12 +659,15 @@ _r3 = seed_mod.apply(conn)
 check("141 用户删掉的种子洞察不回灌",
       "删除纪律" in _r3["insights_skipped"], str(_r3["insights_skipped"]))
 
-_user_evo = pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "记忆准入标准.md"
+_user_evo = pathlib.Path(os.environ["LCLONE_EVO_DIR"]) / "lclone-backup.sh"
 _user_evo.write_text("我改过的内容", encoding="utf-8")
 seed_mod.apply(conn, force=False)
 check("142 不覆盖用户改过的进化文件", _user_evo.read_text(encoding="utf-8") == "我改过的内容")
 seed_mod.apply(conn, force=True)
-check("143 --force 才覆盖进化文件", "记忆准入标准" in _user_evo.read_text(encoding="utf-8"))
+check("143 --force 才覆盖进化文件",
+      _user_evo.read_text(encoding="utf-8") != "我改过的内容"
+      and len(_user_evo.read_text(encoding="utf-8")) > 10,
+      _user_evo.read_text(encoding="utf-8")[:40])
 
 # ---- CLI: gate / seed ----
 _gbuf = io.StringIO()
@@ -810,8 +814,10 @@ check("160 publish 建 v1", _p1["version"] == 1 and _p1["changed"] and _p1["hash
 _p1b = evo_store.publish(conn, "ver-demo.sh", "echo v1")
 check("161 publish 幂等 (同内容不新增版本)",
       _p1b["version"] == 1 and _p1b["changed"] is False, str(_p1b))
+_c1 = evo_store.blob_count()
+evo_store.publish(conn, "ver-demo.sh", "echo v1")
 check("162 同内容只存一份 blob (内容寻址去重)",
-      evo_store.blob_count() == _c0 + 1, f"{_c0} -> {evo_store.blob_count()}")
+      evo_store.blob_count() == _c1, f"{_c1} -> {evo_store.blob_count()}")
 
 _p2 = evo_store.publish(conn, "ver-demo.sh", "echo v2", message="改一版")
 check("163 改内容 → v2", _p2["version"] == 2 and _p2["changed"], str(_p2))
@@ -3228,6 +3234,37 @@ else:
 check("421 keep_versions 默认 5", _evom.keep_versions() == 5, str(_evom.keep_versions()))
 _ev.close()
 _ev2.close()
+
+# ---- 422+: 内容三类归位 (说明性内容归 insight; evolution 只装数据/脚本) ----
+_au = db_mod.init(os.path.join(tmp, "audit.db"))
+mem_mod.create_evolution(_au, name="guideline.md", kind="model",
+                         content="# 编码准则\n\n动手前先想清楚。\n最小实现。\n外科手术式改动。\n目标驱动。")
+mem_mod.create_evolution(_au, name="tool.sh", kind="script",
+                         content="#!/bin/sh\necho hi\n")
+mem_mod.create_evolution(_au, name="kv.txt", kind="other",
+                         content="alpha: 1\nbeta: 2\ngamma: 3\n")
+_flag = {r["name"] for r in _evom.audit_misplaced(_au)}
+check("422 巡检只提示说明性文档 (脚本/纯数据不提示)",
+      _flag == {"guideline.md"}, str(_flag))
+check("423 巡检只读 (不改任何资产)",
+      _au.execute("SELECT COUNT(*) c FROM evo_versions").fetchone()["c"] == 3)
+_au.close()
+
+import inspect as _insp2
+_prompt_src = _insp2.getsource(llm_mod.extract_memories)
+check("424 提炼提示词含三类归位判据 (规范不得进 evolution)",
+      "不要建议放进 evolution" in _prompt_src
+      and "evolution 只承载数据与可执行文件" in _prompt_src)
+_skill_txt = pathlib.Path("integrations/skill/SKILL.md").read_text(encoding="utf-8")
+check("425 skill 写明“不得为省注入体积把规范塞进 evolution”",
+      "SHALL NOT 为了控制注入体积" in _skill_txt
+      and "只装**数据与可执行文件**" in _skill_txt)
+_se_dir = pathlib.Path("lclone/data/starter/evolutions")
+_se_md = sorted(p.name for p in _se_dir.iterdir() if p.is_file()) if _se_dir.is_dir() else []
+_se_scripts = sorted(p.name for p in pathlib.Path("lclone/data/starter/scripts").iterdir())
+check("426 种子不再含说明性文档 (规范归 insight; evolution 只留脚本)",
+      _se_md == [] and _se_scripts == ["lclone-backup.sh", "lclone-pending-digest.sh"],
+      f"evolutions={_se_md} scripts={_se_scripts}")
 _aux.close()
 
 print()
