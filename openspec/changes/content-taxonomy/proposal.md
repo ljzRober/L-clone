@@ -27,6 +27,7 @@ lclone 目前把"规范/说明/模板"这类**说明性内容**当成 evolution 
 
 - `memory-capture`：**修改**「分工边界」——补入三类归位判据与"注入正文必须自足""不得为省体积把规范移出记忆"两条硬约束，原 6 个场景全部保留并新增 4 个。
 - `evolution-store`：**新增**「资产类型边界」一条需求（evo 只承载数据与可执行产物；巡检只提示；种子不含说明性文档）。
+- `cli-onboarding`：**修改**「首次种子内容」——种子只含数据/脚本类进化资产，说明性文档 SHALL NOT 进种子（原文枚举的三份文档已被移除，本 delta 把契约对齐现实）。
 
 ## Impact
 
@@ -58,7 +59,8 @@ lclone 目前把"规范/说明/模板"这类**说明性内容**当成 evolution 
 1. 两份**执行准则**（`coding-guidelines.md` + `code-laziness-ladder.md`）→ **合并为一条**自足 insight（全局层，注入层），原文不再单独存在；
 2. 三份**已无引用且内容已在 spec/skill/提示词/gate.py 有权威**的文档（`会话归属与落库约定.md` / `洞察格式模型.md` / `记忆准入标准.md`）→ 整体下架，不再保留副本；
 3. 五份资产统一 `evolution delete`（墓碑，历史版本与内容对象保留，可 restore）；
-4. 悬空 `[[evo:]]` 指针 → 从卡片正文移除。
+4. 悬空 `[[evo:]]` 指针 → 从卡片正文移除；
+5. 两个**运维脚本**（`lclone-backup.sh` / `lclone-pending-digest.sh`，其能力已被 `lclone backup` / `lclone pending` 覆盖）在库里下架（脚本本身不是规范，删它们属于用户对自有资产的决定）。
 
 ### 文件
 
