@@ -29,7 +29,7 @@ THEN 种子不覆盖它，只在报告中计入跳过
 WHEN `BRAIN_LLM=dummy` 且无 API key
 THEN 种子洞察仍可写入（embedding 走本地确定性哈希向量）
 
-#### Scenario: 种子进化资产进版本库
+#### Scenario: 种子进化文件进版本库
 
 WHEN 种子种入通用进化资产
 THEN 它们以 v1 进入进化资产库（可被 `history` 查到、可被客户端 `pull` 到），而不是只存在于某台机器的目录里
