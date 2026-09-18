@@ -49,6 +49,9 @@ Object.defineProperty(El.prototype, 'innerHTML', {
 El.prototype.addEventListener = function (t, fn) { (this._ls[t] = this._ls[t] || []).push(fn); };
 El.prototype.appendChild = function (c) { this.children.push(c); return c; };
 El.prototype.focus = function () {};
+// 真 textarea 支持 setSelectionRange (光标落点)。桩不补的话,「预填后光标停在要点行末」
+// 这条行为在桩里不可观测 —— 与 value 一样按属性记录, 供断言回读。
+El.prototype.setSelectionRange = function (a, b) { this.selectionStart = a; this.selectionEnd = b; };
 El.prototype.querySelectorAll = function () { return []; };
 El.prototype.querySelector = function () { return null; };
 El.prototype.setAttribute = function (k, v) { this[k] = v; };
@@ -1220,6 +1223,121 @@ function decodeEntities(s) {
       n > 0 && byId['m-content'].value === '被指向的洞察'
       && byId['m-meta'].textContent.indexOf('#3') >= 0,
       `n=${n} content=${JSON.stringify(byId['m-content'].value)} meta=${byId['m-meta'].textContent}`);
+  }
+
+  /* ---- 346-350 新建记忆默认三段骨架 + 缺段软提示 (spec: web-hierarchy > 记忆工作台) ---- */
+  const CARD3 = '要点：\n背景/为什么：\n影响/以后注意：';
+  // 保存成功后 saveAdd 会 loadAll(): 五个面板端点都要有路由, 否则桩里 fetch 挂起/走 401 分支
+  const LL_ROUTES = [
+    { match: '/api/projects', reply: () => okJson({ items: [] }) },
+    { match: '/api/memories', reply: () => okJson({ items: [] }) },
+    { match: '/api/links', reply: () => okJson({ items: [] }) },
+    { match: '/api/pending', reply: () => okJson({ items: [] }) },
+    { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+  ];
+
+  // 346 新建弹窗默认预填三段骨架, 光标落在「要点」行末; 列头「＋」入口同源 (openAddLevel -> openAdd)
+  {
+    const { sandbox, byId } = loadSandbox();
+    sandbox.openAdd();
+    const v = byId['m-content'].value;
+    const sel = byId['m-content'].selectionStart;
+    sandbox.openAddLevel('insight');    // 列头入口: 必须与工具栏入口同形
+    check('346 新建记忆默认预填三段骨架且两个入口一致 (含光标落点)',
+      v === CARD3 && byId['m-content'].value === CARD3 && sel === 3
+      && byId['m-title'].textContent === '新建记忆',
+      `value=${JSON.stringify(v)} sel=${sel}`);
+    // 346b 模板标签必须与后端 CARD_SECTIONS/CARD_SUPPORTING 的匹配串一致, 否则后端形状校验认不出
+    check('346b 模板标签与后端三段标题同形 (要点/背景/影响)',
+      CARD3 === '要点：\n背景/为什么：\n影响/以后注意：'
+      && v.split('\n').every(ln => /^(要点|背景|影响)/.test(ln)));
+  }
+
+  // 347 只填要点 -> 保存前软提示一次 (点名缺的段), 用户确认后照常写入
+  {
+    const { sandbox, byId } = loadSandbox();
+    let confirms = 0, lastMsg = '';
+    sandbox.confirm = m => { confirms++; lastMsg = String(m); return true; };
+    const hit = http([{ match: '/api/remember', reply: () => okJson({ id: 77 }) }].concat(LL_ROUTES));
+    sandbox.fetch = hit.f;
+    byId['m-content'].value = '要点：只有一句结论';
+    await sandbox.saveAdd();
+    const posted = hit.seen.some(s => s.url.indexOf('/api/remember') >= 0 && s.method === 'POST');
+    check('347 缺背景/影响时保存前提示一次且确认后仍写入',
+      confirms === 1 && posted && /背景/.test(lastMsg) && /影响/.test(lastMsg),
+      `confirms=${confirms} posted=${posted} msg=${lastMsg}`);
+  }
+
+  // 348 三段齐备 -> 不提示 (阴性对照: 提示不能变成"凡保存必弹")
+  {
+    const { sandbox, byId } = loadSandbox();
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return true; };
+    const hit = http([{ match: '/api/remember', reply: () => okJson({ id: 78 }) }].concat(LL_ROUTES));
+    sandbox.fetch = hit.f;
+    byId['m-content'].value = '要点：A\n背景/为什么：B\n影响/以后注意：C';
+    await sandbox.saveAdd();
+    check('348 三段齐备不弹提示 (阴性对照)', confirms === 0, `confirms=${confirms}`);
+  }
+
+  // 349 提示时取消 -> 不写入; 模板被删净改回自由文本 -> 只提示一次, 确认后仍可保存 (不倒退老用法)
+  {
+    const { sandbox, byId } = loadSandbox();
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return false; };
+    const hit = http([{ match: '/api/remember', reply: () => okJson({ id: 79 }) }].concat(LL_ROUTES));
+    sandbox.fetch = hit.f;
+    const before = hit.seen.length;
+    byId['m-content'].value = '要点：只有一句结论';
+    await sandbox.saveAdd();
+    const afterCancel = hit.seen.length;                 // 取消 => 一个请求都不该发
+    sandbox.confirm = () => { confirms++; return true; };
+    byId['m-content'].value = '一段没有三段标签的自由文本';
+    await sandbox.saveAdd();
+    const afterFreeText = hit.seen.length;               // 确认 => 照常写入
+    check('349 提示时取消则不写入; 自由文本仍可保存 (软提示不阻断老用法)',
+      afterCancel === before && afterFreeText > afterCancel && confirms === 2,
+      `cancel ${before}->${afterCancel} freeText->${afterFreeText} confirms=${confirms}`);
+  }
+
+  // 350 编辑既有记忆不预填、也不弹缺段提示 —— 骨架只属于新建路径 (saveEdit 在 CUR_MID!=null 时走 edit 分支)
+  {
+    const { sandbox, byId } = loadSandbox();
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return true; };
+    const hit = http([
+      { match: '/api/projects', reply: () => okJson({ items: [] }) },
+      { match: '/api/memories', reply: () => okJson({ items: [
+        { id: 9, level: 'insight', project_id: null, created_at: 't', source_type: 'manual',
+          content: '一段没有三段标签的存量自由文本' }] }) },
+      { match: '/api/links', reply: () => okJson({ items: [] }) },
+      { match: '/api/pending', reply: () => okJson({ items: [] }) },
+      { match: '/api/evolutions', reply: () => okJson({ items: [] }) },
+      { match: '/api/review', reply: () => okJson({ ok: true }) },
+    ]);
+    sandbox.fetch = hit.f;
+    await sandbox.loadAll();          // 让 #9 进 MEMS, 否则 openMem 静默 return
+    sandbox.openMem(9);
+    const shown = byId['m-content'].value;
+    await sandbox.saveEdit();
+    const edited = hit.seen.some(s => s.url.indexOf('/api/review') >= 0);
+    check('350 编辑既有记忆不预填三段、也不弹缺段提示',
+      shown === '一段没有三段标签的存量自由文本' && edited && confirms === 0,
+      `shown=${JSON.stringify(shown)} edited=${edited} confirms=${confirms}`);
+  }
+
+  // 351 预填引入的回归面: 表单原样打开 -> 模板未填 = 没写内容, 必须仍被拦下, 不能存成空骨架卡
+  {
+    const { sandbox, byId, alerts } = loadSandbox();
+    let confirms = 0;
+    sandbox.confirm = () => { confirms++; return true; };
+    const hit = http([{ match: '/api/remember', reply: () => okJson({ id: 80 }) }].concat(LL_ROUTES));
+    sandbox.fetch = hit.f;
+    sandbox.openAdd();                       // 什么都不填
+    await sandbox.saveAdd();
+    check('351 模板原样未填仍按"内容不能为空"拦下 (不存空骨架卡)',
+      hit.seen.length === 0 && confirms === 0 && /不能为空/.test(alerts.join(' ')),
+      `seen=${hit.seen.length} confirms=${confirms} alerts=${alerts.join(' | ')}`);
   }
 
   console.log('FRONTEND ' + (fails.length ? 'FAILED ' + passed + ' ' + fails.join(' | ') : 'OK ' + passed));

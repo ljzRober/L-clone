@@ -518,6 +518,11 @@ const EXPANDED = new Set();
 const LEVEL_PAGE = {};   // lv -> 当前页码 (0-based), 记忆列表分页
 const ROWS_PER_PAGE = 8; // 每页行数, 页容量 = perRow * ROWS_PER_PAGE (保证网格排满)
 let CUR_MID = null;
+// 新建记忆的三段骨架 —— 标签文案必须与后端同形: 形状校验按这几个标题串匹配
+// (lclone/llm.py 的 CARD_SECTIONS/CARD_SUPPORTING), 去重键也取「要点」开头那 80 字
+// (lclone/memory.py 的 _norm_for_dup)。改这里必须同步后端, 否则卡片过不了准入或去重失效。
+const CARD_TEMPLATE = '要点：\n背景/为什么：\n影响/以后注意：';
+const CARD_LABELS = ['要点', '背景', '影响'];
 const API = {
   projects: async () => (await getJSON('/api/projects')).items,
   memories: async qs => getJSON('/api/memories' + qs),
@@ -1490,14 +1495,31 @@ async function confirmPending(id, action) {
 }
 
 /* ---- 添加记忆 / 注册项目 ---- */
+// 缺段判定: 逐行扫描, 标签行开一个段, 段体 = 标签后残余 + 直到下一个标签之前的行;
+// 段体去空白后为空即未填, 标签整段缺失也算未填 (用户把模板删净改回自由文本 => 三段全缺)。
+// 纯判定, 不改写用户内容 —— 软提示的资源在这里, 拦不拦由 saveAdd 决定。
+function missingCardSections(text) {
+  const filled = {};
+  let cur = null;
+  String(text || '').split('\n').forEach(ln => {
+    const m = ln.match(/^\s*(要点|背景|影响)\s*(?:\/以后注意|\/为什么)?\s*[:：]\s*(.*)$/);
+    if (m) { cur = m[1]; if (m[2].trim()) filled[cur] = true; return; }
+    if (cur && ln.trim()) filled[cur] = true;
+  });
+  return CARD_LABELS.filter(l => !filled[l]);
+}
 function openAdd() {
-  $('m-content').value = ''; $('m-level').value = 'insight';
+  const c = $('m-content');
+  c.value = CARD_TEMPLATE;   // 默认给三段骨架, 用户只填内容 (两个入口都走这里)
+  $('m-level').value = 'insight';
   $('m-owner').value = EXPANDED.size === 1 ? String([...EXPANDED][0]) : '';
   $('m-meta').textContent = '新建记忆'; $('m-links').textContent = '';
   $('m-title').textContent = '新建记忆';
   $('btn-del').style.display = 'none'; $('btn-move').style.display = 'none'; $('btn-save').textContent = '记住';
   CUR_MID = null;
-  $('modal').classList.add('on'); $('m-content').focus();
+  $('modal').classList.add('on');
+  c.focus();
+  c.setSelectionRange(3, 3);   // 光标落到「要点：」行末, 打开即可输入 (不设则落点随浏览器而异)
 }
 function openAddLevel(level) {
   openAdd();
@@ -1506,6 +1528,14 @@ function openAddLevel(level) {
 }
 async function saveAdd() {
   const content = $('m-content').value.trim(); if (!content) return alert('内容不能为空');
+  // 软提示: 缺段只提醒一次、不阻断 —— 残卡离开原对话读不懂, 但"一行结论也比没有强"仍该允许。
+  // 只在新建路径触发: saveEdit 在 CUR_MID!=null 时走 edit 分支, 存量卡不受影响。
+  const missing = missingCardSections(content);
+  // 预填的骨架原样没动 = 什么都没写: 三段标签都在、正文一段都没有, 按空内容拦下。
+  // 不加这条, 预填会把「空表单」变成「有内容」, 连点两下就存进一张全空卡。
+  if (missing.length === CARD_LABELS.length && CARD_LABELS.every(l => content.indexOf(l) >= 0))
+    return alert('内容不能为空：三段都还没填');
+  if (missing.length && !confirm(`还有段落没填：${missing.join('、')}。\n\n三段卡离开原对话才算自包含，仍要保存吗？`)) return;
   const level = $('m-level').value;
   const body = { content, level };
   if ($('m-owner').value) body.project_id = Number($('m-owner').value);
